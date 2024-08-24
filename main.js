@@ -1,4 +1,4 @@
-Console.log("Hi world");
+console.log("Hi world");
 
 const express = require('express')
 const app = express()
