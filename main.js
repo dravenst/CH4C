@@ -9,6 +9,7 @@ import puppeteer from 'puppeteer-core'
 var currentBrowser, dataDir
 const getCurrentBrowser = async () => {
   if (!currentBrowser || !currentBrowser.isConnected()) {
+    process.env.DISPLAY = ':0';
     currentBrowser = await puppeteer.launch({
       executablePath: '/usr/bin/chromium-browser',
       userDataDir: dataDir,
@@ -29,10 +30,9 @@ const getCurrentBrowser = async () => {
         '--enable-automation',
         '--disable-extensions',
         '--disable-default-apps',
-        '--disable-component-update',
-        '--disable-component-extensions-with-background-pages',
-        '--enable-blink-features=IdleDetection',
-        '--mute-audio',
+        //'--disable-component-update',
+        //'--disable-component-extensions-with-background-pages',
+        //'--enable-blink-features=IdleDetection',
       ],
     });
 
@@ -55,31 +55,46 @@ async function main() {
   dataDir = '/home/ellefeira/.config/chromium'
 
   app.get('/', async (_req, res) => {
-    // get the encoder stream
-    const myUrl = 'http://192.168.107.9/live/stream0'
-    const fetchResponse = await fetch(myUrl)
-
-    // send the pipe of the stream to the request
+    const encoderUrl = 'http://192.168.107.9/live/stream0'
+    const fetchResponse = await fetch(encoderUrl)
     Readable.fromWeb(fetchResponse.body).pipe(res)
   })
 
   // : means query paramter
   // ? means optional
   app.get('/go', async (_req, res) => {
+
+    const encoderUrl = 'http://192.168.107.9/live/stream0'
+    const fetchResponse = await fetch(encoderUrl)
+    Readable.fromWeb(fetchResponse.body).pipe(res)
+
+    const videoUrl = 'https://www.nfl.com/plus/games/colts-at-bengals-2024-pre-3?mcpid=1888004'
     var browser, page
+
+    res.on('close', async err => {
+      //await Readable.fromWeb(fetchResponse.body).destroy()
+      await page.close()
+      console.log('finished')
+    })
+
     try {
-      console.log('starting up')
       browser = await getCurrentBrowser()
-      console.log('browser')
       page = await browser.newPage()
-      console.log('have page')
-      await page.goto('https://www.nfl.com/plus/games/colts-at-bengals-2024-pre-3?mcpid=1888004')
-      console.log('did goto page')
-      // document.querySelector("video").requestFullscreen()
-      await page.evaluate(`(function() {
-        document.body.style.cursor = 'none'
+      await page.goto(videoUrl)
+      await page.waitForSelector('video')
+      await page.waitForFunction(`(function() {
+        let video = document.querySelector('video')
+        return video.readyState === 4
       })()`)
-      console.log('full screened')
+      await page.evaluate(`(function() {
+          document.body.style.cursor = 'none'
+          let video = document.querySelector('video')
+          video.style.cursor = 'none'
+          video.play()
+          video.muted = false
+          video.removeAttribute('muted')
+          video.requestFullscreen()
+      })()`)
     } catch (e) {
       console.log('failed to start browser page', e)
       res.status(500).send(`failed to start browser page: ${e}`)
