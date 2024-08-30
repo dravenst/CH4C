@@ -4,12 +4,11 @@ import puppeteer from 'puppeteer-core'
 
 // verify at your command line you can run:
 // chromium-browser
-// i got an error about Missing X server until I ran this at terminal:
-// export DISPLAY=:0
 var currentBrowser, dataDir
 const getCurrentBrowser = async () => {
   if (!currentBrowser || !currentBrowser.isConnected()) {
-    process.env.DISPLAY = ':0';
+    // if running on a headless machine, force a display
+    process.env.DISPLAY = process.env.DISPLAY || ':0'
     currentBrowser = await puppeteer.launch({
       executablePath: '/usr/bin/chromium-browser',
       userDataDir: dataDir,
