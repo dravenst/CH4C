@@ -1,22 +1,26 @@
 console.log("Hello World");
 
 const channelsUrl = 'http://192.168.0.41:8089/dvr/jobs/new'
+// https://www.epochconverter.com/
 const data = {
     "Name": "JF test record",
-    "Time": 1601391600,
-    "Duration": 120, // unit?
+    "Time": 1725078389,   // 9/5/2024
+    "Duration": 300, // seconds
     "Channels": ["22.1"],
     "Airing": {
-        "SeasonNumber": 0,
-        "EpisodeNumber": 0,
-        "OriginalDate": "2020-09-29",
+        "Source": "manual",
+        "Channel": "22.1",
+        "Time": 1725078389,   // ok to be in the past
+        "Duration": 300,
+        "Title": "Manual recording JF test",
+
     }
 };
+
 const jsonData = JSON.stringify(data)
 console.log(jsonData);
 
 // https://oxylabs.io/blog/nodejs-fetch-api
-// this fails because Mealie can't initiate to Channels
 fetch(channelsUrl, {
     method: 'POST',
     headers: {
