@@ -1,6 +1,7 @@
 import express from 'express'
-import { Readable } from 'stream'
 import puppeteer from 'puppeteer-core'
+import { Readable } from 'stream'
+import * as Constants from "./constants.js"
 
 // verify at your command line you can run:
 // chromium-browser
@@ -52,6 +53,7 @@ async function launchBrowser(videoUrl) {
       browser = await getCurrentBrowser()
       page = await browser.newPage()
       await page.goto(videoUrl)
+      // break wait for video into a fail safe
       await page.waitForSelector('video')
       await page.waitForFunction(`(function() {
         let video = document.querySelector('video')
@@ -82,7 +84,7 @@ async function main() {
   // send back the transcoder stream - testing only
   // delete when ready
   app.get('/', async (_req, res) => {
-    const encoderUrl = 'http://192.168.107.9/live/stream0'
+    const encoderUrl = Constants.ENCODER_STREAM_URL //'http://192.168.107.9/live/stream0'
     const fetchResponse = await fetch(encoderUrl)
     Readable.fromWeb(fetchResponse.body).pipe(res)
   })
@@ -96,12 +98,11 @@ async function main() {
   app.get('/go', async (_req, res) => {
 
     // feed the transcoder output back to Channels
-    const encoderUrl = 'http://192.168.107.9/live/stream0'
+    const encoderUrl = Constants.ENCODER_STREAM_URL //'http://192.168.107.9/live/stream0'
     const fetchResponse = await fetch(encoderUrl)
     Readable.fromWeb(fetchResponse.body).pipe(res)
 
     // get the desired URL - make that a function
-    //var u = req.query.url
     const videoUrl = 'https://www.nfl.com/plus/games/colts-at-bengals-2024-pre-3?mcpid=1888004'
     var browser, page
 
@@ -140,6 +141,14 @@ async function main() {
 
   })
 
+  app.get('/stream/:name?', async (req, res) => {
+    var u = req.query.url || Constants.NAMED_URLS[req.params.name]
+    console.log('got url: ', u)
+    if (u == null) {
+      console.log('failed to parse target URL', u)
+      res.status(500).send('failed to parse target URL')
+    }
+  })
   /*
   app.get('/instant', async (_req, res) => {
 
@@ -154,7 +163,7 @@ async function main() {
     // load the desired URL
     await launchBrowser(videoUrl);
 
-    // close the browser when the recording is done
+    // close the browser when the recording is done + some buffer
     // https://stackoverflow.com/questions/951021/what-is-the-javascript-version-of-sleep
     await new Promise(r => setTimeout(r, 2000));
     await page.close()

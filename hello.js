@@ -1,5 +1,6 @@
 console.log("Hello World");
 
+// building and sending the JSON object
 const channelsUrl = 'http://192.168.0.41:8089/dvr/jobs/new'
 // https://www.epochconverter.com/
 const data = {
