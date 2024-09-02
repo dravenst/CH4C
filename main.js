@@ -81,40 +81,49 @@ async function main() {
 
   dataDir = '/home/ellefeira/.config/chromium'
 
-  // send back the transcoder stream - testing only
-  // delete when ready
   app.get('/', async (_req, res) => {
+    /*
     const encoderUrl = Constants.ENCODER_STREAM_URL //'http://192.168.107.9/live/stream0'
     const fetchResponse = await fetch(encoderUrl)
     Readable.fromWeb(fetchResponse.body).pipe(res)
+    */
+   
+    res.send(`
+      <html>
+      <title>Chrome HDMI for Channels</title>
+      <h2>Chrome HDMI for Channels</h2>
+      <p>Usage: <code>/stream?url=URL</code> or <code>/stream/&lt;name></code></p>
+      <pre>
+      #EXTM3U
+
+      #EXTINF:-1 channel-id="windy",Windy
+      chrome://${req.get('host')}/stream/windy
+
+      #EXTINF:-1 channel-id="weatherscan",Weatherscan
+      chrome://${req.get('host')}/stream/weatherscan
+      </pre>
+      </html>
+      `
+    )
   })
 
-  // : means query paramter
-  // ? means optional
-  // call this path from the custom channel in Channels
-  // passing in either a name or a URL
-  // the custom URL form can also call this, just include
-  // a flag that indicates don't pipe back and send JSON
-  app.get('/go', async (_req, res) => {
+  app.get('/stream/:name?', async (req, res) => {
+
+    const videoUrl = req.query.url || Constants.NAMED_URLS[req.params.name]
+    console.log('got url: ', videoUrl)
+    if (videoUrl == null) {
+      console.log('failed to parse target URL: ', videoUrl)
+      res.status(500).send('failed to parse target URL')
+    }
 
     // feed the transcoder output back to Channels
-    const encoderUrl = Constants.ENCODER_STREAM_URL //'http://192.168.107.9/live/stream0'
+    const encoderUrl = Constants.ENCODER_STREAM_URL
     const fetchResponse = await fetch(encoderUrl)
     Readable.fromWeb(fetchResponse.body).pipe(res)
-
-    // get the desired URL - make that a function
-    const videoUrl = 'https://www.nfl.com/plus/games/colts-at-bengals-2024-pre-3?mcpid=1888004'
-    var browser, page
-
-    res.on('close', async err => {
-      //await Readable.fromWeb(fetchResponse.body).destroy()
-      await page.close()
-      console.log('finished')
-    })
 
     // try the below as a function
     // await launchBrowser(videoUrl);
-
+    var browser, page
     try {
       browser = await getCurrentBrowser()
       page = await browser.newPage()
@@ -139,16 +148,13 @@ async function main() {
       return
     }
 
+    res.on('close', async err => {
+      //await Readable.fromWeb(fetchResponse.body).destroy()
+      await page.close()
+      console.log('finished')
+    })
   })
 
-  app.get('/stream/:name?', async (req, res) => {
-    var u = req.query.url || Constants.NAMED_URLS[req.params.name]
-    console.log('got url: ', u)
-    if (u == null) {
-      console.log('failed to parse target URL', u)
-      res.status(500).send('failed to parse target URL')
-    }
-  })
   /*
   app.get('/instant', async (_req, res) => {
 
