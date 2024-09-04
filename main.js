@@ -6,7 +6,7 @@ import * as Constants from "./constants.js"
 // verify at your command line you can run:
 // chromium-browser
 var currentBrowser, dataDir
-const getCurrentBrowser = async () => {
+async function setCurrentBrowser() {
   if (!currentBrowser || !currentBrowser.isConnected()) {
     // if running on a headless machine, force a display
     process.env.DISPLAY = process.env.DISPLAY || ':0'
@@ -44,71 +44,62 @@ const getCurrentBrowser = async () => {
       pages.forEach(page => page.close())
     })
   }
+}
 
-  return currentBrowser
-}
-/*
 async function launchBrowser(videoUrl) {
-  try {
-      browser = await getCurrentBrowser()
-      page = await browser.newPage()
-      await page.goto(videoUrl)
-      // break wait for video into a fail safe
-      await page.waitForSelector('video')
-      await page.waitForFunction(`(function() {
-        let video = document.querySelector('video')
-        return video.readyState === 4
-      })()`)
-      await page.evaluate(`(function() {
-          document.body.style.cursor = 'none'
-          let video = document.querySelector('video')
-          video.style.cursor = 'none'
-          video.play()
-          video.muted = false
-          video.removeAttribute('muted')
-          video.requestFullscreen()
-      })()`)
-    } catch (e) {
-      console.log('failed to start browser page', e)
-      res.status(500).send(`failed to start browser page: ${e}`)
-      return
-    }
+  await setCurrentBrowser()
+  var page = await currentBrowser.newPage()
+  await page.goto(videoUrl)
+  return page
 }
-*/
+
+async function fullScreenVideo(page) {
+  await page.waitForSelector('video')
+  await page.waitForFunction(`(function() {
+    let video = document.querySelector('video')
+    return video.readyState === 4
+  })()`)
+  await page.evaluate(`(function() {
+      document.body.style.cursor = 'none'
+      let video = document.querySelector('video')
+      video.style.cursor = 'none'
+      video.play()
+      video.muted = false
+      video.removeAttribute('muted')
+      video.requestFullscreen()
+  })()`)
+}
+
+function buildRecordingJson(name, duration) {
+  const data = {
+    "Name": name,
+    "Time": Math.round(Date.now() / 1000),
+    "Duration": duration * 60,
+    "Channels": [Constants.ENCODER_CUSTOM_CHANNEL_NUMBER],
+    "Airing": {
+        "Source": "manual",
+        "Channel": Constants.ENCODER_CUSTOM_CHANNEL_NUMBER,
+        "Time": Math.round(Date.now() / 1000),
+        "Duration": duration * 60,
+        "Title": name,
+    }
+  }
+  return JSON.stringify(data)
+};
+
 async function main() {
   const app = express()
-  const port = 3000
+  app.use(express.urlencoded({ extended: false }));
 
   dataDir = '/home/ellefeira/.config/chromium'
 
-  app.get('/', async (_req, res) => {
-    /*
-    const encoderUrl = Constants.ENCODER_STREAM_URL //'http://192.168.107.9/live/stream0'
-    const fetchResponse = await fetch(encoderUrl)
-    Readable.fromWeb(fetchResponse.body).pipe(res)
-    */
-   
-    res.send(`
-      <html>
-      <title>Chrome HDMI for Channels</title>
-      <h2>Chrome HDMI for Channels</h2>
-      <p>Usage: <code>/stream?url=URL</code> or <code>/stream/&lt;name></code></p>
-      <pre>
-      #EXTM3U
-
-      #EXTINF:-1 channel-id="windy",Windy
-      chrome://${req.get('host')}/stream/windy
-
-      #EXTINF:-1 channel-id="weatherscan",Weatherscan
-      chrome://${req.get('host')}/stream/weatherscan
-      </pre>
-      </html>
-      `
-    )
+  app.get('/', async (req, res) => {
+    res.send(Constants.START_PAGE_HTML.replaceAll('<<host>>', req.get('host')))
   })
 
   app.get('/stream/:name?', async (req, res) => {
 
+    // figure out the target url
     const videoUrl = req.query.url || Constants.NAMED_URLS[req.params.name]
     console.log('got url: ', videoUrl)
     if (videoUrl == null) {
@@ -121,65 +112,71 @@ async function main() {
     const fetchResponse = await fetch(encoderUrl)
     Readable.fromWeb(fetchResponse.body).pipe(res)
 
-    // try the below as a function
-    // await launchBrowser(videoUrl);
-    var browser, page
+    // load the target url
     try {
-      browser = await getCurrentBrowser()
-      page = await browser.newPage()
-      await page.goto(videoUrl)
-      await page.waitForSelector('video')
-      await page.waitForFunction(`(function() {
-        let video = document.querySelector('video')
-        return video.readyState === 4
-      })()`)
-      await page.evaluate(`(function() {
-          document.body.style.cursor = 'none'
-          let video = document.querySelector('video')
-          video.style.cursor = 'none'
-          video.play()
-          video.muted = false
-          video.removeAttribute('muted')
-          video.requestFullscreen()
-      })()`)
+      var page = await launchBrowser(videoUrl)
     } catch (e) {
       console.log('failed to start browser page', e)
       res.status(500).send(`failed to start browser page: ${e}`)
       return
     }
+    
+    // if there is a video, full screen it
+    try {
+      await fullScreenVideo(page)
+    } catch (e) {
+      console.log('failed to find a video selector', e)
+      res.status(200).send(`failed to find a video selector: ${e}`)
+    }
 
     res.on('close', async err => {
-      //await Readable.fromWeb(fetchResponse.body).destroy()
       await page.close()
       console.log('finished')
     })
   })
 
-  /*
   app.get('/instant', async (_req, res) => {
+    res.send(Constants.INSTANT_PAGE_HTML)
+  })
 
-    // send JSON so Channels starts recording the transcoder
-    await sendJSON
+  app.post('/instant', async (req, res) => {
+    const jsonData = buildRecordingJson(
+      req.body.recording_name,
+      req.body.recording_duration)
+    
+    const channelsPostUrl = `${Constants.CHANNELS_URL}:${Constants.CHANNELS_PORT}/dvr/jobs/new`
+    /*
+    fetch(channelsPostUrl, {
+      method: 'POST',
+      headers: {
+        'Content-type': 'application/json',
+      },
+      body: jsonData,
+    })
+      .then((response) => response.json())
+      .then((json) => console.log(json))
+      .catch((error) => {
+          console.error('error in execution', error);
+      }); 
+    */
 
-    // get the desired URL
-    //var u = req.query.url
-    const videoUrl = 'https://www.nfl.com/plus/games/colts-at-bengals-2024-pre-3?mcpid=1888004'
-    var browser, page
-
-    // load the desired URL
-    await launchBrowser(videoUrl);
+    /*
+    // load the desired URL - same as normal
 
     // close the browser when the recording is done + some buffer
     // https://stackoverflow.com/questions/951021/what-is-the-javascript-version-of-sleep
-    await new Promise(r => setTimeout(r, 2000));
+    // await new Promise(r => setTimeout(r, 2 * 1000));
+    console.log('waiting for recording to finish')
+    await new Promise(r => setTimeout(r, duration * 60 * 1000));
     await page.close()
     console.log('finished instant recording')
-    
-  })
-  */
+    */
 
-  const server = app.listen(port, () => {
-    console.log(`Example app listening on port ${port}`)
+    res.send(`Channels JSON is: ${jsonData} and Channels URL is: ${channelsPostUrl}`)
+  })
+
+  const server = app.listen(Constants.CH4C_PORT, () => {
+    console.log('Example app listening on port', Constants.CH4C_PORT)
   })
 }
 
