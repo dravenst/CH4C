@@ -5,13 +5,13 @@ const channelsUrl = 'http://192.168.0.41:8089/dvr/jobs/new'
 // https://www.epochconverter.com/
 const data = {
     "Name": "JF test record",
-    "Time": 1725078389,   // 9/5/2024
+    "Time": 1726119609,   // 9/12/2024
     "Duration": 300, // seconds
-    "Channels": ["22.1"],
+    "Channels": ["24.42"],
     "Airing": {
         "Source": "manual",
-        "Channel": "22.1",
-        "Time": 1725078389,   // ok to be in the past
+        "Channel": "24.42",
+        "Time": 1726119609,   // ok to be in the past
         "Duration": 300,
         "Title": "Manual recording JF test",
     }
@@ -28,10 +28,19 @@ fetch(channelsUrl, {
     },
     body: jsonData,
   })
-    .then((response) => response.json())
-    .then((json) => console.log(json))
+    .then(response => {
+        if (response.ok) {
+            return response.json()
+        }else{
+            throw response.status
+        }
+    })
+    .then(result => {
+        console.log(result)
+        console.log('done it')
+    })
     .catch((error) => {
-        console.error('error in execution', error);
+        console.error('Unable to schedule recording', error);
     }); 
 
 

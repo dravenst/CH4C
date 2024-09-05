@@ -1,4 +1,4 @@
-import express from 'express'
+import express, { response } from 'express'
 import puppeteer from 'puppeteer-core'
 import { Readable } from 'stream'
 import * as Constants from "./constants.js"
@@ -87,6 +87,24 @@ function buildRecordingJson(name, duration) {
   return JSON.stringify(data)
 };
 
+async function startRecording(name, duration) {
+  var response
+  const channelsPostUrl = `${Constants.CHANNELS_URL}:${Constants.CHANNELS_PORT}/dvr/jobs/new`
+  try {
+    response = await fetch(channelsPostUrl, {
+      method: 'POST',
+      headers: {
+        'Content-type': 'application/json',
+      },
+      body: buildRecordingJson(name, duration),
+    })
+  } catch (error) {
+    console.error('Unable to schedule recording', error)
+  } finally {
+    return response.ok
+  }
+}
+
 async function main() {
   const app = express()
   app.use(express.urlencoded({ extended: false }));
@@ -126,7 +144,6 @@ async function main() {
       await fullScreenVideo(page)
     } catch (e) {
       console.log('failed to find a video selector', e)
-      res.status(200).send(`failed to find a video selector: ${e}`)
     }
 
     res.on('close', async err => {
@@ -140,26 +157,18 @@ async function main() {
   })
 
   app.post('/instant', async (req, res) => {
-    const jsonData = buildRecordingJson(
-      req.body.recording_name,
-      req.body.recording_duration)
-    
-    const channelsPostUrl = `${Constants.CHANNELS_URL}:${Constants.CHANNELS_PORT}/dvr/jobs/new`
-    /*
-    fetch(channelsPostUrl, {
-      method: 'POST',
-      headers: {
-        'Content-type': 'application/json',
-      },
-      body: jsonData,
-    })
-      .then((response) => response.json())
-      .then((json) => console.log(json))
-      .catch((error) => {
-          console.error('error in execution', error);
-      }); 
-    */
+    if (req.body.button_record) {
+      var recordingStarted = await startRecording(
+        req.body.recording_name || 'Manual recording',
+        req.body.recording_duration)
 
+      if (!recordingStarted) {
+        console.log('failed to start recording')
+        res.send('failed to start recording')
+        return
+      }
+    }
+      
     /*
     // load the desired URL - same as normal
 
@@ -172,11 +181,11 @@ async function main() {
     console.log('finished instant recording')
     */
 
-    res.send(`Channels JSON is: ${jsonData} and Channels URL is: ${channelsPostUrl}`)
+    res.send('scheduled recording')
   })
 
   const server = app.listen(Constants.CH4C_PORT, () => {
-    console.log('Example app listening on port', Constants.CH4C_PORT)
+    console.log('CH4C listening on port', Constants.CH4C_PORT)
   })
 }
 

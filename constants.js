@@ -39,12 +39,13 @@ export const INSTANT_PAGE_HTML = `
         <input type="text" name="recording_name" id="recording_name" />
         <br/>
         <label>URL to Record</label>
-        <input type="text" name="recording_url" id="recording_url" />
+        <input type="text" name="recording_url" id="recording_url" required />
         <br/>
         <label>Duration of Recording, Minutes</label>
-        <input type="text" name="recording_duration" id="recording_duration" />
+        <input type="text" name="recording_duration" id="recording_duration" required />
         <br/>
-        <input type="submit" name="submit_button" value="Submit" />
+        <input type="submit" name="button_record" value="Start Recording URL" />
+        <input type="submit" name="button_tune" value="Tune ${ENCODER_CUSTOM_CHANNEL_NUMBER} to URL" />
       </form>
     </html>
 `
