@@ -53,7 +53,7 @@ async function launchBrowser(videoUrl) {
   await setCurrentBrowser()
   var page = await currentBrowser.newPage()
   console.log('got page going to url')
-  await page.goto(videoUrl)
+  await page.goto(videoUrl, { waitUntil: 'networkidle2' })
   console.log('went to url')
   return page
 }
@@ -128,6 +128,7 @@ async function main() {
     if (videoUrl == null) {
       console.log('failed to parse target URL: ', videoUrl)
       res.status(500).send('failed to parse target URL')
+      return
     }
 
     // feed the transcoder output back to Channels
@@ -140,7 +141,7 @@ async function main() {
       var page = await launchBrowser(videoUrl)
     } catch (e) {
       console.log('failed to start browser page', e)
-      res.status(500).send(`failed to start browser page: ${e}`)
+      //res.status(500).send(`failed to start browser page: ${e}`)
       return
     }
     
