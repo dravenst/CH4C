@@ -3,13 +3,12 @@ import puppeteer from 'puppeteer-core'
 import { Readable } from 'stream'
 import * as Constants from "./constants.js"
 
-// verify at your command line you can run:
-// chromium-browser
 var currentBrowser, dataDir
 async function setCurrentBrowser() {
   if (!currentBrowser || !currentBrowser.isConnected()) {
     // if running on a headless machine, force a display
     process.env.DISPLAY = process.env.DISPLAY || ':0'
+
     currentBrowser = await puppeteer.launch({
       executablePath: '/usr/bin/chromium-browser',
       userDataDir: dataDir,
@@ -22,8 +21,8 @@ async function setCurrentBrowser() {
         '--disable-blink-features=AutomationControlled',
         '--hide-scrollbars',
         '--no-sandbox',
-        //'--start-fullscreen',
-        //'--kiosk',
+        '--start-fullscreen',
+        '--kiosk',
         '--noerrdialogs',
       ],
       ignoreDefaultArgs: [
@@ -169,19 +168,35 @@ async function main() {
       }
     }
       
-    /*
-    // load the desired URL - same as normal
+    // load the target url
+    var page
+    try {
+      page = await launchBrowser(req.body.recording_url)
+    } catch (e) {
+      console.log('failed to start browser page', e)
+      res.status(500).send(`failed to start browser page: ${e}`)
+      return
+    }
 
-    // close the browser when the recording is done + some buffer
-    // https://stackoverflow.com/questions/951021/what-is-the-javascript-version-of-sleep
-    // await new Promise(r => setTimeout(r, 2 * 1000));
-    console.log('waiting for recording to finish')
-    await new Promise(r => setTimeout(r, duration * 60 * 1000));
+    if (req.body.button_record) {
+      res.send(`Started recording on ${Constants.ENCODER_CUSTOM_CHANNEL_NUMBER}, you can close this page`)
+    }
+    if (req.body.button_tune) {
+      res.send(`Tuned to URL on ${Constants.ENCODER_CUSTOM_CHANNEL_NUMBER}, you can close this page`)
+    }
+
+    // if there is a video, full screen it
+    try {
+      await fullScreenVideo(page)
+    } catch (e) {
+      console.log('did not find a video selector')
+    }
+
+    console.log('about to wait')
+    await new Promise(r => setTimeout(r, req.body.recording_duration * 60 * 1000));
+    console.log('done waiting')
     await page.close()
-    console.log('finished instant recording')
-    */
-
-    res.send('scheduled recording')
+    console.log('finished instant')
   })
 
   const server = app.listen(Constants.CH4C_PORT, () => {
