@@ -21,17 +21,18 @@ async function setCurrentBrowser() {
         '--disable-blink-features=AutomationControlled',
         '--hide-scrollbars',
         '--no-sandbox',
+        // '--start-maximized',
         '--start-fullscreen',
-        '--kiosk',
+        //'--kiosk',
         '--noerrdialogs',
       ],
       ignoreDefaultArgs: [
         '--enable-automation',
         '--disable-extensions',
         '--disable-default-apps',
-        //'--disable-component-update',
-        //'--disable-component-extensions-with-background-pages',
-        //'--enable-blink-features=IdleDetection',
+        '--disable-component-update',
+        '--disable-component-extensions-with-background-pages',
+        '--enable-blink-features=IdleDetection',
       ],
     });
 
@@ -39,8 +40,11 @@ async function setCurrentBrowser() {
       currentBrowser = null
     })
 
+    // clean up the current browser before we start loading our pages
+    console.log('about to page close')
     currentBrowser.pages().then(pages => {
       pages.forEach(page => page.close())
+      console.log('page close')
     })
   }
 }
@@ -48,7 +52,9 @@ async function setCurrentBrowser() {
 async function launchBrowser(videoUrl) {
   await setCurrentBrowser()
   var page = await currentBrowser.newPage()
+  console.log('got page going to url')
   await page.goto(videoUrl)
+  console.log('went to url')
   return page
 }
 
