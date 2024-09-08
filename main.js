@@ -65,13 +65,15 @@ async function fullScreenVideo(page) {
     return video.readyState === 4
   })()`)
   await page.evaluate(`(function() {
-      document.body.style.cursor = 'none'
       let video = document.querySelector('video')
       video.style.cursor = 'none'
       video.play()
       video.muted = false
       video.removeAttribute('muted')
       video.requestFullscreen()
+  })()`)
+  await page.evaluate(`(function() {
+    document.body.style.cursor = 'none'
   })()`)
 }
 
@@ -87,10 +89,94 @@ function buildRecordingJson(name, duration) {
         "Time": Math.round(Date.now() / 1000),
         "Duration": duration * 60,
         "Title": name,
+        "EpisodeTitle": "manual recording yup",
+        "Summary": "Recorded on this day",
+        "Image": "https://tmsimg.fancybits.co/assets/p9467679_st_h6_aa.jpg",
+        "ProgramID": "asdfafd",
+        "SeasonNumber": 0,
+        "EpisodeNumber": 0,
+        "OriginalDate": "2024-09-07",
+        "Raw": "",
     }
   }
   return JSON.stringify(data)
 };
+
+/*
+  {
+    "id": "2310",
+    "program_id": "asdfafd",
+    "path": "/cdvr/TV/JPFTtry/JPFTtry manual recording yup 2024-09-07-2214.mpg",
+    "channel": "24.42",
+    "title": "JPFTtry",
+    "episode_title": "manual recording yup",
+    "summary": "Recorded on this day",
+    "image_url": "https://tmsimg.fancybits.co/assets/p9467679_st_h6_aa.jpg",
+    "thumbnail_url": "https://b7e2f5d58bd8.u.channelsdvr.net:8089/dvr/files/2310/preview.jpg",
+    "playback_time": 0,
+    "watched": false,
+    "favorited": false,
+    "delayed": false,
+    "cancelled": false,
+    "corrupted": false,
+    "completed": false,
+    "processed": false,
+    "locked": false,
+    "verified": false,
+    "created_at": 1725772443000,
+    "updated_at": 1725772443017
+  },
+  {
+    "id": "2308",
+    "show_id": "200944",
+    "program_id": "EP000167471505",
+    "path": "/cdvr/TV/48 Hours/48 Hours S37E32 The Case of the Black Swa 2024-09-07-2200.mpg",
+    "channel": "5.1",
+    "season_number": 37,
+    "episode_number": 32,
+    "title": "48 Hours",
+    "episode_title": "The Case of the Black Swan",
+    "summary": "New details in the trial of Ashley Benefield, who claims she shot her husband in self-defense.",
+    "full_summary": "New details in the murder trial of former ballerina Ashley Benefield, who claims her husband tried to poison her while she was pregnant and that she shot him in self-defense.",
+    "image_url": "https://tmsimg.fancybits.co/assets/p200944_b_h9_ae.jpg?w=720&h=540",
+    "thumbnail_url": "https://b7e2f5d58bd8.u.channelsdvr.net:8089/dvr/files/2308/preview.jpg",
+    "playback_time": 0,
+    "original_air_date": "2024-09-07",
+    "genres": [
+      "Newsmagazine",
+      "Crime",
+      "Law"
+    ],
+    "tags": [
+      "CC",
+      "DD 5.1",
+      "HD 1080i",
+      "HDTV",
+      "New",
+      "Stereo"
+    ],
+    "categories": [
+      "Episode",
+      "Series"
+    ],
+    "cast": [
+      "Erin Moriarty",
+      "Peter Van Sant",
+      "Natalie Morales"
+    ],
+    "watched": false,
+    "favorited": false,
+    "delayed": false,
+    "cancelled": false,
+    "corrupted": false,
+    "completed": false,
+    "processed": false,
+    "locked": false,
+    "verified": false,
+    "created_at": 1725771600000,
+    "updated_at": 1725771600494
+  },
+*/
 
 async function startRecording(name, duration) {
   var response
@@ -104,8 +190,9 @@ async function startRecording(name, duration) {
       body: buildRecordingJson(name, duration),
     })
   } catch (error) {
-    console.error('Unable to schedule recording', error)
+    console.log('Unable to schedule recording', error)
   } finally {
+    console.log('done start recording', response)
     return response.ok
   }
 }
