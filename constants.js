@@ -1,9 +1,10 @@
+// update these to match your Channels instance and the
+// streaming URL of your transcoder
 export const CHANNELS_URL = 'http://192.168.0.41'
 export const CHANNELS_PORT = '8089'
 export const ENCODER_STREAM_URL = 'http://192.168.107.9/live/stream0'
-export const ENCODER_CUSTOM_CHANNEL_NUMBER = '24.42'
-export const CH4C_PORT = 2442
 
+// REMOVE
 export const NAMED_URLS = {
     nbc: 'https://www.nbc.com/live?brand=nbc&callsign=nbc',
     cnbc: 'https://www.nbc.com/live?brand=cnbc&callsign=cnbc',
@@ -12,20 +13,37 @@ export const NAMED_URLS = {
     nfl: 'https://www.nfl.com/plus/games/colts-at-bengals-2024-pre-3?mcpid=1888004',
 }
 
+// this is the custom channel number in Channels DVR that will be used
+// for instant recordings. I used 24.42 because it's unique and
+// spells CH4C on a telephone keypad. You shouldn't need to change this.
+export const ENCODER_CUSTOM_CHANNEL_NUMBER = '24.42'
+export const CH4C_PORT = 2442
+
 export const START_PAGE_HTML = `
     <html>
     <title>Chrome HDMI for Channels</title>
     <h2>Chrome HDMI for Channels</h2>
-    <p>Usage: <code>/stream?url=URL</code> or <code>/stream/&lt;name></code></p>
-    <p>Example custom channels to load into Channels DVR:</p>
+    <p>Usage: <code>/stream?url=URL</code></p>
+    <p>Create a custom channel in Channels DVR using the below as an example.<br>
+    Be sure to choose "Prefer channel-number from M3U" and to update <CH4C_IP_ADDRESS>:
+    </p>
     <pre>
     #EXTM3U
 
-    #EXTINF:-1 channel-id="windy",Windy
-    http://<<host>>/stream/windy
+    #EXTINF:-1 channel-id="CH4C_Encoder" channel-number="${ENCODER_CUSTOM_CHANNEL_NUMBER}" tvc-guide-placeholders="14400",CH4C Encoder
+    ${ENCODER_STREAM_URL}
+    
+    #EXTINF:-1 channel-id="CH4C_Weather" tvc-guide-placeholders="14400",Weatherscan
+    http://<CH4C_IP_ADDRESS>:${CH4C_PORT}/stream/?url=https://weatherscan.net/
 
-    #EXTINF:-1 channel-id="weatherscan",Weatherscan
-    http://<<host>>/stream?url=https://windy.com
+    #EXTINF:-1 channel-id="CH4C_NFL_Network",NFL Network
+    http://<CH4C_IP_ADDRESS>:${CH4C_PORT}/stream?url=https://www.nfl.com/network/watch/nfl-network-live
+
+    #EXTINF:-1 channel-id="CH4C_NFL_RedZone",NFL RedZone
+    http://<CH4C_IP_ADDRESS>:${CH4C_PORT}/stream?url=https://www.nfl.com/plus/redzone
+
+    #EXTINF:-1 channel-id="CH4C_Bravo",Bravo
+    http://<CH4C_IP_ADDRESS>:${CH4C_PORT}/stream?url=https://www.nbc.com/live?brand=bravo&callsign=BRAVOHP
     </pre>
     </html>
 `
