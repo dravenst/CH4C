@@ -41,29 +41,4 @@ fetch(channelsUrl, {
     })
     .catch((error) => {
         console.error('Unable to schedule recording', error);
-    }); 
-
-
-/*
-{
-    "Name": "Manual Recordings",
-    "Time": 1601391600,
-    "Duration": 120,
-    "Channels": ["6750"],
-    "Airing": {
-        "Source": "manual",
-        "Channel": "6750",
-        "OriginalDate": "2020-09-29",
-        "Time": 1601391600,
-        "Duration": 120,
-        "Title": "Manual Recordings",
-        "EpisodeTitle": "BUZZR Test Recording",
-        "Summary": "Record BUZZR-6750 on Tuesday, September 29, 2020 3:00:00 PM GMT for 2 minutes.",
-        "Image": "https://tmsimg.fancybits.co/assets/p9467679_st_h6_aa.jpg",
-        "ProgramID": "SH030703030000",
-        "SeasonNumber": 0,
-        "EpisodeNumber": 0,
-        "Raw": ""
-    }
-}
-*/
+    });

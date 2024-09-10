@@ -60,61 +60,48 @@ async function launchBrowser(videoUrl) {
 
 async function fullScreenVideo(page) {
   await page.waitForSelector('video')
+  console.log('got vid')
   await page.waitForFunction(`(function() {
     let video = document.querySelector('video')
     return video.readyState === 4
   })()`)
+  console.log('got readyState')
   await page.evaluate(`(function() {
       let video = document.querySelector('video')
-      video.style.cursor = 'none'
       video.play()
+      video.style.cursor = 'none'
       video.muted = false
       video.removeAttribute('muted')
       video.requestFullscreen()
   })()`)
+  console.log('ran fs')
   await page.evaluate(`(function() {
     document.body.style.cursor = 'none'
   })()`)
+  console.log('zap cursor')
 }
 
 function buildRecordingJson(name, duration) {
+  var startTime = Math.round(Date.now() / 1000)
   const data = {
     "Name": name,
-    "Time": Math.round(Date.now() / 1000),
+    "Time": startTime,
     "Duration": duration * 60,
     "Channels": [Constants.ENCODER_CUSTOM_CHANNEL_NUMBER],
     "Airing": {
         "Source": "manual",
         "Channel": Constants.ENCODER_CUSTOM_CHANNEL_NUMBER,
-        "Time": Math.round(Date.now() / 1000) + 30,
+        "Time": startTime,
         "Duration": duration * 60,
-        "Title": name,
-        "EpisodeTitle": "manual recording episode",
-        "Summary": "Recorded on this day",
+        "Title": `Title: ${name}`,
+        "EpisodeTitle": name,
+        "Summary": `Manual recording: ${name}`,
         "SeriesID": "MANUAL",
-        "ProgramID": "MAN 179",
-        "Image": "https://tmsimg.fancybits.co/assets/p9467679_st_h6_aa.jpg",
+        "ProgramID": `MAN${startTime}`,
     }
   }
   return JSON.stringify(data)
 };
-
-/*
-  json_payload['Name']     = program_name
-  json_payload["Time"]     = start_time 
-  json_payload["Duration"] = duration
-  json_payload["Channels"] = [channel_number]
-  json_payload["Airing"]["Source"]       = "manual" 
-  json_payload["Airing"]["Channel"]      = channel_number
-  json_payload["Airing"]["Time"]         = start_time
-  json_payload["Airing"]["Duration"]     = duration
-  json_payload["Airing"]["Title"]        = program_name
-  json_payload["Airing"]["EpisodeTitle"] = episode_name
-  json_payload["Airing"]["Summary"]      = f"Manual recording of channel {channel_number} on {year}-{month:02d}-{day:02d} @ {hour:02d}:{minutes:02d}:{seconds:02d} for {duration} seconds."
-  json_payload["Airing"]["SeriesID"]     = "MANUAL"
-  json_payload["Airing"]["ProgramID"]    = f"MAN{start_time}"
-  json_payload["Airing"]["Image"]        = image_url
-*/
 
 async function startRecording(name, duration) {
   var response
@@ -145,14 +132,11 @@ async function main() {
     res.send(Constants.START_PAGE_HTML.replaceAll('<<host>>', req.get('host')))
   })
 
-  app.get('/stream/:name?', async (req, res) => {
-
-    // figure out the target url
-    const videoUrl = req.query.url || Constants.NAMED_URLS[req.params.name]
-    console.log('got url: ', videoUrl)
-    if (videoUrl == null) {
-      console.log('failed to parse target URL: ', videoUrl)
-      res.status(500).send('failed to parse target URL')
+  app.get('/stream', async (req, res) => {
+    console.log('got url: ', req.query.url)
+    if (req.query.url == null) {
+      console.log('must specify a target URL')
+      res.status(500).send('must specify a target URL')
       return
     }
 
@@ -161,16 +145,12 @@ async function main() {
     const fetchResponse = await fetch(encoderUrl)
     Readable.fromWeb(fetchResponse.body).pipe(res)
 
-    // load the target url
     try {
-      var page = await launchBrowser(videoUrl)
+      var page = await launchBrowser(req.query.url)
     } catch (e) {
       console.log('failed to start browser page', e)
-      //res.status(500).send(`failed to start browser page: ${e}`)
       return
     }
-    
-    // if there is a video, full screen it
     try {
       await fullScreenVideo(page)
     } catch (e) {
