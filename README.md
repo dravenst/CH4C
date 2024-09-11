@@ -3,8 +3,8 @@
 This is a proof of concept that merges elements of the excellent [Chrome Capture for Channels](https://github.com/fancybits/chrome-capture-for-channels) and [HDMI for Channels](https://github.com/tmm1/androidhdmi-for-channels) projects, in an attempt to capture benefits of each.
 
 Specifically:
-* vs CC4C: easier to get high video resolution and frame rate, with tradeoff that you need to buy an encoder
-* vs HDMI for Channels: able to capture from any URL, so no dependency on the site having an Android TV app
+* vs CC4C: almost certainly 1080p/60
+* vs HDMI for Channels: able to capture from any URL / no dependency on the site having an Android TV app
 
 ### My favorite use cases / why I made this
 * Recovering channels that I lost from TV Everywhere - for example NFL Network
@@ -14,22 +14,22 @@ Specifically:
 ## Getting started
 
 ### Hardware required
-* **Video source**: I used a [Pi5](https://www.raspberrypi.com/products/raspberry-pi-5/) but I think any CPU with HDMI out should work. You could even use your Channels box.
+* **Video source**: I used a [Raspberry Pi5](https://www.raspberrypi.com/products/raspberry-pi-5/) but I think any CPU with HDMI out should work. You could even use your Channels box.
 * **Encoder**: I used the [Link Pi v3](https://a.co/d/76zJF9U) with a single port.
 
 ### Config
 * **Encoder**: I largely followed the guidelines [here](https://community.getchannels.com/t/linkpi-encoder-family/38860/4) to configure the encoder. Obviously connect the Pi and confirm that you're able to see and hear the Pi on the encoder's streaming URL before you go any further.
-* **Pi**: on setup, I manually opened Chromium and visited each planned URL to get through any one-time cookie agreement popups and logins.
-* **Channels DVR custom channel**: create a custom channel following the example in constants.START_PAGE_HTML
-* **constants.js**: update the Channels URL and port, plus encoder URL, to match your instance
+* **Pi**: on setup, I manually opened Chrome and visited each planned URL to complete any one-time cookie agreement popups and logins. I also removed the UBlock Origin extension, as that seemed to cause issues with some videos playing.
+* **Channels DVR custom channel**: create a custom channel following the example in constants.START_PAGE_HTML. If it's a linear channel like NFL Network you can also map the channel so you get guide data.
+* **constants.js**: update CHANNELS_URL, CHANNELS_PORT, and ENCODER_STREAM_URL to match your instance.
 
 ### Launching
-I haven't built a packaged executable so you'll need to just pull locally onto your machine and run with node. You should only need the latest node plus you'll have to install express and puppeteer.
+I haven't built a packaged executable so you'll need to just git pull locally onto your machine and run with node. You should only need the [node](https://nodejs.org/en/learn/getting-started/how-to-install-nodejs) plus you'll have to install the [express](https://expressjs.com/en/starter/installing.html) and [puppeteer](https://pptr.dev/guides/installation) packages.
 
 ### Using
-Two ways to use this:
-* **Custom channel**: simply use Channels to tune and record as you always would
-* **Instant**: go to <CH4C_IP_ADDRESS>:<CH4C_PORT>/instant and you should see a simple UI to instantly start recording any given URL. Or just "tuning" your dedicated encoder channel to that URL, so you can then watch in Channels on 24.42
+CH4C can be used two ways:
+* **Custom channel**: using the custom channels that you created in Channels, simply use Channels to tune and record as you always would
+* **Instant**: go to <CH4C_IP_ADDRESS>:<CH4C_PORT>/instant and you should see a simple UI to instantly start recording any given URL. Or you can just "tune" your dedicated encoder channel to that URL, so you can then watch in Channels on 24.42
 
 ## Results
 

@@ -37,6 +37,14 @@ export const START_PAGE_HTML = `
     #EXTINF:-1 channel-id="CH4C_Bravo",Bravo
     http://CH4C_IP_ADDRESS:${CH4C_PORT}/stream?url=https://www.nbc.com/live?brand=bravo&callsign=BRAVOHP
     </pre>
+    <p>
+    Also ensure that the values you've set in Constants.js are accurate:
+    </p>
+    <pre>
+    CHANNELS_URL: ${CHANNELS_URL}<br>
+    CHANNELS_PORT: ${CHANNELS_PORT}<br>
+    ENCODER_STREAM_URL: ${ENCODER_STREAM_URL}
+    </pre>
     </html>
 `
 

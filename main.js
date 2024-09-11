@@ -25,6 +25,8 @@ async function setCurrentBrowser() {
         '--start-fullscreen',
         //'--kiosk',
         '--noerrdialogs',
+        '--disable-web-security',
+        '--disable-features=IsolateOrigins,site-per-process'
       ],
       ignoreDefaultArgs: [
         '--enable-automation',
@@ -59,13 +61,39 @@ async function launchBrowser(videoUrl) {
 }
 
 async function fullScreenVideo(page) {
+  // buffer time for the video to load and start
+  await new Promise(r => setTimeout(r, 5 * 1000));
+
+  console.log('looking for vid')
+
   await page.waitForSelector('video')
+
+  /*
+  // need to look across multiple frames
+  const frames = await page.frames()
+  console.log('got frames', frames.length)
+  const vidElement = await frames[0].$('video')
+  const vidElement4 = await frames[4].$('video')
+  console.log('vid element', vidElement, vidElement4)
+
+  //frames[0].waitForSelector('video')
+  //const iframe = frames.find(f => f.name() === 'bookDesc_iframe'); // name or id for the frame
+*/
+  /*
+  await page.waitForFunction(`(function() {
+    document.querySelectorAll("video, Video").length
+  })()`)
+  */
   console.log('got vid')
+    
   await page.waitForFunction(`(function() {
     let video = document.querySelector('video')
     return video.readyState === 4
   })()`)
+  
   console.log('got readyState')
+
+  await new Promise(r => setTimeout(r, 5 * 1000));
   await page.evaluate(`(function() {
       let video = document.querySelector('video')
       video.play()
@@ -74,11 +102,12 @@ async function fullScreenVideo(page) {
       video.removeAttribute('muted')
       video.requestFullscreen()
   })()`)
-  console.log('ran fs')
+
+  // cursor hiding is not working
+  await new Promise(r => setTimeout(r, 5 * 1000));
   await page.evaluate(`(function() {
     document.body.style.cursor = 'none'
   })()`)
-  console.log('zap cursor')
 }
 
 function buildRecordingJson(name, duration) {
