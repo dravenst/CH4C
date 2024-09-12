@@ -1,5 +1,5 @@
 import express, { response } from 'express'
-import puppeteer from 'puppeteer-core'
+import puppeteer, { JSCoverage } from 'puppeteer-core'
 import { Readable } from 'stream'
 import * as Constants from "./constants.js"
 
@@ -25,9 +25,9 @@ async function setCurrentBrowser() {
         '--start-fullscreen',
         //'--kiosk',
         '--noerrdialogs',
-        '--disable-web-security',
-        '--disable-features=IsolateOrigins,site-per-process'
-      ],
+        //'--disable-web-security',
+        //'--disable-features=IsolateOrigins,site-per-process'
+      ], // might not need the final two above
       ignoreDefaultArgs: [
         '--enable-automation',
         '--disable-extensions',
@@ -43,10 +43,8 @@ async function setCurrentBrowser() {
     })
 
     // clean up the current browser before we start loading our pages
-    console.log('about to page close')
     currentBrowser.pages().then(pages => {
       pages.forEach(page => page.close())
-      console.log('page close')
     })
   }
 }
@@ -54,60 +52,78 @@ async function setCurrentBrowser() {
 async function launchBrowser(videoUrl) {
   await setCurrentBrowser()
   var page = await currentBrowser.newPage()
-  console.log('got page going to url')
   await page.goto(videoUrl, { waitUntil: 'networkidle2' })
-  console.log('went to url')
   return page
 }
 
 async function fullScreenVideo(page) {
-  // buffer time for the video to load and start
-  await new Promise(r => setTimeout(r, 5 * 1000));
-
-  console.log('looking for vid')
-
-  await page.waitForSelector('video')
-
-  /*
-  // need to look across multiple frames
   const frames = await page.frames()
-  console.log('got frames', frames.length)
-  const vidElement = await frames[0].$('video')
-  const vidElement4 = await frames[4].$('video')
-  console.log('vid element', vidElement, vidElement4)
-
-  //frames[0].waitForSelector('video')
-  //const iframe = frames.find(f => f.name() === 'bookDesc_iframe'); // name or id for the frame
-*/
-  /*
-  await page.waitForFunction(`(function() {
-    document.querySelectorAll("video, Video").length
-  })()`)
-  */
-  console.log('got vid')
-    
-  await page.waitForFunction(`(function() {
-    let video = document.querySelector('video')
-    return video.readyState === 4
-  })()`)
+  var frameHandle, videoHandle
   
-  console.log('got readyState')
+  // first try happy path: video loads within timeout on mainFrame
+  await new Promise(r => setTimeout(r, 10 * 1000));
+  frameHandle = page.mainFrame()
+  videoHandle = await frameHandle.$('video')
 
-  await new Promise(r => setTimeout(r, 5 * 1000));
-  await page.evaluate(`(function() {
-      let video = document.querySelector('video')
-      video.play()
-      video.style.cursor = 'none'
-      video.muted = false
-      video.removeAttribute('muted')
-      video.requestFullscreen()
-  })()`)
+  if (videoHandle == null) {
+    // unhappy path: slower loading page and/or video not in mainframe
+    // example: https://www.nationalgeographic.com/tv/watch-live
+    console.log('starting unhappy find video')
+    await new Promise(r => setTimeout(r, 20 * 1000));
+
+    for (const frame of frames) {
+      videoHandle = await frame.$('video')
+      if (videoHandle) {
+        frameHandle = frame
+        break
+      }
+    }
+  }
 
   // cursor hiding is not working
-  await new Promise(r => setTimeout(r, 5 * 1000));
+  /*
+  for (const frame of frames) {
+    console.log('zap cursor')
+    await frame.evaluate(() => document.body.style.cursor = 'none')
+  }
+  */
+
+  if (videoHandle) {
+    console.log('found video')
+    await frameHandle.evaluate((video) => {
+      video.play()
+      video.muted = false
+      video.removeAttribute('muted')
+      video.style.cursor = 'none'
+      video.requestFullscreen()
+    }, videoHandle)
+  }
+
+  // cursor hiding is not working
+  await new Promise(r => setTimeout(r, 10 * 1000));
+  console.log('inject')
+  await frameHandle.addStyleTag({content: '.ch4c_hide_cursor {cursor: none !important}'})
+  console.log('added style')
+  await frameHandle.evaluate((video) => {
+    video.classList.add('ch4c_hide_cursor')
+  }, videoHandle)
+  console.log('done inject')
+
+  // zap all cursors again
+  /*
+  for (const frame of frames) {
+    console.log('zap2 cursor')
+    await frame.evaluate(() => document.body.style.cursor = 'none')
+  }
+  await frameHandle.evaluate((video) => {
+    video.style.cursor = 'none'
+  }, videoHandle)
+  */
+ /*
   await page.evaluate(`(function() {
     document.body.style.cursor = 'none'
   })()`)
+  */
 }
 
 function buildRecordingJson(name, duration) {
