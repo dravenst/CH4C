@@ -21,13 +21,9 @@ async function setCurrentBrowser() {
         '--disable-blink-features=AutomationControlled',
         '--hide-scrollbars',
         '--no-sandbox',
-        // '--start-maximized',
         '--start-fullscreen',
-        //'--kiosk',
         '--noerrdialogs',
-        //'--disable-web-security',
-        //'--disable-features=IsolateOrigins,site-per-process'
-      ], // might not need the final two above
+      ],
       ignoreDefaultArgs: [
         '--enable-automation',
         '--disable-extensions',
@@ -57,7 +53,6 @@ async function launchBrowser(videoUrl) {
 }
 
 async function fullScreenVideo(page) {
-  const frames = await page.frames()
   var frameHandle, videoHandle
   
   // first try happy path: video loads within timeout on mainFrame
@@ -70,7 +65,9 @@ async function fullScreenVideo(page) {
     // example: https://www.nationalgeographic.com/tv/watch-live
     console.log('starting unhappy find video')
     await new Promise(r => setTimeout(r, 20 * 1000));
-
+    
+    const frames = await page.frames()
+    console.log('found frames', frames.length)
     for (const frame of frames) {
       videoHandle = await frame.$('video')
       if (videoHandle) {
@@ -80,13 +77,12 @@ async function fullScreenVideo(page) {
     }
   }
 
-  // cursor hiding is not working
-  /*
-  for (const frame of frames) {
-    console.log('zap cursor')
-    await frame.evaluate(() => document.body.style.cursor = 'none')
+  // approach 5: before fullscreen
+  console.log('inject')
+  const pageFrames = await page.frames()
+  for (const frame of pageFrames) {
+    await frame.addStyleTag({content: '*:hover{cursor:none!important}'})
   }
-  */
 
   if (videoHandle) {
     console.log('found video')
@@ -94,35 +90,56 @@ async function fullScreenVideo(page) {
       video.play()
       video.muted = false
       video.removeAttribute('muted')
-      video.style.cursor = 'none'
+      video.style.cursor = 'none!important'
       video.requestFullscreen()
     }, videoHandle)
+  } else {
+    console.log('did not find video')
   }
 
-  // cursor hiding is not working
-  await new Promise(r => setTimeout(r, 10 * 1000));
+  /*
+  console.log('timeout before zap cursor')
+  await new Promise(r => setTimeout(r, 5 * 1000));
+  */
+
+  /*
+  // approach 1: CSS class tag
   console.log('inject')
-  await frameHandle.addStyleTag({content: '.ch4c_hide_cursor {cursor: none !important}'})
+  await frameHandle.addStyleTag({content: 'video.ch4c_hide_cursor{cursor:none!important}'})
   console.log('added style')
   await frameHandle.evaluate((video) => {
     video.classList.add('ch4c_hide_cursor')
   }, videoHandle)
   console.log('done inject')
-
-  // zap all cursors again
-  /*
-  for (const frame of frames) {
-    console.log('zap2 cursor')
-    await frame.evaluate(() => document.body.style.cursor = 'none')
-  }
-  await frameHandle.evaluate((video) => {
-    video.style.cursor = 'none'
-  }, videoHandle)
   */
- /*
-  await page.evaluate(`(function() {
-    document.body.style.cursor = 'none'
-  })()`)
+
+  /*
+  // approach 2: set cursor in every frame
+  const pageFrames = await page.frames()
+  for (const frame of pageFrames) {
+    console.log('zap2 cursor')
+    await frame.evaluate(() => {
+      document.body.style.cursor = 'none'
+      document.documentElement.style.cursor = 'none'
+    })
+  }
+  */
+
+  /*
+  // approach 3: CSS hover tag in one frame
+  console.log('inject')
+  await frameHandle.addStyleTag({content: '*:hover{cursor:none!important}'})
+  console.log('done inject')
+  */
+  /*
+  // approach 4: hover in every frame
+  console.log('inject')
+  const pageFrames = await page.frames()
+  for (const frame of pageFrames) {
+    console.log('zap2 cursor')
+    await frame.addStyleTag({content: '*:hover{cursor:none!important}'})
+  }
+  console.log('done inject')
   */
 }
 
@@ -242,7 +259,6 @@ async function main() {
       res.send(`Tuned to URL on ${Constants.ENCODER_CUSTOM_CHANNEL_NUMBER}, you can close this page`)
     }
 
-    // if there is a video, full screen it
     try {
       await fullScreenVideo(page)
     } catch (e) {
