@@ -1,7 +1,11 @@
-import express, { response } from 'express'
-import puppeteer, { JSCoverage } from 'puppeteer-core'
+//import express, { response } from 'express'
+import express from 'express'
+//import puppeteer, { JSCoverage } from 'puppeteer-core'
+import puppeteer from 'puppeteer-core'
+import { existsSync } from 'node:fs'
 import { Readable } from 'stream'
-import * as Constants from "./constants.js"
+import * as Constants from './constants.js'
+
 
 var currentBrowser, dataDir
 async function setCurrentBrowser() {
@@ -77,8 +81,8 @@ async function fullScreenVideo(page) {
     }
   }
 
+  // try to zap the cursor
   // approach 5: before fullscreen
-  console.log('inject')
   const pageFrames = await page.frames()
   for (const frame of pageFrames) {
     await frame.addStyleTag({content: '*:hover{cursor:none!important}'})
@@ -143,6 +147,13 @@ async function fullScreenVideo(page) {
   */
 }
 
+function findDirectoryThatExists(directoryArray) {
+  for (const dir of directoryArray) {
+      if (existsSync(dir)) return dir
+  }
+  return null
+}
+
 function buildRecordingJson(name, duration) {
   var startTime = Math.round(Date.now() / 1000)
   const data = {
@@ -179,7 +190,6 @@ async function startRecording(name, duration) {
   } catch (error) {
     console.log('Unable to schedule recording', error)
   } finally {
-    console.log('done start recording', response)
     return response.ok
   }
 }
@@ -188,7 +198,12 @@ async function main() {
   const app = express()
   app.use(express.urlencoded({ extended: false }));
 
-  dataDir = '/home/ellefeira/.config/chromium'
+  //dataDir = '/home/ellefeira/.config/chromium/'
+  dataDir = findDirectoryThatExists(Constants.CHROME_DIRECTORIES[process.platform])
+  if (!dataDir) {
+    console.log('cannot find Chrome User Data Directory')
+    return
+  }
 
   app.get('/', async (req, res) => {
     res.send(Constants.START_PAGE_HTML.replaceAll('<<host>>', req.get('host')))
@@ -242,7 +257,6 @@ async function main() {
       }
     }
       
-    // load the target url
     var page
     try {
       page = await launchBrowser(req.body.recording_url)
@@ -265,11 +279,9 @@ async function main() {
       console.log('did not find a video selector')
     }
 
-    console.log('about to wait')
+    // close the browser after the set duration
     await new Promise(r => setTimeout(r, req.body.recording_duration * 60 * 1000));
-    console.log('done waiting')
     await page.close()
-    console.log('finished instant')
   })
 
   const server = app.listen(Constants.CH4C_PORT, () => {

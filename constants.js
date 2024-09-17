@@ -1,3 +1,6 @@
+import os from 'os'
+import path from 'path'
+
 // update these to match your Channels instance and the
 // streaming URL of your transcoder
 export const CHANNELS_URL = 'http://192.168.0.41'
@@ -67,3 +70,31 @@ export const INSTANT_PAGE_HTML = `
       </form>
     </html>
 `
+
+// https://chromium.googlesource.com/chromium/src.git/+/HEAD/docs/user_data_dir.md
+const linuxChromeDirectories = [
+    path.join(os.homedir(), '.config', 'google-chrome'),
+    path.join(os.homedir(), '.config', 'google-chrome-beta'),
+    path.join(os.homedir(), '.config', 'google-chrome-unstable'),
+    path.join(os.homedir(), '.config', 'chromium'),
+]
+
+const macChromeDirectories = [
+    path.join(os.homedir(), 'Library', 'Application Support', 'Google', 'Chrome'),
+    path.join(os.homedir(), 'Library', 'Application Support', 'Google', 'Chrome Beta'),
+    path.join(os.homedir(), 'Library', 'Application Support', 'Google', 'Chrome Canary'),
+    path.join(os.homedir(), 'Library', 'Application Support', 'Chromium'),
+]
+
+const winChromeDirectories = [
+    path.join(os.homedir(), 'Google', 'Chrome', 'User Data'),
+    path.join(os.homedir(), 'Google', 'Chrome Beta', 'User Data'),
+    path.join(os.homedir(), 'Google', 'Chrome SxS', 'User Data'),
+    path.join(os.homedir(), 'Chromium', 'User Data'),
+]
+
+export const CHROME_DIRECTORIES = {
+    'darwin': macChromeDirectories,
+    'win32': winChromeDirectories,
+    'linux': linuxChromeDirectories,
+}
