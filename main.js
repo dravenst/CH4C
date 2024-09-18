@@ -1,21 +1,20 @@
-//import express, { response } from 'express'
 import express from 'express'
-//import puppeteer, { JSCoverage } from 'puppeteer-core'
 import puppeteer from 'puppeteer-core'
 import { existsSync } from 'node:fs'
 import { Readable } from 'stream'
+import { execSync } from "child_process"
 import * as Constants from './constants.js'
 
 
-var currentBrowser, dataDir
+var currentBrowser, chromeDataDir, chromePath
 async function setCurrentBrowser() {
   if (!currentBrowser || !currentBrowser.isConnected()) {
     // if running on a headless machine, force a display
     process.env.DISPLAY = process.env.DISPLAY || ':0'
 
     currentBrowser = await puppeteer.launch({
-      executablePath: '/usr/bin/chromium-browser',
-      userDataDir: dataDir,
+      executablePath: chromePath,
+      userDataDir: chromeDataDir,
       headless: false,
       defaultViewport: null,
       args: [
@@ -147,11 +146,29 @@ async function fullScreenVideo(page) {
   */
 }
 
-function findDirectoryThatExists(directoryArray) {
-  for (const dir of directoryArray) {
-      if (existsSync(dir)) return dir
+function isValidLinuxPath(path) {
+  try {
+    return execSync(path)
+  } catch (e) {
+    return false
   }
-  return null
+}
+
+function getExecutablePath() {
+  if (process.env.CHROME_BIN) {
+    return process.env.CHROME_BIN
+  }
+
+  if (process.platform === 'linux') {
+    var validPath = Constants.CHROME_EXECUTABLE_DIRECTORIES[process.platform].find(isValidLinuxPath)
+    if (validPath) {
+      return execSync(validPath).toString().split('\n').shift()
+    }else {
+      return null
+    }
+  } else {
+    return Constants.CHROME_EXECUTABLE_DIRECTORIES[process.platform].find(existsSync)
+  }
 }
 
 function buildRecordingJson(name, duration) {
@@ -174,7 +191,7 @@ function buildRecordingJson(name, duration) {
     }
   }
   return JSON.stringify(data)
-};
+}
 
 async function startRecording(name, duration) {
   var response
@@ -198,10 +215,14 @@ async function main() {
   const app = express()
   app.use(express.urlencoded({ extended: false }));
 
-  //dataDir = '/home/ellefeira/.config/chromium/'
-  dataDir = findDirectoryThatExists(Constants.CHROME_DIRECTORIES[process.platform])
-  if (!dataDir) {
+  chromeDataDir = Constants.CHROME_USERDATA_DIRECTORIES[process.platform].find(existsSync)
+  if (!chromeDataDir) {
     console.log('cannot find Chrome User Data Directory')
+    return
+  }
+  chromePath = getExecutablePath()
+  if (!chromePath) {
+    console.log('cannot find Chrome Executable Directory')
     return
   }
 

@@ -72,29 +72,49 @@ export const INSTANT_PAGE_HTML = `
 `
 
 // https://chromium.googlesource.com/chromium/src.git/+/HEAD/docs/user_data_dir.md
-const linuxChromeDirectories = [
+const linuxChromeUserDataDirectories = [
     path.join(os.homedir(), '.config', 'google-chrome'),
     path.join(os.homedir(), '.config', 'google-chrome-beta'),
     path.join(os.homedir(), '.config', 'google-chrome-unstable'),
     path.join(os.homedir(), '.config', 'chromium'),
 ]
-
-const macChromeDirectories = [
+const macChromeUserDataDirectories = [
     path.join(os.homedir(), 'Library', 'Application Support', 'Google', 'Chrome'),
     path.join(os.homedir(), 'Library', 'Application Support', 'Google', 'Chrome Beta'),
     path.join(os.homedir(), 'Library', 'Application Support', 'Google', 'Chrome Canary'),
     path.join(os.homedir(), 'Library', 'Application Support', 'Chromium'),
 ]
-
-const winChromeDirectories = [
+const winChromeUserDataDirectories = [
     path.join(os.homedir(), 'Google', 'Chrome', 'User Data'),
     path.join(os.homedir(), 'Google', 'Chrome Beta', 'User Data'),
     path.join(os.homedir(), 'Google', 'Chrome SxS', 'User Data'),
     path.join(os.homedir(), 'Chromium', 'User Data'),
 ]
+export const CHROME_USERDATA_DIRECTORIES = {
+    'darwin': macChromeUserDataDirectories,
+    'win32': winChromeUserDataDirectories,
+    'linux': linuxChromeUserDataDirectories,
+}
 
-export const CHROME_DIRECTORIES = {
-    'darwin': macChromeDirectories,
-    'win32': winChromeDirectories,
-    'linux': linuxChromeDirectories,
+// https://www.npmjs.com/package/chrome-paths
+const linuxChromeExecutableDirectories = [
+    'which chromium-browser',
+    'which chromium',
+    'which chrome',
+]
+const macChromeExecutableDirectories = [
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    '/Applications/Chromium.app/Contents/MacOS/Chromium',
+    '/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary',
+]
+const winChromeExecutableDirectories = [
+    `C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe`,
+    `C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe`,
+    'C:\\Program Files (x86)\\Google\\Chrome SxS\\Application\\chrome.exe',
+    'C:\\Program Files (x86)\\Chromium\\Application\\chrome.exe',
+]
+export const CHROME_EXECUTABLE_DIRECTORIES = {
+    'darwin': macChromeExecutableDirectories,
+    'win32': winChromeExecutableDirectories,
+    'linux': linuxChromeExecutableDirectories,
 }
