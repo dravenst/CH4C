@@ -26,7 +26,10 @@ async function setCurrentBrowser() {
         '--no-sandbox',
         '--start-fullscreen',
         '--noerrdialogs',
-      ],
+        '--disable-setuid-sandbox',
+        '--disable-web-security',
+        '--disable-features=IsolateOrigins,site-per-process',
+      ],  // the last two disables are needed to look across iFrames
       ignoreDefaultArgs: [
         '--enable-automation',
         '--disable-extensions',
@@ -66,12 +69,15 @@ async function fullScreenVideo(page) {
   if (videoHandle == null) {
     // unhappy path: slower loading page and/or video not in mainframe
     // example: https://www.nationalgeographic.com/tv/watch-live
+
+    // split this into a couple best effort tries
+
     console.log('starting unhappy find video')
     await new Promise(r => setTimeout(r, 20 * 1000));
     
-    const frames = await page.frames()
-    console.log('found frames', frames.length)
-    for (const frame of frames) {
+    const framesToSearchForVideo = await page.frames()
+    console.log('found frames', framesToSearchForVideo.length)
+    for (const frame of framesToSearchForVideo) {
       videoHandle = await frame.$('video')
       if (videoHandle) {
         frameHandle = frame
@@ -80,11 +86,16 @@ async function fullScreenVideo(page) {
     }
   }
 
-  // try to zap the cursor
+  // hide the cursor in every page frame
   // approach 5: before fullscreen
-  const pageFrames = await page.frames()
-  for (const frame of pageFrames) {
-    await frame.addStyleTag({content: '*:hover{cursor:none!important}'})
+  const frames = await page.frames()
+  for (const frame of frames) {  
+    await frame.addStyleTag({
+      content: `
+        *:hover{cursor:none!important} 
+        *{cursor:none!important}
+      `
+    });
   }
 
   if (videoHandle) {
@@ -96,6 +107,7 @@ async function fullScreenVideo(page) {
       video.style.cursor = 'none!important'
       video.requestFullscreen()
     }, videoHandle)
+    // test on Disney - need to wait a couple seconds after play before fullscreen
   } else {
     console.log('did not find video')
   }
@@ -300,7 +312,7 @@ async function main() {
       console.log('did not find a video selector')
     }
 
-    // close the browser after the set duration
+    // close the page after the set duration
     await new Promise(r => setTimeout(r, req.body.recording_duration * 60 * 1000));
     await page.close()
   })
