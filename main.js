@@ -58,36 +58,7 @@ async function launchBrowser(videoUrl) {
   return page
 }
 
-async function fullScreenVideo(page) {
-  var frameHandle, videoHandle
-  
-  // first try happy path: video loads within timeout on mainFrame
-  await new Promise(r => setTimeout(r, 10 * 1000));
-  frameHandle = page.mainFrame()
-  videoHandle = await frameHandle.$('video')
-
-  if (videoHandle == null) {
-    // unhappy path: slower loading page and/or video not in mainframe
-    // example: https://www.nationalgeographic.com/tv/watch-live
-
-    // split this into a couple best effort tries
-
-    console.log('starting unhappy find video')
-    await new Promise(r => setTimeout(r, 20 * 1000));
-    
-    const framesToSearchForVideo = await page.frames()
-    console.log('found frames', framesToSearchForVideo.length)
-    for (const frame of framesToSearchForVideo) {
-      videoHandle = await frame.$('video')
-      if (videoHandle) {
-        frameHandle = frame
-        break
-      }
-    }
-  }
-
-  // hide the cursor in every page frame
-  // approach 5: before fullscreen
+async function hideCursor(page) {
   const frames = await page.frames()
   for (const frame of frames) {  
     await frame.addStyleTag({
@@ -97,25 +68,6 @@ async function fullScreenVideo(page) {
       `
     });
   }
-
-  if (videoHandle) {
-    console.log('found video')
-    await frameHandle.evaluate((video) => {
-      video.play()
-      video.muted = false
-      video.removeAttribute('muted')
-      video.style.cursor = 'none!important'
-      video.requestFullscreen()
-    }, videoHandle)
-    // test on Disney - need to wait a couple seconds after play before fullscreen
-  } else {
-    console.log('did not find video')
-  }
-
-  /*
-  console.log('timeout before zap cursor')
-  await new Promise(r => setTimeout(r, 5 * 1000));
-  */
 
   /*
   // approach 1: CSS class tag
@@ -156,6 +108,76 @@ async function fullScreenVideo(page) {
   }
   console.log('done inject')
   */
+}
+
+async function GetProperty(element, property) {
+  return await (await element.getProperty(property)).jsonValue();
+}
+
+async function fullScreenVideo(page) {
+  var frameHandle, videoHandle
+
+  // try every few seconds to look for the video
+  // necessary since some pages take time to load the actual video
+  videoSearch: for (let step = 0; step < 5; step++) {
+    console.log('try to find video take ', step);
+    // call this every loop since the page might be changing
+    try {
+      const frames = await page.frames()
+      for (const frame of frames) {
+        videoHandle = await frame.$('video')
+        if (videoHandle) {
+          console.log('found video');
+          frameHandle = frame
+          break videoSearch
+        }
+      }
+    } catch (error) {
+      console.log('issue looking for video', error)
+    }
+    console.log('wait and try again', step);
+    await new Promise(r => setTimeout(r, 5 * 1000));
+  }
+
+  if (videoHandle) {
+    // confirm playing - on Disney sites the page loads with video paused
+    for (let step = 0; step < 5; step++) {
+      const currentTime = await GetProperty(videoHandle, 'currentTime')
+      console.log('time ', currentTime)
+  
+      const readyState = await GetProperty(videoHandle, 'readyState')
+      console.log('state ', readyState)
+  
+      const paused = await GetProperty(videoHandle, 'paused')
+      console.log('paused ', paused)
+  
+      const ended =  await GetProperty(videoHandle, 'ended')
+      console.log('ended ', ended)
+
+      if (!!(currentTime > 0 && readyState > 2 && !paused && !ended)) break
+      console.log('try to play video take ', step);
+      await frameHandle.evaluate((video) => {
+        video.play()
+      }, videoHandle)
+      await new Promise(r => setTimeout(r, 5 * 1000))
+    }
+
+    console.log('going full screen');
+    await frameHandle.evaluate((video) => {
+      video.muted = false
+      video.removeAttribute('muted')
+      video.style.cursor = 'none!important'
+      video.requestFullscreen()
+    }, videoHandle)
+
+    // wait a few seconds for full screen to take effect
+    await new Promise(r => setTimeout(r, 3 * 1000))
+  } else {
+    console.log('did not find video')
+  }
+
+  console.log('hide cursor')
+  await hideCursor(page)
 }
 
 function isValidLinuxPath(path) {
