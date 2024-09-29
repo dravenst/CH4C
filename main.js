@@ -9,7 +9,6 @@ import * as Constants from './constants.js'
 var currentBrowser, chromeDataDir, chromePath
 async function setCurrentBrowser() {
   if (!currentBrowser || !currentBrowser.isConnected()) {
-    // if running on a headless machine, force a display
     process.env.DISPLAY = process.env.DISPLAY || ':0'
 
     currentBrowser = await puppeteer.launch({
@@ -29,7 +28,7 @@ async function setCurrentBrowser() {
         '--disable-setuid-sandbox',
         '--disable-web-security',
         '--disable-features=IsolateOrigins,site-per-process',
-      ],  // the last two disables are needed to look across iFrames
+      ],  // last two disables required for hiding cursors across iFrames
       ignoreDefaultArgs: [
         '--enable-automation',
         '--disable-extensions',
@@ -44,7 +43,6 @@ async function setCurrentBrowser() {
       currentBrowser = null
     })
 
-    // clean up the current browser before we start loading our pages
     currentBrowser.pages().then(pages => {
       pages.forEach(page => page.close())
     })
@@ -68,46 +66,9 @@ async function hideCursor(page) {
       `
     });
   }
-
-  /*
-  // approach 1: CSS class tag
-  console.log('inject')
-  await frameHandle.addStyleTag({content: 'video.ch4c_hide_cursor{cursor:none!important}'})
-  console.log('added style')
-  await frameHandle.evaluate((video) => {
-    video.classList.add('ch4c_hide_cursor')
-  }, videoHandle)
-  console.log('done inject')
-  */
-
-  /*
-  // approach 2: set cursor in every frame
-  const pageFrames = await page.frames()
-  for (const frame of pageFrames) {
-    console.log('zap2 cursor')
-    await frame.evaluate(() => {
-      document.body.style.cursor = 'none'
-      document.documentElement.style.cursor = 'none'
-    })
-  }
-  */
-
-  /*
-  // approach 3: CSS hover tag in one frame
-  console.log('inject')
-  await frameHandle.addStyleTag({content: '*:hover{cursor:none!important}'})
-  console.log('done inject')
-  */
-  /*
-  // approach 4: hover in every frame
-  console.log('inject')
-  const pageFrames = await page.frames()
-  for (const frame of pageFrames) {
-    console.log('zap2 cursor')
-    await frame.addStyleTag({content: '*:hover{cursor:none!important}'})
-  }
-  console.log('done inject')
-  */
+  // NFL Network requires mouse wiggle to hide cursor
+  const mouse = page.mouse
+  await mouse.move(Math.floor(Math.random() * 101) + 300, 500);
 }
 
 async function GetProperty(element, property) {
@@ -119,50 +80,48 @@ async function fullScreenVideo(page) {
 
   // try every few seconds to look for the video
   // necessary since some pages take time to load the actual video
-  videoSearch: for (let step = 0; step < 5; step++) {
-    console.log('try to find video take ', step);
+  videoSearch: for (let step = 0; step < 6; step++) {
     // call this every loop since the page might be changing
+    // e.g. during the "authorized to view with Xfinity" splash screen
     try {
       const frames = await page.frames()
       for (const frame of frames) {
         videoHandle = await frame.$('video')
         if (videoHandle) {
-          console.log('found video');
           frameHandle = frame
           break videoSearch
         }
       }
     } catch (error) {
-      console.log('issue looking for video', error)
+      console.log('error looking for video', error)
     }
-    console.log('wait and try again', step);
     await new Promise(r => setTimeout(r, 5 * 1000));
   }
 
   if (videoHandle) {
-    // confirm playing - on Disney sites the page loads with video paused
-    for (let step = 0; step < 5; step++) {
+    // confirm video is actually playing
+    for (let step = 0; step < 6; step++) {
       const currentTime = await GetProperty(videoHandle, 'currentTime')
-      console.log('time ', currentTime)
-  
       const readyState = await GetProperty(videoHandle, 'readyState')
-      console.log('state ', readyState)
-  
       const paused = await GetProperty(videoHandle, 'paused')
-      console.log('paused ', paused)
-  
       const ended =  await GetProperty(videoHandle, 'ended')
-      console.log('ended ', ended)
 
       if (!!(currentTime > 0 && readyState > 2 && !paused && !ended)) break
-      console.log('try to play video take ', step);
-      await frameHandle.evaluate((video) => {
-        video.play()
-      }, videoHandle)
+      
+      // alternate between triggering play and click (Disney)
+      if (step % 2 === 0) {
+        await frameHandle.evaluate((video) => {
+          video.play()
+        }, videoHandle)
+      }else {
+        await videoHandle.click()
+      }
+            
       await new Promise(r => setTimeout(r, 5 * 1000))
     }
 
-    console.log('going full screen');
+    await hideCursor(page)
+
     await frameHandle.evaluate((video) => {
       video.muted = false
       video.removeAttribute('muted')
@@ -176,7 +135,7 @@ async function fullScreenVideo(page) {
     console.log('did not find video')
   }
 
-  console.log('hide cursor')
+  // some sites respond better to hiding cursor after full screen
   await hideCursor(page)
 }
 
@@ -229,9 +188,8 @@ function buildRecordingJson(name, duration) {
 
 async function startRecording(name, duration) {
   var response
-  const channelsPostUrl = `${Constants.CHANNELS_URL}:${Constants.CHANNELS_PORT}/dvr/jobs/new`
   try {
-    response = await fetch(channelsPostUrl, {
+    response = await fetch(Constants.CHANNELS_POST_URL, {
       method: 'POST',
       headers: {
         'Content-type': 'application/json',
@@ -265,22 +223,20 @@ async function main() {
   })
 
   app.get('/stream', async (req, res) => {
-    console.log('got url: ', req.query.url)
     if (req.query.url == null) {
       console.log('must specify a target URL')
       res.status(500).send('must specify a target URL')
       return
     }
 
-    // feed the transcoder output back to Channels
-    const encoderUrl = Constants.ENCODER_STREAM_URL
-    const fetchResponse = await fetch(encoderUrl)
+    const fetchResponse = await fetch(Constants.ENCODER_STREAM_URL)
     Readable.fromWeb(fetchResponse.body).pipe(res)
 
     try {
       var page = await launchBrowser(req.query.url)
     } catch (e) {
-      console.log('failed to start browser page', e)
+      console.log('failed to start browser page, ensure not already running', e)
+      res.status(500).send(`failed to start browser, ensure not already running: ${e}`)
       return
     }
     try {
@@ -291,7 +247,7 @@ async function main() {
 
     res.on('close', async err => {
       await page.close()
-      console.log('finished')
+      console.log('viewer stopped watching video')
     })
   })
 
@@ -316,8 +272,8 @@ async function main() {
     try {
       page = await launchBrowser(req.body.recording_url)
     } catch (e) {
-      console.log('failed to start browser page', e)
-      res.status(500).send(`failed to start browser page: ${e}`)
+      console.log('failed to start browser page, ensure not already running', e)
+      res.status(500).send(`failed to start browser, ensure not already running: ${e}`)
       return
     }
 
@@ -334,7 +290,6 @@ async function main() {
       console.log('did not find a video selector')
     }
 
-    // close the page after the set duration
     await new Promise(r => setTimeout(r, req.body.recording_duration * 60 * 1000));
     await page.close()
   })

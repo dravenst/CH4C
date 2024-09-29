@@ -3,8 +3,8 @@ import path from 'path'
 
 // update these to match your Channels instance and the
 // streaming URL of your transcoder
-export const CHANNELS_URL = 'http://192.168.0.41'
-export const CHANNELS_PORT = '8089'
+const CHANNELS_URL = 'http://192.168.0.41'
+const CHANNELS_PORT = '8089'
 export const ENCODER_STREAM_URL = 'http://192.168.107.9/live/stream0'
 
 // this is the custom channel number in Channels DVR that will be used
@@ -12,6 +12,9 @@ export const ENCODER_STREAM_URL = 'http://192.168.107.9/live/stream0'
 // spells CH4C on a telephone keypad. You shouldn't need to change this.
 export const ENCODER_CUSTOM_CHANNEL_NUMBER = '24.42'
 export const CH4C_PORT = 2442
+
+// path to create recording jobs on Channels
+export const CHANNELS_POST_URL = `${CHANNELS_URL}:${CHANNELS_PORT}/dvr/jobs/new`
 
 export const START_PAGE_HTML = `
     <html>
