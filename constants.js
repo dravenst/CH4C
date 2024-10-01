@@ -37,11 +37,11 @@ export const START_PAGE_HTML = `
     #EXTINF:-1 channel-id="CH4C_NFL_Network",NFL Network
     http://CH4C_IP_ADDRESS:${CH4C_PORT}/stream?url=https://www.nfl.com/network/watch/nfl-network-live
 
-    #EXTINF:-1 channel-id="CH4C_NFL_RedZone",NFL RedZone
-    http://CH4C_IP_ADDRESS:${CH4C_PORT}/stream?url=https://www.nfl.com/plus/redzone
+    #EXTINF:-1 channel-id="CH4C_NatGeo",CH4CNatGeo
+    http://CH4C_IP_ADDRESS:${CH4C_PORT}/stream?url=https://www.nationalgeographic.com/tv/watch-live/
 
-    #EXTINF:-1 channel-id="CH4C_Bravo",Bravo
-    http://CH4C_IP_ADDRESS:${CH4C_PORT}/stream?url=https://www.nbc.com/live?brand=bravo&callsign=BRAVOHP
+    #EXTINF:-1 channel-id="CH4C_Disney",CH4CDisney
+    http://CH4C_IP_ADDRESS:${CH4C_PORT}/stream?url=https://disneynow.com/watch-live?brand=004
     </pre>
     <p>
     Also ensure that the values you've set in Constants.js are accurate:
@@ -63,7 +63,7 @@ export const INSTANT_PAGE_HTML = `
         <input type="text" name="recording_name" id="recording_name" />
         <br/>
         <label>URL to Record</label>
-        <input type="text" name="recording_url" id="recording_url" required />
+        <input type="text" name="recording_url" id="recording_url" size="75" required />
         <br/>
         <label>Duration of Recording, Minutes</label>
         <input type="text" name="recording_duration" id="recording_duration" required />
