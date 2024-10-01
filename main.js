@@ -51,7 +51,7 @@ async function setCurrentBrowser() {
 
 async function launchBrowser(videoUrl) {
   await setCurrentBrowser()
-  var page = await currentBrowser.newPage()
+  const page = await currentBrowser.newPage()
   await page.goto(videoUrl, { waitUntil: 'networkidle2' })
   return page
 }
@@ -80,7 +80,7 @@ async function fullScreenVideo(page) {
 
   // try every few seconds to look for the video
   // necessary since some pages take time to load the actual video
-  videoSearch: for (let step = 0; step < 6; step++) {
+  videoSearch: for (let step = 0; step < Constants.FIND_VIDEO_RETRIES; step++) {
     // call this every loop since the page might be changing
     // e.g. during the "authorized to view with Xfinity" splash screen
     try {
@@ -95,12 +95,12 @@ async function fullScreenVideo(page) {
     } catch (error) {
       console.log('error looking for video', error)
     }
-    await new Promise(r => setTimeout(r, 5 * 1000));
+    await new Promise(r => setTimeout(r, Constants.FIND_VIDEO_WAIT * 1000));
   }
 
   if (videoHandle) {
     // confirm video is actually playing
-    for (let step = 0; step < 6; step++) {
+    for (let step = 0; step < Constants.PLAY_VIDEO_RETRIES; step++) {
       const currentTime = await GetProperty(videoHandle, 'currentTime')
       const readyState = await GetProperty(videoHandle, 'readyState')
       const paused = await GetProperty(videoHandle, 'paused')
@@ -108,7 +108,7 @@ async function fullScreenVideo(page) {
 
       if (!!(currentTime > 0 && readyState > 2 && !paused && !ended)) break
       
-      // alternate between triggering play and click (Disney)
+      // alternate between calling play and click (Disney)
       if (step % 2 === 0) {
         await frameHandle.evaluate((video) => {
           video.play()
@@ -116,8 +116,8 @@ async function fullScreenVideo(page) {
       }else {
         await videoHandle.click()
       }
-            
-      await new Promise(r => setTimeout(r, 5 * 1000))
+      
+      await new Promise(r => setTimeout(r, Constants.PLAY_VIDEO_WAIT * 1000))
     }
 
     await hideCursor(page)
@@ -129,8 +129,7 @@ async function fullScreenVideo(page) {
       video.requestFullscreen()
     }, videoHandle)
 
-    // wait a few seconds for full screen to take effect
-    await new Promise(r => setTimeout(r, 3 * 1000))
+    await new Promise(r => setTimeout(r, Constants.FULL_SCREEN_WAIT * 1000))
   } else {
     console.log('did not find video')
   }
@@ -290,6 +289,7 @@ async function main() {
       console.log('did not find a video selector')
     }
 
+    // close the browser after the recording period ends
     await new Promise(r => setTimeout(r, req.body.recording_duration * 60 * 1000));
     await page.close()
   })

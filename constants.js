@@ -13,6 +13,13 @@ export const ENCODER_STREAM_URL = 'http://192.168.107.9/live/stream0'
 export const ENCODER_CUSTOM_CHANNEL_NUMBER = '24.42'
 export const CH4C_PORT = 2442
 
+// retries and wait durations for retrying to load and play video
+export const FIND_VIDEO_RETRIES = 6
+export const FIND_VIDEO_WAIT = 5        // seconds
+export const PLAY_VIDEO_RETRIES = 6
+export const PLAY_VIDEO_WAIT = 5        // seconds
+export const FULL_SCREEN_WAIT = 3        // seconds
+
 // path to create recording jobs on Channels
 export const CHANNELS_POST_URL = `${CHANNELS_URL}:${CHANNELS_PORT}/dvr/jobs/new`
 
