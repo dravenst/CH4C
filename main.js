@@ -58,7 +58,7 @@ async function launchBrowser(videoUrl) {
 
 async function hideCursor(page) {
   const frames = await page.frames()
-  for (const frame of frames) {  
+  for (const frame of frames) {
     await frame.addStyleTag({
       content: `
         *:hover{cursor:none!important} 
@@ -76,7 +76,7 @@ async function GetProperty(element, property) {
 }
 
 async function fullScreenVideo(page) {
-  var frameHandle, videoHandle
+  let frameHandle, videoHandle
 
   // try every few seconds to look for the video
   // necessary since some pages take time to load the actual video
@@ -104,19 +104,19 @@ async function fullScreenVideo(page) {
       const currentTime = await GetProperty(videoHandle, 'currentTime')
       const readyState = await GetProperty(videoHandle, 'readyState')
       const paused = await GetProperty(videoHandle, 'paused')
-      const ended =  await GetProperty(videoHandle, 'ended')
+      const ended = await GetProperty(videoHandle, 'ended')
 
       if (!!(currentTime > 0 && readyState > 2 && !paused && !ended)) break
-      
+
       // alternate between calling play and click (Disney)
       if (step % 2 === 0) {
         await frameHandle.evaluate((video) => {
           video.play()
         }, videoHandle)
-      }else {
+      } else {
         await videoHandle.click()
       }
-      
+
       await new Promise(r => setTimeout(r, Constants.PLAY_VIDEO_WAIT * 1000))
     }
 
@@ -152,10 +152,10 @@ function getExecutablePath() {
   }
 
   if (process.platform === 'linux') {
-    var validPath = Constants.CHROME_EXECUTABLE_DIRECTORIES[process.platform].find(isValidLinuxPath)
+    const validPath = Constants.CHROME_EXECUTABLE_DIRECTORIES[process.platform].find(isValidLinuxPath)
     if (validPath) {
       return execSync(validPath).toString().split('\n').shift()
-    }else {
+    } else {
       return null
     }
   } else {
@@ -164,29 +164,29 @@ function getExecutablePath() {
 }
 
 function buildRecordingJson(name, duration) {
-  var startTime = Math.round(Date.now() / 1000)
+  const startTime = Math.round(Date.now() / 1000)
   const data = {
     "Name": name,
     "Time": startTime,
     "Duration": duration * 60,
     "Channels": [Constants.ENCODER_CUSTOM_CHANNEL_NUMBER],
     "Airing": {
-        "Source": "manual",
-        "Channel": Constants.ENCODER_CUSTOM_CHANNEL_NUMBER,
-        "Time": startTime,
-        "Duration": duration * 60,
-        "Title": `Title: ${name}`,
-        "EpisodeTitle": name,
-        "Summary": `Manual recording: ${name}`,
-        "SeriesID": "MANUAL",
-        "ProgramID": `MAN${startTime}`,
+      "Source": "manual",
+      "Channel": Constants.ENCODER_CUSTOM_CHANNEL_NUMBER,
+      "Time": startTime,
+      "Duration": duration * 60,
+      "Title": `Title: ${name}`,
+      "EpisodeTitle": name,
+      "Summary": `Manual recording: ${name}`,
+      "SeriesID": "MANUAL",
+      "ProgramID": `MAN${startTime}`,
     }
   }
   return JSON.stringify(data)
 }
 
 async function startRecording(name, duration) {
-  var response
+  let response
   try {
     response = await fetch(Constants.CHANNELS_POST_URL, {
       method: 'POST',
@@ -231,8 +231,9 @@ async function main() {
     const fetchResponse = await fetch(Constants.ENCODER_STREAM_URL)
     Readable.fromWeb(fetchResponse.body).pipe(res)
 
+    let page
     try {
-      var page = await launchBrowser(req.query.url)
+      page = await launchBrowser(req.query.url)
     } catch (e) {
       console.log('failed to start browser page, ensure not already running', e)
       res.status(500).send(`failed to start browser, ensure not already running: ${e}`)
@@ -256,7 +257,7 @@ async function main() {
 
   app.post('/instant', async (req, res) => {
     if (req.body.button_record) {
-      var recordingStarted = await startRecording(
+      const recordingStarted = await startRecording(
         req.body.recording_name || 'Manual recording',
         req.body.recording_duration)
 
@@ -266,8 +267,8 @@ async function main() {
         return
       }
     }
-      
-    var page
+
+    let page
     try {
       page = await launchBrowser(req.body.recording_url)
     } catch (e) {
