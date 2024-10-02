@@ -292,7 +292,11 @@ async function main() {
 
     // close the browser after the recording period ends
     await new Promise(r => setTimeout(r, req.body.recording_duration * 60 * 1000));
-    await page.close()
+    try {
+      await page.close()
+    }catch (e) {
+      console.log('error closing page', e)
+    }
   })
 
   const server = app.listen(Constants.CH4C_PORT, () => {

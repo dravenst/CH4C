@@ -95,10 +95,10 @@ const macChromeUserDataDirectories = [
     path.join(os.homedir(), 'Library', 'Application Support', 'Chromium'),
 ]
 const winChromeUserDataDirectories = [
-    path.join(os.homedir(), 'Google', 'Chrome', 'User Data'),
-    path.join(os.homedir(), 'Google', 'Chrome Beta', 'User Data'),
-    path.join(os.homedir(), 'Google', 'Chrome SxS', 'User Data'),
-    path.join(os.homedir(), 'Chromium', 'User Data'),
+    path.join(os.homedir(), 'AppData', 'Local', 'Google', 'Chrome', 'User Data'),
+    path.join(os.homedir(), 'AppData', 'Local', 'Google', 'Chrome Beta', 'User Data'),
+    path.join(os.homedir(), 'AppData', 'Local', 'Google', 'Chrome SxS', 'User Data'),
+    path.join(os.homedir(), 'AppData', 'Local', 'Chromium', 'User Data'),
 ]
 export const CHROME_USERDATA_DIRECTORIES = {
     'darwin': macChromeUserDataDirectories,
