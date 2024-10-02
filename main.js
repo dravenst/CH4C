@@ -2,7 +2,7 @@ import express from 'express'
 import puppeteer from 'puppeteer-core'
 import { existsSync } from 'node:fs'
 import { Readable } from 'stream'
-import { execSync } from "child_process"
+import { execSync } from 'child_process'
 import * as Constants from './constants.js'
 
 
