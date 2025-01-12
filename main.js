@@ -20,8 +20,9 @@ async function closeBrowser() {
       console.log('browser closed');
     } catch (e) {
       console.log('error closing browser', e);
+    } finally {
+      currentBrowser = null;
     }
-    currentBrowser = null;
   }
 }
 
@@ -57,6 +58,7 @@ const createCleanupManager = () => {
           console.log('Response ended with status 499');
         }
       } finally {
+        await delay(3000); // Add a delay to avoid undesireable stream restarts
         console.log('Cleanup completed');
       }
     },

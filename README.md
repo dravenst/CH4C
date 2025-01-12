@@ -11,6 +11,7 @@ Specifically:
 * Recording content that is web-only - for example a high school sports streaming website that doesn't have an app
 * Recording on-demand non-linear content - for example recording an NFL+ game replay
 ![Channels](https://github.com/user-attachments/assets/05306ac8-df2c-4f37-b29a-35a47d0dba19)
+* Can be run on a low cost PC with a relatively low cost external encoder
 
 ## Getting started
 
@@ -21,8 +22,13 @@ Specifically:
 ### Config
 * **Video source**: on setup, I manually opened Chrome and visited each planned URL to complete any one-time cookie agreement popups and logins. I also removed the UBlock Origin extension, as that seemed to cause issues with some videos playing.
 * **Encoder**: I largely followed the guidelines [here](https://community.getchannels.com/t/linkpi-encoder-family/38860/4) to configure the encoder. Obviously connect your video source to the encoder and confirm that you're able to see and hear on the encoder's streaming URL before you go any further.
-* **parameters**: 
-It's critical to pass in at least --channels-url and --encoder-stream-url for your setup
+* **Installation**:
+Download Windows exe (ch4c.exe) available in Releases. You can create a ".ps1" file that can be used to run as a Windows startup task as outlined in the ![chrome-capture thread](https://community.getchannels.com/t/chrome-capture-for-channels/36667/130)
+
+Or run `npm install` to install node packages if you're going to to run it via `node main.js`
+* **Run parameters**: 
+It's required to pass in at least --channels-url and --encoder-stream-url for your setup (i.e. replace the IP addresses with your own) e.g.
+`node main.js -s="http://192.168.50.50" -e="http://192.168.50.71/live/stream0"`
 
   -s, --channels-url                   Channels server URL [default: "http://192.168.50.50"]
   -p, --channels-port                  Channels server port [default: "8089"]
@@ -35,11 +41,9 @@ It's critical to pass in at least --channels-url and --encoder-stream-url for yo
 * **Channels DVR custom channel**: create a custom channel following the example in constants.START_PAGE_HTML. If it's a linear channel like NFL Network you can also map the channel so you get guide data. Note the special 24.42 channel which is used for the Instant Recording feature.
 ![CustomChannels](https://github.com/user-attachments/assets/840526e5-3cef-4cd2-95c5-50ac12a32fc9)
 
-### Launching
-Windows exe (ch4c.exe) available in Releases. You should only need to install [node](https://nodejs.org/en/learn/getting-started/how-to-install-nodejs), [express](https://expressjs.com/en/starter/installing.html), and [puppeteer-core](https://pptr.dev/guides/installation) packages.
-
 ### Using
-CH4C can be used two ways:
+CH4C can be used in several ways:
+* **Streaming channels**: supports nbc channels, NFL Network, Disney, Sling TV, Google Photos, and others available via web
 * **Custom channel**: using the custom channels that you created in Channels, simply use Channels to tune and record as you always would
 * **Instant**: go to <CH4C_IP_ADDRESS>:<CH4C_PORT>/instant and you should see a simple UI to instantly start recording any given URL. Or you can just "tune" your dedicated encoder channel to that URL, so you can then watch in Channels on channel number 24.42
 ![Instant](https://github.com/user-attachments/assets/2e527984-4c09-45f7-84dc-fc39b65e893d)
