@@ -1,29 +1,138 @@
-import os from 'os'
+/*import os from 'os'
 import path from 'path'
+import yargs from 'yargs';
+import { hideBin } from 'yargs/helpers';
+import { URL } from 'url';*/
 
-// update these to match your Channels instance and the
-// streaming URL of your transcoder
-const CHANNELS_URL = 'http://192.168.0.41'
-const CHANNELS_PORT = '8089'
-export const ENCODER_STREAM_URL = 'http://192.168.107.9/live/stream0'
+const os = require('os');
+const path = require('path');
+const yargs = require('yargs');
+const { hideBin } = require('yargs/helpers');
+const { URL } = require('url');
 
-// this is the custom channel number in Channels DVR that will be used
-// for instant recordings. I used 24.42 because it's unique and
-// spells CH4C on a telephone keypad. You shouldn't need to change this.
-export const ENCODER_CUSTOM_CHANNEL_NUMBER = '24.42'
-export const CH4C_PORT = 2442
+/**
+ * Validate if a string is a valid URL
+ * @param {string} url - URL to validate
+ * @returns {boolean} - True if valid URL
+ */
+const isValidUrl = (url) => {
+  try {
+    new URL(url);
+    return true;
+  } catch (e) {
+    return false;
+  }
+};
+
+/**
+ * Validate if a string is a valid channel number format (xx.xx)
+ * @param {string} channel - Channel number to validate
+ * @returns {boolean} - True if valid channel number format
+ */
+const isValidChannelNumber = (channel) => {
+  return /^\d+\.\d+$/.test(channel);
+};
+
+const argv = yargs(hideBin(process.argv))
+  .option('channels-url', {
+    alias: 's',
+    type: 'string',
+    default: 'http://192.168.50.50',
+    describe: 'Channels server URL',
+    coerce: (value) => {
+      if (!isValidUrl(value)) {
+        throw new Error(`Invalid URL: ${value}`);
+      }
+      return value;
+    }
+  })
+  .option('channels-port', {
+    alias: 'p',
+    type: 'string',
+    default: '8089',
+    describe: 'Channels server port',
+    coerce: (value) => {
+      const port = parseInt(value);
+      if (isNaN(port) || port < 1 || port > 65535) {
+        throw new Error('Port must be a number between 1 and 65535');
+      }
+      return value;
+    }
+  })
+  .option('encoder-stream-url', {
+    alias: 'e',
+    type: 'string',
+    default: 'http://192.168.50.71/live/stream0',
+    describe: 'External Encoder stream URL',
+    coerce: (value) => {
+      if (!isValidUrl(value)) {
+        throw new Error(`Invalid URL: ${value}`);
+      }
+      return value;
+    }
+  })
+  .option('encoder-custom-channel-number', {
+    alias: 'n',
+    type: 'string',
+    default: '24.42',
+    describe: 'Custom channel number (format: xx.xx)',
+    coerce: (value) => {
+      if (!isValidChannelNumber(value)) {
+        throw new Error('Custom channel number must be in format xx.xx');
+      }
+      return value;
+    }
+  })
+  .option('ch4c-port', {
+    alias: 'c',
+    type: 'number',
+    default: 2442,
+    describe: 'CH4C port number',
+    coerce: (value) => {
+      const port = parseInt(value);
+      if (isNaN(port) || port < 1 || port > 65535) {
+        throw new Error('Port must be a number between 1 and 65535');
+      }
+      return port;
+    }
+  })
+  .help()
+  .alias('help', 'h')
+  .version('0.0.2')
+  .alias('version', 'v')
+  .strict()
+  .parse();
+
+const config = {
+  CHANNELS_URL: argv['channels-url'],
+  CHANNELS_PORT: argv['channels-port'],
+  ENCODER_STREAM_URL: argv['encoder-stream-url'],
+  ENCODER_CUSTOM_CHANNEL_NUMBER: argv['encoder-custom-channel-number'],
+  CH4C_PORT: argv['ch4c-port']
+};
+
+console.log('Current configuration:');
+console.log(JSON.stringify(config, null, 2));
+
+//export default config;
+
+const CHANNELS_URL = config.CHANNELS_URL;
+const CHANNELS_PORT = config.CHANNELS_PORT;
+const ENCODER_STREAM_URL = config.ENCODER_STREAM_URL;
+const ENCODER_CUSTOM_CHANNEL_NUMBER = config.ENCODER_CUSTOM_CHANNEL_NUMBER;
+const CH4C_PORT = config.CH4C_PORT;
 
 // retries and wait durations for retrying to load and play video
-export const FIND_VIDEO_RETRIES = 6
-export const FIND_VIDEO_WAIT = 5        // seconds
-export const PLAY_VIDEO_RETRIES = 6
-export const PLAY_VIDEO_WAIT = 5        // seconds
-export const FULL_SCREEN_WAIT = 3        // seconds
+const FIND_VIDEO_RETRIES = 6
+const FIND_VIDEO_WAIT = 2        // seconds
+const PLAY_VIDEO_RETRIES = 6
+const PLAY_VIDEO_WAIT = 5        // seconds
+const FULL_SCREEN_WAIT = 3        // seconds
 
 // path to create recording jobs on Channels
-export const CHANNELS_POST_URL = `${CHANNELS_URL}:${CHANNELS_PORT}/dvr/jobs/new`
+const CHANNELS_POST_URL = `${CHANNELS_URL}:${CHANNELS_PORT}/dvr/jobs/new`
 
-export const START_PAGE_HTML = `
+const START_PAGE_HTML = `
     <html>
     <title>Chrome HDMI for Channels</title>
     <h2>Chrome HDMI for Channels</h2>
@@ -61,7 +170,7 @@ export const START_PAGE_HTML = `
     </html>
 `
 
-export const INSTANT_PAGE_HTML = `
+const INSTANT_PAGE_HTML = `
     <html>
     <title>Chrome HDMI for Channels - Instant Record</title>
     <h2>Chrome HDMI for Channels - Instant Record</h2>
@@ -100,7 +209,7 @@ const winChromeUserDataDirectories = [
     path.join(os.homedir(), 'AppData', 'Local', 'Google', 'Chrome SxS', 'User Data'),
     path.join(os.homedir(), 'AppData', 'Local', 'Chromium', 'User Data'),
 ]
-export const CHROME_USERDATA_DIRECTORIES = {
+const CHROME_USERDATA_DIRECTORIES = {
     'darwin': macChromeUserDataDirectories,
     'win32': winChromeUserDataDirectories,
     'linux': linuxChromeUserDataDirectories,
@@ -123,8 +232,26 @@ const winChromeExecutableDirectories = [
     'C:\\Program Files (x86)\\Google\\Chrome SxS\\Application\\chrome.exe',
     'C:\\Program Files (x86)\\Chromium\\Application\\chrome.exe',
 ]
-export const CHROME_EXECUTABLE_DIRECTORIES = {
+const CHROME_EXECUTABLE_DIRECTORIES = {
     'darwin': macChromeExecutableDirectories,
     'win32': winChromeExecutableDirectories,
     'linux': linuxChromeExecutableDirectories,
 }
+
+module.exports = {
+  CHANNELS_URL: config.CHANNELS_URL,
+  CHANNELS_PORT: config.CHANNELS_PORT,
+  ENCODER_STREAM_URL: config.ENCODER_STREAM_URL,
+  ENCODER_CUSTOM_CHANNEL_NUMBER: config.ENCODER_CUSTOM_CHANNEL_NUMBER,
+  CH4C_PORT: config.CH4C_PORT,
+  FIND_VIDEO_RETRIES,
+  FIND_VIDEO_WAIT,
+  PLAY_VIDEO_RETRIES,
+  PLAY_VIDEO_WAIT,
+  FULL_SCREEN_WAIT,
+  CHANNELS_POST_URL,
+  START_PAGE_HTML,
+  INSTANT_PAGE_HTML,
+  CHROME_USERDATA_DIRECTORIES,
+  CHROME_EXECUTABLE_DIRECTORIES
+};

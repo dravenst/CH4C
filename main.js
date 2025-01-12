@@ -1,16 +1,75 @@
-import express from 'express'
-import puppeteer from 'puppeteer-core'
-import { existsSync } from 'node:fs'
-import { Readable } from 'stream'
-import { execSync } from 'child_process'
-import * as Constants from './constants.js'
+const express = require('express');
+const puppeteer = require('puppeteer-core');
+const { existsSync } = require('fs');
+const { Readable } = require('stream');
+const { execSync } = require('child_process');
+const Constants = require('./constants.js');
+const fetch = require('node-fetch');
+const { URL } = require('url');
 
+let currentBrowser, chromeDataDir, chromePath;
 
-var currentBrowser, chromeDataDir, chromePath
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function closeBrowser() {
+  if (currentBrowser && currentBrowser.isConnected()) {
+    try {
+      await currentBrowser.close();
+      console.log('browser closed');
+    } catch (e) {
+      console.log('error closing browser', e);
+    }
+    currentBrowser = null;
+  }
+}
+
+// Attempts to close browser in a safe fashion to prevent it from restarting by using the getState (true=closingInProgress)
+const createCleanupManager = () => {
+  let isClosing = false;
+  
+  // Add process handlers for cleanup
+  process.on('SIGINT', async () => {
+    console.log('Caught interrupt signal');
+    await closeBrowser();
+    process.exit();
+  });
+  
+  process.on('SIGTERM', async () => {
+    console.log('Caught termination signal');
+    await closeBrowser();
+    process.exit();
+  });
+
+  return {
+    cleanup: async (res) => {
+      if (isClosing) {
+        console.log('Cleanup already in progress, skipping');
+        return;
+      }
+      console.log('Starting cleanup');
+      isClosing = true;
+      try {
+        await closeBrowser();
+        if (res && !res.headersSent) {
+          res.status(499).send();
+          console.log('Response ended with status 499');
+        }
+      } finally {
+        console.log('Cleanup completed');
+      }
+    },
+    // Return the current state directly
+    getState: () => isClosing
+  };
+};
+
 async function setCurrentBrowser() {
   if (!currentBrowser || !currentBrowser.isConnected()) {
     process.env.DISPLAY = process.env.DISPLAY || ':0'
 
+    console.log('launching browser');
     currentBrowser = await puppeteer.launch({
       executablePath: chromePath,
       userDataDir: chromeDataDir,
@@ -27,8 +86,11 @@ async function setCurrentBrowser() {
         '--noerrdialogs',
         '--disable-setuid-sandbox',
         '--disable-web-security',
-        '--disable-features=IsolateOrigins,site-per-process',
-      ],  // last two disables required for hiding cursors across iFrames
+        '--disable-features=IsolateOrigins,site-per-process', // last two disables required for hiding cursors across iFrames
+        '--hide-crash-restore-bubble', // Hide the yellow notification bar
+        '--disable-notifications', // Mimic real user behavior
+        '--enable-audio-output', // Ensure audio output is enabled
+      ],  
       ignoreDefaultArgs: [
         '--enable-automation',
         '--disable-extensions',
@@ -40,35 +102,61 @@ async function setCurrentBrowser() {
     });
 
     currentBrowser.on('close', () => {
+      console.log('browser closed')
       currentBrowser = null
     })
-
-    currentBrowser.pages().then(pages => {
-      pages.forEach(page => page.close())
-    })
+    
+    currentBrowser.on('disconnected', () => {
+      console.log('browser disconnected');
+      currentBrowser = null
+    });
   }
 }
 
 async function launchBrowser(videoUrl) {
-  await setCurrentBrowser()
-  const page = await currentBrowser.newPage()
-  await page.goto(videoUrl, { waitUntil: 'networkidle2' })
-  return page
+  await setCurrentBrowser();
+
+  if (currentBrowser && currentBrowser.isConnected()) {
+    const page = await currentBrowser.newPage();
+
+    if (videoUrl) {
+      // For Sling and Photos, we can't use networkidle2 for page load
+      if ((videoUrl.includes("watch.sling.com")) || (videoUrl.includes("photos.app.goo.gl"))) {
+        await page.goto(videoUrl);
+        await delay(1000); // wait a second
+      }
+      else {
+        await page.goto(videoUrl, { waitUntil: 'networkidle2' })
+      }
+      return page
+    }
+    else {
+       throw new Error('videoUrl not defined')
+    }
+  }
+  throw new Error('browser not connected')
 }
 
 async function hideCursor(page) {
-  const frames = await page.frames()
-  for (const frame of frames) {
-    await frame.addStyleTag({
-      content: `
-        *:hover{cursor:none!important} 
-        *{cursor:none!important}
-      `
-    });
+  try {
+    await Promise.race([
+      frame.addStyleTag({
+        content: `
+          *:hover{cursor:none!important} 
+          *{cursor:none!important}
+        `
+      }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout adding style tag')), 1000)) 
+    ]);
+
+    // NFL Network requires mouse wiggle to hide cursor
+    const mouse = page.mouse
+    await mouse.move(Math.floor(Math.random() * 101) + 300, 500);
+
+  } catch (error) {
+    // Sometimes it times out for the cursor hiding
+    //console.log('timeout adding style tag');
   }
-  // NFL Network requires mouse wiggle to hide cursor
-  const mouse = page.mouse
-  await mouse.move(Math.floor(Math.random() * 101) + 300, 500);
 }
 
 async function GetProperty(element, property) {
@@ -84,9 +172,13 @@ async function fullScreenVideo(page) {
     // call this every loop since the page might be changing
     // e.g. during the "authorized to view with Xfinity" splash screen
     try {
-      const frames = await page.frames()
+      const frames = await page.frames( { timeout: 1000 })
       for (const frame of frames) {
-        videoHandle = await frame.$('video')
+        try {
+          videoHandle = await frame.waitForSelector('video', { timeout: 1000 });
+        } catch (error) {
+          //console.log('timed out waiting for frame')
+        }
         if (videoHandle) {
           frameHandle = frame
           break videoSearch
@@ -94,8 +186,9 @@ async function fullScreenVideo(page) {
       }
     } catch (error) {
       console.log('error looking for video', error)
+      videoHandle=null
     }
-    await new Promise(r => setTimeout(r, Constants.FIND_VIDEO_WAIT * 1000));
+    //await new Promise(r => setTimeout(r, Constants.FIND_VIDEO_WAIT * 1000));
   }
 
   if (videoHandle) {
@@ -120,7 +213,8 @@ async function fullScreenVideo(page) {
       await new Promise(r => setTimeout(r, Constants.PLAY_VIDEO_WAIT * 1000))
     }
 
-    await hideCursor(page)
+    // redundant with last one?
+    //await hideCursor(page)
 
     await frameHandle.evaluate((video) => {
       video.muted = false
@@ -129,7 +223,8 @@ async function fullScreenVideo(page) {
       video.requestFullscreen()
     }, videoHandle)
 
-    await new Promise(r => setTimeout(r, Constants.FULL_SCREEN_WAIT * 1000))
+    // Don't think this is needed?
+    //await new Promise(r => setTimeout(r, Constants.FULL_SCREEN_WAIT * 1000))
   } else {
     console.log('did not find video')
   }
@@ -137,6 +232,43 @@ async function fullScreenVideo(page) {
   // some sites respond better to hiding cursor after full screen
   await hideCursor(page)
 }
+
+async function fullScreenVideoSling(page) {
+  console.log("URL contains watch.sling.com");
+
+  // Click the full screen button
+  const fullScreenButton = await page.waitForSelector('div.player-button.active.videoPlayerFullScreenToggle', { visible: true });
+  await fullScreenButton.click(); //click for fullscreen
+
+  // Find Mute button and then use volume slider
+  const muteButton = await page.waitForSelector('div.player-button.active.volumeControls', { visible: true });
+  await muteButton.click(); //click unmute
+
+  // Simulate pressing the right arrow key 10 times to max volume
+  for (let i = 0; i < 10; i++) {
+    await delay(200);
+    await page.keyboard.press('ArrowRight');
+  }
+  console.log("changed to fullscreen and max volume");
+}
+
+async function fullScreenVideoGooglePhotos(page) {
+  console.log("URL contains Google Photos");
+
+  // Simulate pressing the tab key key 10 times to get to the More Options button
+  for (let i = 0; i < 8; i++) {
+    await delay(200);
+    await page.keyboard.press('Tab');
+  }   
+
+  // Press Enter twice to start Slideshow
+  await page.keyboard.press('Enter');
+  await delay(200);
+  await page.keyboard.press('Enter');
+
+  console.log("changed to fullscreen and max volume");
+}
+
 
 function isValidLinuxPath(path) {
   try {
@@ -202,6 +334,26 @@ async function startRecording(name, duration) {
   }
 }
 
+// returns updated url with all paramas in a string
+function getFullUrl (req) {
+  if (!req || !req.query || !req.query.url) {
+    console.log('must specify a target URL')
+    return null
+  }
+  //Create URL object to validate and format the URL
+  const urlObj = new URL(req.query.url);
+  
+  // Add any additional query parameters
+  Object.entries(req.query).forEach(([key, value]) => {
+    if (key !== 'url') {
+      urlObj.searchParams.append(key, value);
+    }
+  });
+  
+  // Get the fully formatted URL
+  return urlObj.toString();
+}
+
 async function main() {
   const app = express()
   app.use(express.urlencoded({ extended: false }));
@@ -221,34 +373,91 @@ async function main() {
     res.send(Constants.START_PAGE_HTML.replaceAll('<<host>>', req.get('host')))
   })
 
+  app.use((req, res, next) => {
+    console.log(`${req.method} ${req.url}`);
+    next(); // Pass control to the next middleware function
+  });
+
   app.get('/stream', async (req, res) => {
-    if (req.query.url == null) {
-      console.log('must specify a target URL')
-      res.status(500).send('must specify a target URL')
-      return
-    }
-
-    const fetchResponse = await fetch(Constants.ENCODER_STREAM_URL)
-    Readable.fromWeb(fetchResponse.body).pipe(res)
-
     let page
-    try {
-      page = await launchBrowser(req.query.url)
-    } catch (e) {
-      console.log('failed to start browser page, ensure not already running', e)
-      res.status(500).send(`failed to start browser, ensure not already running: ${e}`)
-      return
+    let targetUrl
+  
+    targetUrl = getFullUrl(req);
+    if (!targetUrl) {
+      if (!res.headersSent) {
+        res.status(500).send('must specify a target URL')}  
     }
-    try {
-      await fullScreenVideo(page)
-    } catch (e) {
-      console.log('failed to find a video selector', e)
-    }
+    console.log('streaming to ' + targetUrl);
 
+    const cleanupManager = createCleanupManager();
+
+    // For graceful termination of the stream with channels app
     res.on('close', async err => {
-      await page.close()
-      console.log('viewer stopped watching video')
+      console.log('response stream closed')
+      await cleanupManager.cleanup(res);
     })
+
+    // For error case
+    res.on('error', async err => {
+      console.log('response stream error', err)
+      await cleanupManager.cleanup(res);
+    })
+    
+    try {
+      // Check if browser is in process of closing from previous session
+      if (cleanupManager.getState()) {
+        console.log('Browser is currently closing, exiting');
+        return;
+      }
+
+      page = await launchBrowser(targetUrl);
+
+      if (!cleanupManager.getState()) {  
+        const fetchResponse = await fetch(Constants.ENCODER_STREAM_URL);
+        if (!fetchResponse.ok) {
+            throw new Error(`Encoder stream HTTP error: ${fetchResponse.status}`);
+        }
+        if (res && !res.headersSent) {
+            // More efficient stream handling
+            const stream = Readable.from(fetchResponse.body, { 
+                highWaterMark: 64 * 1024 // 64KB chunks
+            });
+            
+            stream.pipe(res, {
+                end: true
+            }).on('error', (error) => {
+                console.error('Stream error:', error);
+                cleanupManager.cleanup(res);
+            });
+        }
+      }      
+      if (!cleanupManager.getState()) {
+        try {
+          // Handle Sling specific page
+          if (req.query.url.includes("watch.sling.com")){
+            await fullScreenVideoSling(page);
+          }
+          // Handle Google Photo Album specific page
+          else if (req.query.url.includes("photos.app.goo.gl")){
+            await fullScreenVideoGooglePhotos(page);
+          }
+          // default handling for other services
+          else {
+            await fullScreenVideo(page)
+          }
+        } catch (e) {
+          console.log('failed to go full screen')
+        }
+      }    
+    } catch (e) {
+      console.log('failed to start browser or stream: ', targetUrl, e)
+      if (!res.headersSent) {
+        res.status(500).send(`failed to start browser or stream: ${e}`)
+      }
+      await cleanupManager.cleanup(res);
+      return;
+    }
+    
   })
 
   app.get('/instant', async (_req, res) => {
@@ -269,11 +478,16 @@ async function main() {
     }
 
     let page
+    const cleanupManager = createCleanupManager();
+
     try {
       page = await launchBrowser(req.body.recording_url)
     } catch (e) {
       console.log('failed to start browser page, ensure not already running', e)
-      res.status(500).send(`failed to start browser, ensure not already running: ${e}`)
+      if (!res.headersSent) {
+        res.status(500).send(`failed to start browser, ensure not already running: ${e}`)
+        await cleanupManager.cleanup(res);
+      }
       return
     }
 
@@ -285,17 +499,28 @@ async function main() {
     }
 
     try {
-      await fullScreenVideo(page)
+      // Handle Sling specific page
+      if (req.query.url.includes("watch.sling.com")){
+        await fullScreenVideoSling(page);
+      }
+      // Handle Google Photo Album specific page
+      else if (req.query.url.includes("photos.app.goo.gl")){
+        await fullScreenVideoGooglePhotos(page);
+      }
+      // default handling for page
+      else {
+        await fullScreenVideo(page)
+      }
     } catch (e) {
-      console.log('did not find a video selector')
+      console.log('did not find a video selector for: ', req.query.url, e)
     }
 
     // close the browser after the recording period ends
     await new Promise(r => setTimeout(r, req.body.recording_duration * 60 * 1000));
     try {
-      await page.close()
+      await cleanupManager.cleanup(res);
     }catch (e) {
-      console.log('error closing page', e)
+      console.log('error closing browser after recording', e)
     }
   })
 
@@ -304,4 +529,12 @@ async function main() {
   })
 }
 
-main()
+// Only run the main function if this is the main module
+if (require.main === module) {
+  main().catch(err => {
+    console.error('Error starting server:', err);
+    process.exit(1);
+  });
+}
+
+module.exports = { main }; // Export for potential programmatic usage

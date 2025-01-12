@@ -15,18 +15,28 @@ Specifically:
 ## Getting started
 
 ### Hardware required
-* **Video source**: I used a [Raspberry Pi5](https://www.raspberrypi.com/products/raspberry-pi-5/) but any CPU with HDMI out should work. You could even use your Channels box.
+* **Video source**: It's lightweight enough to run on your existing Channels box.  (Windows exe available too.)
 * **Encoder**: I used the [Link Pi v3](https://a.co/d/76zJF9U) with a single port.
 
 ### Config
 * **Video source**: on setup, I manually opened Chrome and visited each planned URL to complete any one-time cookie agreement popups and logins. I also removed the UBlock Origin extension, as that seemed to cause issues with some videos playing.
 * **Encoder**: I largely followed the guidelines [here](https://community.getchannels.com/t/linkpi-encoder-family/38860/4) to configure the encoder. Obviously connect your video source to the encoder and confirm that you're able to see and hear on the encoder's streaming URL before you go any further.
-* **constants.js**: update CHANNELS_URL, CHANNELS_PORT, and ENCODER_STREAM_URL to match your instance.
+* **parameters**: 
+It's critical to pass in at least --channels-url and --encoder-stream-url for your setup
+
+  -s, --channels-url                   Channels server URL [default: "http://192.168.50.50"]
+  -p, --channels-port                  Channels server port [default: "8089"]
+  -e, --encoder-stream-url             External Encoder stream URL [default: "http://192.168.50.71/live/stream0"]
+  -n, --encoder-custom-channel-number  Custom channel number (format: xx.xx) [default: "24.42"]
+  -c, --ch4c-port                      CH4C port number [default: 2442]
+  -h, --help                           Show help        
+  -v, --version                        Show version number
+
 * **Channels DVR custom channel**: create a custom channel following the example in constants.START_PAGE_HTML. If it's a linear channel like NFL Network you can also map the channel so you get guide data. Note the special 24.42 channel which is used for the Instant Recording feature.
 ![CustomChannels](https://github.com/user-attachments/assets/840526e5-3cef-4cd2-95c5-50ac12a32fc9)
 
 ### Launching
-I haven't built a packaged executable so you'll need to git clone locally onto your machine and run with node. You should only need to install [node](https://nodejs.org/en/learn/getting-started/how-to-install-nodejs), [express](https://expressjs.com/en/starter/installing.html), and [puppeteer-core](https://pptr.dev/guides/installation) packages.
+Windows exe (ch4c.exe) available in Releases. You should only need to install [node](https://nodejs.org/en/learn/getting-started/how-to-install-nodejs), [express](https://expressjs.com/en/starter/installing.html), and [puppeteer-core](https://pptr.dev/guides/installation) packages.
 
 ### Using
 CH4C can be used two ways:
@@ -40,14 +50,14 @@ CH4C can be used two ways:
 This works surprisingly well for me, with the failure case usually being flakiness in Chrome loading the video through my Xfinity authorization. Video quality is consistent 1080p/60.
 
 ### Likely Failures / Things I Haven't Tested
-* **Windows and Mac**: I've mainly tested on Pi5, and a bit on Windows, so Mac might glitch. The likely error would be in failing to find your Chrome instance and user data. I copied the logic for finding Chrome from CH4C so hopefully it works!
+* **Windows and Mac**: I've mainly tested on Pi5 and Windows, so Mac might glitch. The likely error would be in failing to find your Chrome instance and user data. I copied the logic for finding Chrome from CH4C so hopefully it works!
 * **Docker**: Same - I haven't tested at all but I copied from CH4C so hopefully it works!
 * **NBC sites problem 1**: unfortunately on my Pi5 the NBC sites do not load in Chromium. Even when I just open Chromium as a normal user, the video doesn't play and I get some Widevine DRM related error. Hopefully you'll have more luck on a Win/Mac, and if you are able to load NBC sites on a Pi please let me know how to do it!
 * **NBC sites problem 2**: I've also noticed even on my Windows machine that when I go to a NBC site I get a popup asking "Is Xfinity still your provider?". Even though I'm still logged into the site. So I have to figure out some way to have Pupeteer auto-click that popup.
 
 ## Gaps / next steps
 ### Packaged executable
-Similar to CH4C, turn into a simple executable and docker deploy
+Similar to CH4C, create a Mac executable and docker deploy
 ### Support for multiple streams
 If you had an encoder box with multiple HDMI ports, you could implement multiple video sources with controller logic across them.
 ### Co-hosting Channels and Chrome
