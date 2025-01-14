@@ -41,7 +41,7 @@ node main.js -s="http://192.168.50.50" -e="http://192.168.50.71/live/stream0"
   -v, --version                        Show version number
 ```
 
-* **Channels DVR custom channel**: create a custom channel following the example in constants.START_PAGE_HTML. If it's a linear channel like NFL Network you can also map the channel so you get guide data. Note the special 24.42 channel which is used for the Instant Recording feature.
+* **Channels DVR custom channel**: create a custom channel following the example in constants.START_PAGE_HTML. If it's a linear channel like NFL Network you can also map the channel so you get guide data. See the sample.m3u file for more examples. Note the special 24.42 channel which is used for the Instant Recording feature.
 ![CustomChannels](https://github.com/user-attachments/assets/840526e5-3cef-4cd2-95c5-50ac12a32fc9)
 
 ### Using

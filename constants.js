@@ -1,9 +1,3 @@
-/*import os from 'os'
-import path from 'path'
-import yargs from 'yargs';
-import { hideBin } from 'yargs/helpers';
-import { URL } from 'url';*/
-
 const os = require('os');
 const path = require('path');
 const yargs = require('yargs');

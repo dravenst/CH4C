@@ -13,11 +13,16 @@ function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function logTS(message) {
+  const timestamp = new Date().toISOString();
+  console.log(`[${timestamp}] ${message}`);
+}
+
 async function closeBrowser() {
   if (currentBrowser && currentBrowser.isConnected()) {
     try {
       await currentBrowser.close();
-      console.log('browser closed');
+      logTS('browser closed');
     } catch (e) {
       console.log('error closing browser', e);
     } finally {
@@ -29,16 +34,17 @@ async function closeBrowser() {
 // Attempts to close browser in a safe fashion to prevent it from restarting by using the getState (true=closingInProgress)
 const createCleanupManager = () => {
   let isClosing = false;
+  let isBrowserActive = false;
   
   // Add process handlers for cleanup
   process.on('SIGINT', async () => {
-    console.log('Caught interrupt signal');
+    logTS('Caught interrupt signal');
     await closeBrowser();
     process.exit();
   });
   
   process.on('SIGTERM', async () => {
-    console.log('Caught termination signal');
+    logTS('Caught termination signal');
     await closeBrowser();
     process.exit();
   });
@@ -46,11 +52,11 @@ const createCleanupManager = () => {
   return {
     cleanup: async (res) => {
       if (isClosing) {
-        console.log('Cleanup already in progress, skipping');
+        logTS('Cleanup already in progress, skipping');
         return;
       }
-      console.log('Starting cleanup');
       isClosing = true;
+      logTS('Starting cleanup');
       try {
         await closeBrowser();
         if (res && !res.headersSent) {
@@ -58,12 +64,18 @@ const createCleanupManager = () => {
           console.log('Response ended with status 499');
         }
       } finally {
-        await delay(3000); // Add a delay to avoid undesireable stream restarts
-        console.log('Cleanup completed');
+        await delay(2000); // Add a delay to avoid undesirable stream restarts
+        isClosing = false;
+        isBrowserActive = false;
+        logTS('Cleanup completed');
       }
     },
-    // Return the current state directly
-    getState: () => isClosing
+    // Check if we can start a new browser session
+    canStartBrowser: () => !isClosing && !isBrowserActive,
+    // Mark browser as active
+    setBrowserActive: () => { isBrowserActive = true; },
+    // Get current state
+    getState: () => ({ isClosing, isBrowserActive })
   };
 };
 
@@ -71,7 +83,6 @@ async function setCurrentBrowser() {
   if (!currentBrowser || !currentBrowser.isConnected()) {
     process.env.DISPLAY = process.env.DISPLAY || ':0'
 
-    console.log('launching browser');
     currentBrowser = await puppeteer.launch({
       executablePath: chromePath,
       userDataDir: chromeDataDir,
@@ -83,15 +94,20 @@ async function setCurrentBrowser() {
         '--hide-crash-restore-bubble',
         '--disable-blink-features=AutomationControlled',
         '--hide-scrollbars',
-        '--no-sandbox',
+//        '--no-sandbox', //not sure if this is needed?
         '--start-fullscreen',
         '--noerrdialogs',
-        '--disable-setuid-sandbox',
-        '--disable-web-security',
+//        '--disable-web-security',    // is this required?
         '--disable-features=IsolateOrigins,site-per-process', // last two disables required for hiding cursors across iFrames
         '--hide-crash-restore-bubble', // Hide the yellow notification bar
         '--disable-notifications', // Mimic real user behavior
         '--enable-audio-output', // Ensure audio output is enabled
+        '--allow-running-insecure-content',  // Sling has both https and http
+        '--autoplay-policy=no-user-gesture-required',
+        '--log-level=2', // error level only
+        '--enable-accelerated-video-decode',
+        '--enable-accelerated-video-encode', 
+        '--enable-gpu-rasterization', 
       ],  
       ignoreDefaultArgs: [
         '--enable-automation',
@@ -104,33 +120,50 @@ async function setCurrentBrowser() {
     });
 
     currentBrowser.on('close', () => {
-      console.log('browser closed')
+      logTS('browser closed')
       currentBrowser = null
     })
     
     currentBrowser.on('disconnected', () => {
-      console.log('browser disconnected');
+      logTS('browser disconnected');
       currentBrowser = null
     });
   }
 }
 
 async function launchBrowser(videoUrl) {
+  logTS("starting browser");
   await setCurrentBrowser();
-
   if (currentBrowser && currentBrowser.isConnected()) {
     const page = await currentBrowser.newPage();
+    const navigationTimeout = 30000;
 
+    logTS("loading page")
     if (videoUrl) {
       // For Sling and Photos, we can't use networkidle2 for page load
       if ((videoUrl.includes("watch.sling.com")) || (videoUrl.includes("photos.app.goo.gl"))) {
-        await page.goto(videoUrl);
-        await delay(1000); // wait a second
+        await page.goto(videoUrl, {
+          waitUntil: 'load',
+          timeout: navigationTimeout
+        });
       }
       else {
-        await page.goto(videoUrl, { waitUntil: 'networkidle2' })
+        try {
+          await Promise.race([
+            page.goto(videoUrl, { 
+              waitUntil: 'networkidle2',
+              timeout: navigationTimeout 
+            }),
+            new Promise((_, reject) => 
+              setTimeout(() => reject(new Error('Navigation timeout')), navigationTimeout)
+            )
+          ]);
+        } catch (error) {
+          logTS('Navigation timeout, continuing anyway');
+        }
       }
-      return page
+      logTS("page fully loaded");
+      return page;
     }
     else {
        throw new Error('videoUrl not defined')
@@ -179,10 +212,10 @@ async function fullScreenVideo(page) {
         try {
           videoHandle = await frame.waitForSelector('video', { timeout: 1000 });
         } catch (error) {
-          //console.log('timed out waiting for frame')
         }
         if (videoHandle) {
-          frameHandle = frame
+          frameHandle = frame;
+          logTS('found video frame')
           break videoSearch
         }
       }
@@ -190,6 +223,7 @@ async function fullScreenVideo(page) {
       console.log('error looking for video', error)
       videoHandle=null
     }
+    // Don't think this timeout is necessary?
     //await new Promise(r => setTimeout(r, Constants.FIND_VIDEO_WAIT * 1000));
   }
 
@@ -202,7 +236,7 @@ async function fullScreenVideo(page) {
       const ended = await GetProperty(videoHandle, 'ended')
 
       if (!!(currentTime > 0 && readyState > 2 && !paused && !ended)) break
-
+      logTS("calling play/click");
       // alternate between calling play and click (Disney)
       if (step % 2 === 0) {
         await frameHandle.evaluate((video) => {
@@ -211,13 +245,14 @@ async function fullScreenVideo(page) {
       } else {
         await videoHandle.click()
       }
-
-      await new Promise(r => setTimeout(r, Constants.PLAY_VIDEO_WAIT * 1000))
+      // not sure we need this?
+      // await new Promise(r => setTimeout(r, Constants.PLAY_VIDEO_WAIT * 1000))
     }
 
     // redundant with last one?
     //await hideCursor(page)
 
+    logTS("going full screen and unmuting");
     await frameHandle.evaluate((video) => {
       video.muted = false
       video.removeAttribute('muted')
@@ -230,32 +265,32 @@ async function fullScreenVideo(page) {
   } else {
     console.log('did not find video')
   }
-
+  logTS("hiding cursor");
   // some sites respond better to hiding cursor after full screen
   await hideCursor(page)
 }
 
 async function fullScreenVideoSling(page) {
-  console.log("URL contains watch.sling.com");
+  logTS("URL contains watch.sling.com, going fullscreen");
 
   // Click the full screen button
   const fullScreenButton = await page.waitForSelector('div.player-button.active.videoPlayerFullScreenToggle', { visible: true });
+  logTS("button available, now clicking");
   await fullScreenButton.click(); //click for fullscreen
 
   // Find Mute button and then use volume slider
   const muteButton = await page.waitForSelector('div.player-button.active.volumeControls', { visible: true });
   await muteButton.click(); //click unmute
-
   // Simulate pressing the right arrow key 10 times to max volume
   for (let i = 0; i < 10; i++) {
     await delay(200);
     await page.keyboard.press('ArrowRight');
   }
-  console.log("changed to fullscreen and max volume");
+  logTS("finished change to fullscreen and max volume");
 }
 
 async function fullScreenVideoGooglePhotos(page) {
-  console.log("URL contains Google Photos");
+  logTS("URL contains Google Photos");
 
   // Simulate pressing the tab key key 10 times to get to the More Options button
   for (let i = 0; i < 8; i++) {
@@ -268,7 +303,7 @@ async function fullScreenVideoGooglePhotos(page) {
   await delay(200);
   await page.keyboard.press('Enter');
 
-  console.log("changed to fullscreen and max volume");
+  logTS("changed to fullscreen and max volume");
 }
 
 
@@ -357,8 +392,29 @@ function getFullUrl (req) {
 }
 
 async function main() {
+  
+  // First, attempt to kill any existing Chrome processes to ensure they're not running
+  try {
+    if (process.platform === 'linux') {
+      execSync('pkill -f chrome');
+    } else if (process.platform === 'darwin') {
+      execSync('pkill -f Google\\ Chrome');
+    } else if (process.platform === 'win32') {
+      execSync('taskkill /F /IM chrome.exe', { stdio: 'ignore' });
+    }
+    console.log('Cleaned up existing Chrome processes');
+    // Wait a moment for processes to fully close
+    await delay(2000);
+  } catch (e) {
+    // It's okay if there were no processes to kill
+    console.log('No existing Chrome processes found');
+  }
+
   const app = express()
   app.use(express.urlencoded({ extended: false }));
+
+  // Create a single cleanup manager instance for the application
+  app.locals.cleanupManager = createCleanupManager();
 
   chromeDataDir = Constants.CHROME_USERDATA_DIRECTORIES[process.platform].find(existsSync)
   if (!chromeDataDir) {
@@ -376,7 +432,7 @@ async function main() {
   })
 
   app.use((req, res, next) => {
-    console.log(`${req.method} ${req.url}`);
+    logTS(`${req.method} ${req.url}`);
     next(); // Pass control to the next middleware function
   });
 
@@ -384,18 +440,29 @@ async function main() {
     let page
     let targetUrl
   
+    // Use a single cleanup manager instance for the application
+    const cleanupManager = req.app.locals.cleanupManager;
+
+    // Check if we can handle a new request
+    if (!cleanupManager.canStartBrowser()) {
+      logTS('Browser is busy or cleanup in progress, rejecting request');
+      res.status(503).send('Server is busy, please try again later');
+      return;
+    }
+
     targetUrl = getFullUrl(req);
     if (!targetUrl) {
       if (!res.headersSent) {
         res.status(500).send('must specify a target URL')}  
     }
-    console.log('streaming to ' + targetUrl);
+    logTS('streaming to ' + targetUrl);
 
-    const cleanupManager = createCleanupManager();
+    // Mark browser as active before starting
+    cleanupManager.setBrowserActive();
 
     // For graceful termination of the stream with channels app
     res.on('close', async err => {
-      console.log('response stream closed')
+      logTS('response stream closed')
       await cleanupManager.cleanup(res);
     })
 
@@ -406,34 +473,25 @@ async function main() {
     })
     
     try {
-      // Check if browser is in process of closing from previous session
-      if (cleanupManager.getState()) {
-        console.log('Browser is currently closing, exiting');
-        return;
-      }
-
       page = await launchBrowser(targetUrl);
 
-      if (!cleanupManager.getState()) {  
+      if (!cleanupManager.getState().isClosing) {  
         const fetchResponse = await fetch(Constants.ENCODER_STREAM_URL);
         if (!fetchResponse.ok) {
             throw new Error(`Encoder stream HTTP error: ${fetchResponse.status}`);
         }
         if (res && !res.headersSent) {
-            // More efficient stream handling
-            const stream = Readable.from(fetchResponse.body, { 
-                highWaterMark: 64 * 1024 // 64KB chunks
-            });
+          const stream = Readable.from(fetchResponse.body);
             
-            stream.pipe(res, {
-                end: true
-            }).on('error', (error) => {
-                console.error('Stream error:', error);
-                cleanupManager.cleanup(res);
-            });
+          stream.pipe(res, {
+              end: true
+          }).on('error', (error) => {
+              console.error('Stream error:', error);
+              cleanupManager.cleanup(res);
+          });
         }
       }      
-      if (!cleanupManager.getState()) {
+      if (!cleanupManager.getState().isClosing) {
         try {
           // Handle Sling specific page
           if (req.query.url.includes("watch.sling.com")){
@@ -448,7 +506,7 @@ async function main() {
             await fullScreenVideo(page)
           }
         } catch (e) {
-          console.log('failed to go full screen')
+          console.log('failed to go full screen', e)
         }
       }    
     } catch (e) {
@@ -467,6 +525,14 @@ async function main() {
   })
 
   app.post('/instant', async (req, res) => {
+    const cleanupManager = req.app.locals.cleanupManager;
+    
+    if (!cleanupManager.canStartBrowser()) {
+      logTS('Browser is busy or cleanup in progress, rejecting request');
+      res.status(503).send('Server is busy, please try again later');
+      return;
+    }
+        
     if (req.body.button_record) {
       const recordingStarted = await startRecording(
         req.body.recording_name || 'Manual recording',
@@ -480,7 +546,7 @@ async function main() {
     }
 
     let page
-    const cleanupManager = createCleanupManager();
+    cleanupManager.setBrowserActive();
 
     try {
       page = await launchBrowser(req.body.recording_url)
@@ -527,7 +593,7 @@ async function main() {
   })
 
   const server = app.listen(Constants.CH4C_PORT, () => {
-    console.log('CH4C listening on port', Constants.CH4C_PORT)
+    logTS('CH4C listening on port', Constants.CH4C_PORT)
   })
 }
 
