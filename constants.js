@@ -31,7 +31,7 @@ const argv = yargs(hideBin(process.argv))
   .option('channels-url', {
     alias: 's',
     type: 'string',
-    default: 'http://192.168.50.50',
+    demandOption: true,  // This makes the parameter required
     describe: 'Channels server URL',
     coerce: (value) => {
       if (!isValidUrl(value)) {
@@ -56,7 +56,7 @@ const argv = yargs(hideBin(process.argv))
   .option('encoder-stream-url', {
     alias: 'e',
     type: 'string',
-    default: 'http://192.168.50.71/live/stream0',
+    demandOption: true,  // This makes the parameter required
     describe: 'External Encoder stream URL',
     coerce: (value) => {
       if (!isValidUrl(value)) {
@@ -90,9 +90,13 @@ const argv = yargs(hideBin(process.argv))
       return port;
     }
   })
+  .usage('Usage: $0 [options]')
+  .example('$0 -s "http://192.168.50.50" -e "http://192.168.50.71/live/stream0"')
+  .example('\nThis sets the channels server to 192.168.50.50 and encoder to 192.168.50.71/live/stream0.')
   .help()
   .alias('help', 'h')
-  .version('0.0.2')
+  .wrap(null)  // Don't wrap help text
+  .version(false)  // Disable version number in help
   .alias('version', 'v')
   .strict()
   .parse();

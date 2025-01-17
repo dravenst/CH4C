@@ -23,18 +23,27 @@ Specifically:
 * **Video source**: on setup, I manually opened Chrome and visited each planned URL to complete any one-time cookie agreement popups and logins. I also removed the UBlock Origin extension, as that seemed to cause issues with some videos playing.
 * **Encoder**: I largely followed the guidelines [here](https://community.getchannels.com/t/linkpi-encoder-family/38860/4) to configure the encoder. Obviously connect your video source to the encoder and confirm that you're able to see and hear on the encoder's streaming URL before you go any further.
 * **Installation**:
-Download Windows exe (ch4c.exe) available in Releases. You can create a ".ps1" file that can be used to run as a Windows startup task as outlined in the [chrome-capture thread](https://community.getchannels.com/t/chrome-capture-for-channels/36667/130)
+Download the Windows exe `ch4c.exe` available in the latest [release](https://github.com/dravenst/CH4C/releases). You can create a ".ps1" file that can be used to run as a Windows startup task as outlined in the [chrome-capture thread](https://community.getchannels.com/t/chrome-capture-for-channels/36667/130)
 
 Or run `npm install` to install node packages if you're going to to run it via `node main.js`
+
+* **Windows Startup Configuration**:
+Create a new text file called `ch4c.ps1` and add the following line to it (replacing `(YOUR-PATH)` with your path to where you stored the .exe file, and replacing the IP of the channels url and encoder stream url with your config):
+`Start-Process -WindowStyle hidden -FilePath "(YOUR-PATH)\ch4c.exe" -ArgumentList "--channels-url", "http://192.168.50.50", "--encoder-stream-url", "http://192.168.50.71/live/stream0"`
+
+Create a new task to run the `ch4c.ps1` file in Windows Task Scheduler with the highest privileges, and set it to trigger it when the user logs on (it's critical to run after user login to enable the GPU).
+
+Run the new Windows task you created manually to test it and be sure to visit all of the streaming sites within the browser that pops up after you try to stream your first channel.  This will allow you to login to the sites and retain the credentials for later runs. 
+
 * **Run parameters**: 
 It's required to pass in at least --channels-url and --encoder-stream-url for your setup (i.e. replace the IP addresses with your own) 
 e.g.
 ```
 node main.js -s="http://192.168.50.50" -e="http://192.168.50.71/live/stream0"
 
-  -s, --channels-url                   Channels server URL [default: "http://192.168.50.50"]
+  -s, --channels-url                   Channels server URL [required]
   -p, --channels-port                  Channels server port [default: "8089"]
-  -e, --encoder-stream-url             External Encoder stream URL [default: "http://192.168.50.71/live/stream0"]
+  -e, --encoder-stream-url             External Encoder stream URL [required]
   -n, --encoder-custom-channel-number  Custom channel number (format: xx.xx) [default: "24.42"]
   -c, --ch4c-port                      CH4C port number [default: 2442]
   -h, --help                           Show help        
