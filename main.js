@@ -13,9 +13,9 @@ function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function logTS(message) {
-  const timestamp = new Date().toISOString();
-  console.log(`[${timestamp}] ${message}`);
+function logTS(message , ...args) {
+  const timestamp = new Date().toLocaleString();
+  console.log(`[${timestamp}]`, message, ...args);
 }
 
 async function closeBrowser() {
@@ -593,7 +593,7 @@ async function main() {
   })
 
   const server = app.listen(Constants.CH4C_PORT, () => {
-    logTS('CH4C listening on port', Constants.CH4C_PORT)
+    logTS('CH4C listening on port ', Constants.CH4C_PORT)
   })
 }
 
