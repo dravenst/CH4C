@@ -17,13 +17,13 @@ Specifically:
 
 ### Hardware required
 * **Video source**: It's lightweight enough to run on your existing Channels box.  (Windows exe available too.)
-* **Encoder**: I used the [Link Pi v3](https://a.co/d/76zJF9U) with a single port.
+* **Encoder**: I used the [Link Pi v3](https://a.co/d/76zJF9U) with a dual input ports - both hdmi and USB ports - using an [HDMI to USB card like this](https://www.amazon.com/dp/B0C2MDTY8P?ref=ppx_yo2ov_dt_b_fed_asin_title)
 
 ### Config
-* **Video source**: on setup, I manually opened Chrome and visited each planned URL to complete any one-time cookie agreement popups and logins. I also removed the UBlock Origin extension, as that seemed to cause issues with some videos playing.
-* **Encoder**: I largely followed the guidelines [here](https://community.getchannels.com/t/linkpi-encoder-family/38860/4) to configure the encoder. Obviously connect your video source to the encoder and confirm that you're able to see and hear on the encoder's streaming URL before you go any further.
+* **Encoder**: I largely followed the guidelines [here](https://community.getchannels.com/t/linkpi-encoder-family/38860/4) to configure the encoders. Obviously connect your video source to the encoder and confirm that you're able to see and hear on the encoder's streaming URL before you go any further.  Make sure your PC config is set to 1920x1080 for the display(s).
 * **Installation**:
 Download the Windows exe `ch4c.exe` available in the latest [release](https://github.com/dravenst/CH4C/releases). You can create a ".ps1" file that can be used to run as a Windows startup task as outlined in the [chrome-capture thread](https://community.getchannels.com/t/chrome-capture-for-channels/36667/130)
+* **Video source**: on first startup, you will have to manually complete any one-time logins for the sites triggered by CH4C. Each browser instance uses it's own user directory, so you will have to launch browsers through ch4c to get to sites.  Run via node or the ch4c.exe to make this happen.  
 
 Or run `npm install` to install node packages if you're going to to run it via `node main.js`
 
