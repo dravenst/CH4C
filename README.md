@@ -36,18 +36,62 @@ Create a new task to run the `ch4c.ps1` file in Windows Task Scheduler with the 
 Run the new Windows task you created manually to test it and be sure to visit all of the streaming sites within the browser that pops up after you try to stream your first channel.  This will allow you to login to the sites and retain the credentials for later runs. 
 
 * **Run parameters**: 
-It's required to pass in at least --channels-url and --encoder-stream-url for your setup (i.e. replace the IP addresses with your own) 
+It's required to pass in at least --channels-url and --encoder for your setup (see example below).  You can specify more than one encoder if you have multiple hdmi outputs available. 
 e.g.
 ```
-node main.js -s="http://192.168.50.50" -e="http://192.168.50.71/live/stream0"
+Usage: node main.js [options]
 
-  -s, --channels-url                   Channels server URL [required]
-  -p, --channels-port                  Channels server port [default: "8089"]
-  -e, --encoder-stream-url             External Encoder stream URL [required]
-  -n, --encoder-custom-channel-number  Custom channel number (format: xx.xx) [default: "24.42"]
-  -c, --ch4c-port                      CH4C port number [default: 2442]
-  -h, --help                           Show help        
-  -v, --version                        Show version number
+Options:
+  -s, --channels-url   Channels server URL  [string] [required]
+  -p, --channels-port  Channels server port  [string] [default: "8089"]
+  -e, --encoder        Encoder configurations in format "url[:channel:width_pos:height_pos:audio_device]" where channel is optional (format: xx.xx, default: 24.42), width_pos/height_pos are optional screen positions (default: 0:0), and audio_device is the optional audio output device name  [array] [required]
+  -c, --ch4c-port      CH4C port number  [number] [default: 2442]
+  -h, --help           Show help  [boolean]
+
+Examples:
+  > main.js -s "http://192.168.50.50" -e "http://192.168.50.71/live/stream0"
+
+  Simple example with channels server at 192.168.50.50 and single encoder at 192.168.50.71.
+  
+
+  > main.js -s "http://192.168.50.50" -e "http://192.168.50.71/live/stream0" -e "http://192.168.50.72/live/stream1:24.43:1921:0:MACROSILICON"
+
+  This sets the channels server to 192.168.50.50 and encoder to 192.168.50.71/live/stream0 and a second encoder at stream1. The 1921 position of stream1 moves it to the right on startup on screen 2 in a dual monitor setup.
+
+  When specifying more than one encoder, you will need to find the audio device Name and specify the first portion of it at the end of the encoder param.  In Windows, to see encoder audio device names (example below), use powershell command Get-AudioDevice -List
+```
+
+* **Audio Setup**: Audio setup is tricky in a multi-encoder environment. You need to first identify the appropriate device names (e.g. look under Sound devices or use Powershell command below in Windows `Get-AudioDevice -List`).  Then use the first portion of the Name field at the end of the Encoder parameter.  If not specified, it will use the default audio device on the platform.
+
+```
+Example Powershell command to get list of audiooutput devices in Windows.  Note the Name fields.
+
+PS C:\> Get-AudioDevice -List
+
+Index                : 1
+Default              : True
+DefaultCommunication : False
+Type                 : Playback
+Name                 : Encoder (4- HD Audio Driver for Display Audio)
+ID                   : {0.0.0.00000000}.{0a55cb4b-1124-4bd8-bc79-ce7f3ef5df1e}
+Device               : CoreAudioApi.MMDevice
+
+Index                : 2
+Default              : False
+DefaultCommunication : True
+Type                 : Playback
+Name                 : Headphones (KT USB Audio)
+ID                   : {0.0.0.00000000}.{8d1ce611-6cf0-4739-b065-be7bdba9bc60}
+Device               : CoreAudioApi.MMDevice
+
+Index                : 3
+Default              : False
+DefaultCommunication : False
+Type                 : Playback
+Name                 : MACROSILICON (3- HD Audio Driver for Display Audio)
+ID                   : {0.0.0.00000000}.{a14f146f-a40c-41fe-827e-f4f4e6ed3d00}
+Device               : CoreAudioApi.MMDevice
+
 ```
 
 * **Channels DVR custom channel**: create a custom channel following the example in constants.START_PAGE_HTML. If it's a linear channel like NFL Network you can also map the channel so you get guide data. See the sample.m3u file for more examples. Note the special 24.42 channel which is used for the Instant Recording feature.

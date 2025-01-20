@@ -33,6 +33,21 @@ http://192.168.50.50:2442/stream?url=https://watch.sling.com/1/channel/b24b20f00
 #EXTINF:-1 channel-id="Starz" tvc-guide-stationid="34941" channel-number="525",Starz
 http://192.168.50.50:2442/stream?url=https://watch.sling.com/1/channel/1a3c345b84b149918e0bad8f797df70a/watch
 
+#EXTINF:-1 channel-id="Starz West" tvc-guide-stationid="34949" channel-number="526", Starz West
+http://192.168.50.50:2442/stream?url=https://watch.sling.com/1/channel/8a84458592844ff5849712ef7766fb4e/watch
+
+#EXTINF:-1 channel-id="STZEHD" tvc-guide-stationid="16311" channel-number="529",Starz Edge East
+http://192.168.50.50:2442/stream?url=https://watch.sling.com/1/channel/1535e572f07348159d8924d58200690e/watch
+
+#EXTINF:-1 channel-id="SZEAHD" tvc-guide-stationid="72015" channel-number="541",Starz Encore Action
+http://192.168.50.50:2442/stream?url=https://watch.sling.com/1/channel/8aed8223a6104b53b24f03555fc933a9/watch
+
+#EXTINF:-1 channel-id="STZENHD" tvc-guide-stationid="36225" channel-number="535",Starz Encore
+http://192.168.50.50:2442/stream?url=https://watch.sling.com/1/channel/ed5d0f85928f45249f8a67c9746a80b7/watch
+
+#EXTINF:-1 channel-id="STZENSU" tvc-guide-stationid="14766" channel-number="539",Starz Encore Suspense
+http://192.168.50.50:2442/stream?url=https://watch.sling.com/1/channel/04e4a4f1e0ec4dfba961414197e57d7f/watch
+
 #EXTINF:-1 channel-id="Starz Cinema" tvc-guide-stationid="67236" channel-number="531",Starz Cinema
 http://192.168.50.50:2442/stream?url=https://watch.sling.com/1/channel/0eedb59656d243da914fef990a8db903/watch
 
@@ -56,6 +71,9 @@ http://192.168.50.50:2442/stream/?url=https://www.nbc.com/live?brand=oxygen&call
 
 #EXTINF:-1 channel-id="SyFy (East)" tvc-guide-stationid="58623" channel-number="244",SyFy (East)
 http://192.168.50.50:2442/stream/?url=https://www.nbc.com/live?brand=syfy&callsign=syfy_east
+
+#EXTINF:-1 channel-id="SyFy (West)" channel-number="245",SyFy (West)
+http://192.168.50.50:2442/stream/?url=https://www.nbc.com/live?brand=syfy&callsign=syfy_west
 
 #EXTINF:-1 channel-id="USA (East)" tvc-guide-stationid="58452" channel-number="242",USA (East)
 http://192.168.50.50:2442/stream/?url=https://www.nbc.com/live?brand=usa&callsign=usa_east

@@ -53,28 +53,65 @@ const argv = yargs(hideBin(process.argv))
       return value;
     }
   })
-  .option('encoder-stream-url', {
+  // Update the encoder option configuration
+  .option('encoder', {
     alias: 'e',
-    type: 'string',
-    demandOption: true,  // This makes the parameter required
-    describe: 'External Encoder stream URL',
-    coerce: (value) => {
-      if (!isValidUrl(value)) {
-        throw new Error(`Invalid URL: ${value}`);
-      }
-      return value;
-    }
-  })
-  .option('encoder-custom-channel-number', {
-    alias: 'n',
-    type: 'string',
-    default: '24.42',
-    describe: 'Custom channel number (format: xx.xx)',
-    coerce: (value) => {
-      if (!isValidChannelNumber(value)) {
-        throw new Error('Custom channel number must be in format xx.xx');
-      }
-      return value;
+    type: 'array',
+    demandOption: true,
+    describe: 'Encoder configurations in format "url[:channel:width_pos:height_pos:audio_device]" where channel is optional (format: xx.xx, default: 24.42), width_pos/height_pos are optional screen positions (default: 0:0), and audio_device is the optional audio output device name',
+    coerce: (values) => {
+      return values.map(value => {
+        // Find the position of the first colon after http:// or https://
+        const protocolEnd = value.indexOf('://');
+        if (protocolEnd === -1) {
+          throw new Error(`Invalid URL format: ${value}`);
+        }
+        
+        const urlEnd = value.indexOf(':', protocolEnd + 3);
+        let url, channel, width, height, audioDevice;
+        
+        if (urlEnd === -1) {
+          // Only URL provided
+          url = value;
+          channel = '24.42';
+          width = '0';
+          height = '0';
+          audioDevice = null;
+        } else {
+          // URL and additional parameters provided
+          url = value.substring(0, urlEnd);
+          const params = value.substring(urlEnd + 1).split(':');
+          [channel = '24.42', width = '0', height = '0', audioDevice = null] = params;
+        }
+        
+        if (!isValidUrl(url)) {
+          throw new Error(`Invalid URL: ${url}`);
+        }
+
+        if (!isValidChannelNumber(channel)) {
+          throw new Error(`Invalid channel number for URL ${url}: ${channel}`);
+        }
+        
+        // Convert width and height to numbers and validate
+        const browserWidthPos = parseInt(width);
+        const browserHeightPos = parseInt(height);
+        
+        if (isNaN(browserWidthPos)) {
+          throw new Error(`Invalid width position: ${width}`);
+        }
+        
+        if (isNaN(browserHeightPos)) {
+          throw new Error(`Invalid height position: ${height}`);
+        }
+
+        return {
+          url,
+          channel,
+          width: browserWidthPos,
+          height: browserHeightPos,
+          audioDevice
+        };
+      });
     }
   })
   .option('ch4c-port', {
@@ -91,8 +128,11 @@ const argv = yargs(hideBin(process.argv))
     }
   })
   .usage('Usage: $0 [options]')
-  .example('$0 -s "http://192.168.50.50" -e "http://192.168.50.71/live/stream0"')
-  .example('\nThis sets the channels server to 192.168.50.50 and encoder to 192.168.50.71/live/stream0.')
+  .example('> $0 -s "http://192.168.50.50" -e "http://192.168.50.71/live/stream0"')
+  .example('\nSimple example with channels server at 192.168.50.50 and single encoder at 192.168.50.71')
+  .example('\n> $0 -s "http://192.168.50.50" -e "http://192.168.50.71/live/stream0" -e "http://192.168.50.72/live/stream1:24.43:1921:0:MACROSILICON"')
+  .example('\nThis sets the channels server to 192.168.50.50 and encoder to 192.168.50.71/live/stream0 and a second encoder at stream1. The 1921 position of stream1 moves it to the right on startup on screen 2 in a dual monitor setup.')
+  .example('\nWhen specifying more than one encoder, you will need to find the audio device Name and specify the first portion of it at the end of the encoder param.  In Windows, to see encoder audio device names (example below), use powershell command Get-AudioDevice -List')
   .help()
   .alias('help', 'h')
   .wrap(null)  // Don't wrap help text
@@ -104,8 +144,13 @@ const argv = yargs(hideBin(process.argv))
 const config = {
   CHANNELS_URL: argv['channels-url'],
   CHANNELS_PORT: argv['channels-port'],
-  ENCODER_STREAM_URL: argv['encoder-stream-url'],
-  ENCODER_CUSTOM_CHANNEL_NUMBER: argv['encoder-custom-channel-number'],
+  ENCODERS: argv['encoder'].map(encoder => ({
+    url: encoder.url,
+    channel: encoder.channel,
+    width: encoder.width,
+    height: encoder.height,
+    audioDevice: encoder.audioDevice
+  })),
   CH4C_PORT: argv['ch4c-port']
 };
 
@@ -116,8 +161,7 @@ console.log(JSON.stringify(config, null, 2));
 
 const CHANNELS_URL = config.CHANNELS_URL;
 const CHANNELS_PORT = config.CHANNELS_PORT;
-const ENCODER_STREAM_URL = config.ENCODER_STREAM_URL;
-const ENCODER_CUSTOM_CHANNEL_NUMBER = config.ENCODER_CUSTOM_CHANNEL_NUMBER;
+const ENCODERS = config.ENCODERS;
 const CH4C_PORT = config.CH4C_PORT;
 
 // retries and wait durations for retrying to load and play video
@@ -142,8 +186,8 @@ const START_PAGE_HTML = `
     <pre>
     #EXTM3U
 
-    #EXTINF:-1 channel-id="CH4C_Encoder" channel-number="${ENCODER_CUSTOM_CHANNEL_NUMBER}" tvc-guide-placeholders="3600",CH4C Encoder
-    ${ENCODER_STREAM_URL}
+    #EXTINF:-1 channel-id="CH4C_Encoder" channel-number="${ENCODERS[0].channel}" tvc-guide-placeholders="3600",CH4C Encoder
+    ${ENCODERS[0].url}
     
     #EXTINF:-1 channel-id="CH4C_Weather" tvc-guide-placeholders="3600",Weatherscan
     http://CH4C_IP_ADDRESS:${CH4C_PORT}/stream/?url=https://weatherscan.net/
@@ -158,13 +202,6 @@ const START_PAGE_HTML = `
     http://CH4C_IP_ADDRESS:${CH4C_PORT}/stream?url=https://disneynow.com/watch-live?brand=004
     </pre>
     <p>
-    Also ensure that the values you've set in Constants.js are accurate:
-    </p>
-    <pre>
-    CHANNELS_URL: ${CHANNELS_URL}<br>
-    CHANNELS_PORT: ${CHANNELS_PORT}<br>
-    ENCODER_STREAM_URL: ${ENCODER_STREAM_URL}
-    </pre>
     </html>
 `
 
@@ -183,7 +220,7 @@ const INSTANT_PAGE_HTML = `
         <input type="text" name="recording_duration" id="recording_duration" required />
         <br/>
         <input type="submit" name="button_record" value="Start Recording URL" />
-        <input type="submit" name="button_tune" value="Tune ${ENCODER_CUSTOM_CHANNEL_NUMBER} to URL" />
+        <input type="submit" name="button_tune" value="Tune ${ENCODERS[0].channel} to URL" />
       </form>
     </html>
 `
@@ -239,8 +276,7 @@ const CHROME_EXECUTABLE_DIRECTORIES = {
 module.exports = {
   CHANNELS_URL: config.CHANNELS_URL,
   CHANNELS_PORT: config.CHANNELS_PORT,
-  ENCODER_STREAM_URL: config.ENCODER_STREAM_URL,
-  ENCODER_CUSTOM_CHANNEL_NUMBER: config.ENCODER_CUSTOM_CHANNEL_NUMBER,
+  ENCODERS: config.ENCODERS,
   CH4C_PORT: config.CH4C_PORT,
   FIND_VIDEO_RETRIES,
   FIND_VIDEO_WAIT,

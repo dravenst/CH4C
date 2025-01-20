@@ -6,8 +6,11 @@ const { execSync } = require('child_process');
 const Constants = require('./constants.js');
 const fetch = require('node-fetch');
 const { URL } = require('url');
+const fs = require('fs');
+const path = require('path');
 
-let currentBrowser, chromeDataDir, chromePath;
+let chromeDataDir, chromePath;
+let browsers = new Map(); // key: encoderUrl, value: {browser, page}
 
 function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -18,97 +21,256 @@ function logTS(message , ...args) {
   console.log(`[${timestamp}]`, message, ...args);
 }
 
-async function closeBrowser() {
-  if (currentBrowser && currentBrowser.isConnected()) {
+async function closeBrowser(encoderUrl) {
+  logTS(`Attempting to close browser for encoder ${encoderUrl}`);
+  if (browsers.has(encoderUrl)) {
     try {
-      await currentBrowser.close();
-      logTS('browser closed');
+      const browser = browsers.get(encoderUrl);
+      if (browser && browser.isConnected()) {
+        await browser.close();
+        logTS(`Browser closed for encoder ${encoderUrl}`);
+      }
     } catch (e) {
-      console.log('error closing browser', e);
+      logTS(`Error closing browser for ${encoderUrl}:`, e);
     } finally {
-      currentBrowser = null;
+      browsers.delete(encoderUrl);
     }
   }
 }
 
-// Attempts to close browser in a safe fashion to prevent it from restarting by using the getState (true=closingInProgress)
+// Attempts to close browser in a safe fashion
 const createCleanupManager = () => {
-  let isClosing = false;
-  let isBrowserActive = false;
+  let closingStates = new Map(); // Track closing state per encoder
+  let activeBrowsers = new Map(); // Track active browser instances by encoder URL
   
-  // Add process handlers for cleanup
   process.on('SIGINT', async () => {
     logTS('Caught interrupt signal');
-    await closeBrowser();
+    for (const [encoderUrl] of activeBrowsers) {
+      await closeBrowser(encoderUrl);
+    }
     process.exit();
   });
   
   process.on('SIGTERM', async () => {
     logTS('Caught termination signal');
-    await closeBrowser();
+    for (const [encoderUrl] of activeBrowsers) {
+      await closeBrowser(encoderUrl);
+    }
     process.exit();
   });
 
   return {
-    cleanup: async (res) => {
-      if (isClosing) {
-        logTS('Cleanup already in progress, skipping');
+    cleanup: async (encoderUrl, res) => {
+      if (closingStates.get(encoderUrl)) {
+        logTS(`Cleanup already in progress for encoder ${encoderUrl}`);
         return;
       }
-      isClosing = true;
-      logTS('Starting cleanup');
+      
+      logTS(`Starting cleanup for encoder ${encoderUrl}`);
+      closingStates.set(encoderUrl, true);
+      
       try {
-        await closeBrowser();
+        await closeBrowser(encoderUrl);
         if (res && !res.headersSent) {
           res.status(499).send();
-          console.log('Response ended with status 499');
+          logTS(`Send http status 499 for encoder ${encoderUrl}`);
         }
+      } catch (e) {
+        logTS(`Error during cleanup for ${encoderUrl}:`, e);
       } finally {
-        await delay(2000); // Add a delay to avoid undesirable stream restarts
-        isClosing = false;
-        isBrowserActive = false;
-        logTS('Cleanup completed');
+        await delay(2000);
+        closingStates.delete(encoderUrl);
+        activeBrowsers.delete(encoderUrl);
+        logTS(`Cleanup completed for encoder ${encoderUrl}`);
       }
     },
-    // Check if we can start a new browser session
-    canStartBrowser: () => !isClosing && !isBrowserActive,
-    // Mark browser as active
-    setBrowserActive: () => { isBrowserActive = true; },
-    // Get current state
-    getState: () => ({ isClosing, isBrowserActive })
+    canStartBrowser: (encoderUrl) => !closingStates.get(encoderUrl) && !activeBrowsers.has(encoderUrl),
+    setBrowserActive: (encoderUrl) => { 
+      activeBrowsers.set(encoderUrl, true);
+      logTS(`Browser set active for encoder ${encoderUrl}`);
+    },
+    getState: () => ({ 
+      closingStates: Array.from(closingStates.entries()),
+      activeBrowsers: Array.from(activeBrowsers.keys()) 
+    })
   };
 };
 
-async function setCurrentBrowser() {
-  if (!currentBrowser || !currentBrowser.isConnected()) {
-    process.env.DISPLAY = process.env.DISPLAY || ':0'
+async function setupBrowserAudio(page, encoderConfig) { 
+  // Wait for video elements to be present and ready
+  await page.waitForFunction(() => {
+    const videos = document.getElementsByTagName('video');
+    return videos.length > 0 && Array.from(videos).some(v => v.readyState >= 2);
+  }, { timeout: 20000 });
 
-    currentBrowser = await puppeteer.launch({
+  // If we have an audio device specified, try to set it after page load
+  if (encoderConfig.audioDevice) {
+    logTS(`Attempting to set audio device: ${encoderConfig.audioDevice}`);
+    
+    // Wait for browser to recognize audio devices
+    await page.waitForFunction(() => {
+      return navigator.mediaDevices && typeof navigator.mediaDevices.enumerateDevices === 'function';
+    }, { timeout: 10000 });
+
+    try {
+      const deviceSet = await page.evaluate(async (deviceName) => {
+        // Function to check if audio can be set
+        async function canSetAudio() {
+          const devices = await navigator.mediaDevices.enumerateDevices();
+          const audioDevices = devices.filter(d => d.kind === 'audiooutput');
+          return audioDevices.some(d => d.label.includes(deviceName));
+        }
+
+        // Function to set audio device with verification
+        async function setAndVerifyAudioDevice() {
+          const devices = await navigator.mediaDevices.enumerateDevices();
+          const targetDevice = devices
+            .filter(d => d.kind === 'audiooutput')
+            .find(d => d.label.includes(deviceName));
+          
+          if (!targetDevice) {
+            console.log("Error no audiooutput devices found!")
+            return false;
+          } 
+
+          const videos = document.getElementsByTagName('video');
+          let success = false;
+
+          for (const video of videos) {
+            if (video.setSinkId) {
+              try {
+                await video.setSinkId(targetDevice.deviceId);
+                // Verify the setting took effect
+                const currentSinkId = video.sinkId;
+                if (currentSinkId === targetDevice.deviceId) {
+                  success = true;
+                }
+              } catch (e) {
+                console.log('Error setting sink:', e);
+              }
+            }
+          }
+          return success;
+        }
+
+        // Initial check for audio capability
+        if (!await canSetAudio()) {
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          if (!await canSetAudio()) return false;
+        }
+
+        // Attempt to set audio with verification
+        let attempts = 0;
+        while (attempts < 5) {
+          if (await setAndVerifyAudioDevice()) {
+            return true;
+          }
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          attempts++;
+        }
+        
+        return false;
+      }, encoderConfig.audioDevice);
+
+      if (deviceSet) {
+        logTS(`Successfully configured and verified audio device: ${encoderConfig.audioDevice}`);
+      } else {
+        logTS(`Failed to set audio device after verification attempts`);
+      }
+    } catch (error) {
+      logTS(`Error in audio device configuration: ${error.message}`);
+    }
+  }
+
+  // Additional verification after setup
+  const audioStatus = await page.evaluate(() => {
+    const videos = document.getElementsByTagName('video');
+    return Array.from(videos).map(v => ({
+      readyState: v.readyState,
+      sinkId: v.sinkId,
+      hasAudio: v.mozHasAudio || Boolean(v.webkitAudioDecodedByteCount) || Boolean(v.audioTracks && v.audioTracks.length)
+    }));
+  });
+
+  logTS('Final audio status:', audioStatus);
+};
+
+async function launchBrowser(targetUrl, encoderConfig) {
+  logTS(`starting browser for encoder ${encoderConfig.url} at position ${encoderConfig.width},${encoderConfig.height}`);
+  
+  if (browsers.has(encoderConfig.url)) {
+    logTS(`Browser already exists for encoder ${encoderConfig.url}`);
+    return null;
+  }
+
+  try {
+    // Create unique user data directory for this encoder
+    const encoderIndex = Constants.ENCODERS.findIndex(e => e.url === encoderConfig.url);
+    const uniqueUserDataDir = path.join(chromeDataDir, `encoder_${encoderIndex}`);
+
+    // Just ensure the directory exists, don't clean it
+    if (!fs.existsSync(uniqueUserDataDir)) {
+      fs.mkdirSync(uniqueUserDataDir, { recursive: true });
+      logTS(`Created new user data directory: ${uniqueUserDataDir}`);
+    }
+
+    logTS(`Using user data directory: ${uniqueUserDataDir}`);
+
+    // Prepare base launch arguments
+    const launchArgs = [
+      '--no-first-run',
+      '--disable-infobars',
+      '--hide-crash-restore-bubble',
+      '--disable-blink-features=AutomationControlled',
+      '--hide-scrollbars',
+      '--start-fullscreen',
+      '--noerrdialogs',
+      '--disable-notifications',
+      '--allow-running-insecure-content',
+      '--autoplay-policy=no-user-gesture-required',
+      `--window-position=${encoderConfig.width},${encoderConfig.height}`,
+      '--new-window',
+      '--no-sandbox',
+      '--disable-session-crashed-bubble',
+      '--disable-background-networking',
+      '--disable-background-timer-throttling',
+      '--disable-backgrounding-occluded-windows',
+      //'--disable-features=IsolateOrigins,site-per-process',
+      //'--log-level=2',
+      '--enable-accelerated-video-decode',
+      '--enable-accelerated-video-encode',
+      '--enable-gpu-rasterization',
+      //'--disable-web-security',
+    ];
+
+    // Add audio configuration if device specified
+    if (encoderConfig.audioDevice) {
+      logTS(`Configuring audio device: ${encoderConfig.audioDevice}`);
+      launchArgs.push(
+        '--enable-audio-service',
+        '--enable-audio',
+        '--allow-audio',
+        '--use-fake-ui-for-media-stream',
+        '--allow-file-access-from-files',
+        '--enable-system-audio-device-enumeration',
+        '--enable-system-audio-device-selection',
+        '--enable-features=HardwareMediaKeyHandling',
+        '--enable-features=PlatformHEVCDecoderSupport',
+        '--disable-features=AudioServiceSandbox',
+        '--disable-features=AudioServiceOutOfProcess',
+        `--audio-output-device=${encoderConfig.audioDevice}`,
+      );
+      logTS(`Added audio configuration flags`);
+    }
+
+    logTS('Launch arguments:', launchArgs);
+
+    const browser = await puppeteer.launch({
       executablePath: chromePath,
-      userDataDir: chromeDataDir,
+      userDataDir: uniqueUserDataDir,
       headless: false,
       defaultViewport: null,
-      args: [
-        '--no-first-run',
-        '--disable-infobars',
-        '--hide-crash-restore-bubble',
-        '--disable-blink-features=AutomationControlled',
-        '--hide-scrollbars',
-//        '--no-sandbox', //not sure if this is needed?
-        '--start-fullscreen',
-        '--noerrdialogs',
-//        '--disable-web-security',    // is this required?
-        '--disable-features=IsolateOrigins,site-per-process', // last two disables required for hiding cursors across iFrames
-        '--hide-crash-restore-bubble', // Hide the yellow notification bar
-        '--disable-notifications', // Mimic real user behavior
-        '--enable-audio-output', // Ensure audio output is enabled
-        '--allow-running-insecure-content',  // Sling has both https and http
-        '--autoplay-policy=no-user-gesture-required',
-        '--log-level=2', // error level only
-        '--enable-accelerated-video-decode',
-        '--enable-accelerated-video-encode', 
-        '--enable-gpu-rasterization', 
-      ],  
+      args: launchArgs,
       ignoreDefaultArgs: [
         '--enable-automation',
         '--disable-extensions',
@@ -116,60 +278,65 @@ async function setCurrentBrowser() {
         '--disable-component-update',
         '--disable-component-extensions-with-background-pages',
         '--enable-blink-features=IdleDetection',
-      ],
+      ]
     });
 
-    currentBrowser.on('close', () => {
-      logTS('browser closed')
-      currentBrowser = null
-    })
-    
-    currentBrowser.on('disconnected', () => {
-      logTS('browser disconnected');
-      currentBrowser = null
+    // Add error event listener
+    browser.on('error', (err) => {
+      logTS(`Browser error for encoder ${encoderConfig.url}:`, err);
     });
-  }
-}
 
-async function launchBrowser(videoUrl) {
-  logTS("starting browser");
-  await setCurrentBrowser();
-  if (currentBrowser && currentBrowser.isConnected()) {
-    const page = await currentBrowser.newPage();
-    const navigationTimeout = 30000;
+    if (!browser || !browser.isConnected()) {
+      throw new Error('Browser failed to launch or is not connected');
+    }
 
-    logTS("loading page")
-    if (videoUrl) {
-      // For Sling and Photos, we can't use networkidle2 for page load
-      if ((videoUrl.includes("watch.sling.com")) || (videoUrl.includes("photos.app.goo.gl"))) {
-        await page.goto(videoUrl, {
-          waitUntil: 'load',
-          timeout: navigationTimeout
+    browsers.set(encoderConfig.url, browser);
+    const page = await browser.newPage();
+
+    logTS(`loading page for encoder ${encoderConfig.url}`);
+
+    const navigationTimeout = 30000;  // 30 seconds timeout for navigation
+
+    // Position window before navigating
+    await page.evaluate((width, height) => {
+      window.moveTo(width, height);
+    }, encoderConfig.width, encoderConfig.height);
+    await delay(1000);
+
+    if (targetUrl) {
+      if ((targetUrl.includes("watch.sling.com")) || (targetUrl.includes("photos.app.goo.gl"))) {
+        // First wait for initial page load
+        await page.goto(targetUrl, {
+          waitUntil: 'load', // Wait for network to be idle
+          timeout: 30000
         });
       }
       else {
-        try {
-          await Promise.race([
-            page.goto(videoUrl, { 
-              waitUntil: 'networkidle2',
-              timeout: navigationTimeout 
-            }),
-            new Promise((_, reject) => 
-              setTimeout(() => reject(new Error('Navigation timeout')), navigationTimeout)
-            )
-          ]);
-        } catch (error) {
-          logTS('Navigation timeout, continuing anyway');
-        }
+        await Promise.race([
+          page.goto(targetUrl, { 
+            waitUntil: 'networkidle2',
+            timeout: navigationTimeout 
+          }),
+          new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Navigation timeout')), navigationTimeout)
+          )
+        ]);
       }
-      logTS("page fully loaded");
+
+      logTS(`page fully loaded for encoder ${encoderConfig.url}`);
       return page;
     }
     else {
-       throw new Error('videoUrl not defined')
+      throw new Error('targetUrl not defined');
     }
+  } catch (error) {
+    logTS(`Error launching browser for encoder ${encoderConfig.url}:`);
+    logTS(error.stack || error.message || error);
+    if (browsers.has(encoderConfig.url)) {
+      browsers.delete(encoderConfig.url);
+    }
+    throw error;
   }
-  throw new Error('browser not connected')
 }
 
 async function hideCursor(page) {
@@ -283,7 +450,7 @@ async function fullScreenVideoSling(page) {
   await muteButton.click(); //click unmute
   // Simulate pressing the right arrow key 10 times to max volume
   for (let i = 0; i < 10; i++) {
-    await delay(200);
+    await delay(100);
     await page.keyboard.press('ArrowRight');
   }
   logTS("finished change to fullscreen and max volume");
@@ -332,16 +499,16 @@ function getExecutablePath() {
   }
 }
 
-function buildRecordingJson(name, duration) {
+function buildRecordingJson(name, duration, encoderChannel) {
   const startTime = Math.round(Date.now() / 1000)
   const data = {
     "Name": name,
     "Time": startTime,
     "Duration": duration * 60,
-    "Channels": [Constants.ENCODER_CUSTOM_CHANNEL_NUMBER],
+    "Channels": [encoderChannel],  // Use the specific encoder's channel
     "Airing": {
       "Source": "manual",
-      "Channel": Constants.ENCODER_CUSTOM_CHANNEL_NUMBER,
+      "Channel": encoderChannel,  // Use the specific encoder's channel
       "Time": startTime,
       "Duration": duration * 60,
       "Title": `Title: ${name}`,
@@ -354,7 +521,7 @@ function buildRecordingJson(name, duration) {
   return JSON.stringify(data)
 }
 
-async function startRecording(name, duration) {
+async function startRecording(name, duration, encoderChannel) {
   let response
   try {
     response = await fetch(Constants.CHANNELS_POST_URL, {
@@ -362,7 +529,7 @@ async function startRecording(name, duration) {
       headers: {
         'Content-type': 'application/json',
       },
-      body: buildRecordingJson(name, duration),
+      body: buildRecordingJson(name, duration, encoderChannel),
     })
   } catch (error) {
     console.log('Unable to schedule recording', error)
@@ -392,26 +559,11 @@ function getFullUrl (req) {
 }
 
 async function main() {
-  
-  // First, attempt to kill any existing Chrome processes to ensure they're not running
-  try {
-    if (process.platform === 'linux') {
-      execSync('pkill -f chrome');
-    } else if (process.platform === 'darwin') {
-      execSync('pkill -f Google\\ Chrome');
-    } else if (process.platform === 'win32') {
-      execSync('taskkill /F /IM chrome.exe', { stdio: 'ignore' });
-    }
-    console.log('Cleaned up existing Chrome processes');
-    // Wait a moment for processes to fully close
-    await delay(2000);
-  } catch (e) {
-    // It's okay if there were no processes to kill
-    console.log('No existing Chrome processes found');
-  }
-
   const app = express()
   app.use(express.urlencoded({ extended: false }));
+
+  // Store the parsed arguments in app.locals
+  app.locals.config = Constants;
 
   // Create a single cleanup manager instance for the application
   app.locals.cleanupManager = createCleanupManager();
@@ -437,88 +589,95 @@ async function main() {
   });
 
   app.get('/stream', async (req, res) => {
-    let page
-    let targetUrl
-  
-    // Use a single cleanup manager instance for the application
+    let page;
+    let targetUrl;
+    
     const cleanupManager = req.app.locals.cleanupManager;
+    const config = req.app.locals.config;
 
-    // Check if we can handle a new request
-    if (!cleanupManager.canStartBrowser()) {
-      logTS('Browser is busy or cleanup in progress, rejecting request');
-      res.status(503).send('Server is busy, please try again later');
+     // Get the first available encoder config
+    const availableEncoder = Constants.ENCODERS.find(encoder => 
+      !browsers.has(encoder.url) && cleanupManager.canStartBrowser(encoder.url)
+    );
+  
+    if (!availableEncoder) {
+      logTS('No available encoders, rejecting request');
+      res.status(503).send('All encoders are currently in use');
       return;
     }
-
+  
     targetUrl = getFullUrl(req);
     if (!targetUrl) {
       if (!res.headersSent) {
-        res.status(500).send('must specify a target URL')}  
+        res.status(500).send('must specify a target URL');
+      }
+      return;
     }
-    logTS('streaming to ' + targetUrl);
-
-    // Mark browser as active before starting
-    cleanupManager.setBrowserActive();
-
-    // For graceful termination of the stream with channels app
+    logTS(`streaming to ${targetUrl} using encoder ${availableEncoder.url}`);
+  
+    cleanupManager.setBrowserActive(availableEncoder.url);
+  
     res.on('close', async err => {
-      logTS('response stream closed')
-      await cleanupManager.cleanup(res);
-    })
-
-    // For error case
+      logTS('response stream closed for',availableEncoder.url);
+      await cleanupManager.cleanup(availableEncoder.url, res);
+    });
+  
     res.on('error', async err => {
-      console.log('response stream error', err)
-      await cleanupManager.cleanup(res);
-    })
-    
+      console.log('response stream error for', availableEncoder.url, err);
+      await cleanupManager.cleanup(availableEncoder.url, res);
+    });
+  
     try {
-      page = await launchBrowser(targetUrl);
-
-      if (!cleanupManager.getState().isClosing) {  
-        const fetchResponse = await fetch(Constants.ENCODER_STREAM_URL);
+      page = await launchBrowser(targetUrl, availableEncoder);  // Pass the encoder config
+  
+      if (!cleanupManager.getState().isClosing) {
+        const fetchResponse = await fetch(availableEncoder.url);
         if (!fetchResponse.ok) {
-            throw new Error(`Encoder stream HTTP error: ${fetchResponse.status}`);
+          throw new Error(`Encoder stream HTTP error: ${fetchResponse.status}`);
         }
         if (res && !res.headersSent) {
           const stream = Readable.from(fetchResponse.body);
             
           stream.pipe(res, {
-              end: true
+            end: true
           }).on('error', (error) => {
-              console.error('Stream error:', error);
-              cleanupManager.cleanup(res);
+            console.error('Stream error:', error);
+            cleanupManager.cleanup(availableEncoder.url, res);
           });
         }
-      }      
-      if (!cleanupManager.getState().isClosing) {
+      
+        // TODO: MOVE SOUND SETUP TO HERE
+        await setupBrowserAudio(page, availableEncoder);
+    
         try {
           // Handle Sling specific page
-          if (req.query.url.includes("watch.sling.com")){
+          if (targetUrl.includes("watch.sling.com")) {
+            logTS("Handling Sling video");
             await fullScreenVideoSling(page);
           }
           // Handle Google Photo Album specific page
-          else if (req.query.url.includes("photos.app.goo.gl")){
+          else if (targetUrl.includes("photos.app.goo.gl")) {
+            logTS("Handling Google Photos");
             await fullScreenVideoGooglePhotos(page);
           }
           // default handling for other services
           else {
-            await fullScreenVideo(page)
+            logTS("Handling default video");
+            await fullScreenVideo(page);
           }
         } catch (e) {
-          console.log('failed to go full screen', e)
+          console.log('failed to go full screen', e);
         }
-      }    
-    } catch (e) {
-      console.log('failed to start browser or stream: ', targetUrl, e)
-      if (!res.headersSent) {
-        res.status(500).send(`failed to start browser or stream: ${e}`)
       }
-      await cleanupManager.cleanup(res);
+    } catch (e) {
+      console.log('failed to start browser or stream: ', targetUrl, e);
+      if (!res.headersSent) {
+        res.status(500).send(`failed to start browser or stream: ${e}`);
+      }
+      await cleanupManager.cleanup(availableEncoder.url, res);
       return;
     }
-    
-  })
+  });
 
   app.get('/instant', async (_req, res) => {
     res.send(Constants.INSTANT_PAGE_HTML)
@@ -527,8 +686,13 @@ async function main() {
   app.post('/instant', async (req, res) => {
     const cleanupManager = req.app.locals.cleanupManager;
     
-    if (!cleanupManager.canStartBrowser()) {
-      logTS('Browser is busy or cleanup in progress, rejecting request');
+    // Get the first available encoder config
+    const availableEncoder = Constants.ENCODERS.find(encoder => 
+      cleanupManager.canStartBrowser(encoder.url)
+    );
+
+    if (!availableEncoder) {
+      logTS('No available encoders, rejecting request');
       res.status(503).send('Server is busy, please try again later');
       return;
     }
@@ -536,61 +700,63 @@ async function main() {
     if (req.body.button_record) {
       const recordingStarted = await startRecording(
         req.body.recording_name || 'Manual recording',
-        req.body.recording_duration)
-
+        req.body.recording_duration,
+        availableEncoder.channel  // Use the encoder's channel
+      );
+  
       if (!recordingStarted) {
-        console.log('failed to start recording')
-        res.send('failed to start recording')
-        return
+        console.log('failed to start recording');
+        res.send('failed to start recording');
+        return;
       }
     }
 
-    let page
-    cleanupManager.setBrowserActive();
+    let page;
+    cleanupManager.setBrowserActive(availableEncoder.url);
 
     try {
-      page = await launchBrowser(req.body.recording_url)
+      page = await launchBrowser(req.body.recording_url, availableEncoder);  // Pass the encoder config
     } catch (e) {
-      console.log('failed to start browser page, ensure not already running', e)
+      console.log('failed to start browser page, ensure not already running', e);
       if (!res.headersSent) {
-        res.status(500).send(`failed to start browser, ensure not already running: ${e}`)
-        await cleanupManager.cleanup(res);
+        res.status(500).send(`failed to start browser, ensure not already running: ${e}`);
+        await cleanupManager.cleanup(availableEncoder.url, res);
       }
-      return
+      return;
     }
 
     if (req.body.button_record) {
-      res.send(`Started recording on ${Constants.ENCODER_CUSTOM_CHANNEL_NUMBER}, you can close this page`)
+      res.send(`Started recording on ${availableEncoder.channel}, you can close this page`);
     }
     if (req.body.button_tune) {
-      res.send(`Tuned to URL on ${Constants.ENCODER_CUSTOM_CHANNEL_NUMBER}, you can close this page`)
+      res.send(`Tuned to URL on ${availableEncoder.channel}, you can close this page`);
     }
 
     try {
       // Handle Sling specific page
-      if (req.query.url.includes("watch.sling.com")){
+      if (req.body.recording_url.includes("watch.sling.com")) {  // Changed from req.query.url
         await fullScreenVideoSling(page);
       }
       // Handle Google Photo Album specific page
-      else if (req.query.url.includes("photos.app.goo.gl")){
+      else if (req.body.recording_url.includes("photos.app.goo.gl")) {  // Changed from req.query.url
         await fullScreenVideoGooglePhotos(page);
       }
       // default handling for page
       else {
-        await fullScreenVideo(page)
+        await fullScreenVideo(page);
       }
     } catch (e) {
-      console.log('did not find a video selector for: ', req.query.url, e)
+      console.log('did not find a video selector for: ', req.body.recording_url, e);  // Changed from req.query.url
     }
 
     // close the browser after the recording period ends
     await new Promise(r => setTimeout(r, req.body.recording_duration * 60 * 1000));
     try {
-      await cleanupManager.cleanup(res);
-    }catch (e) {
-      console.log('error closing browser after recording', e)
+      await cleanupManager.cleanup(availableEncoder.url, res);  // Pass the encoder url
+    } catch (e) {
+      console.log('error closing browser after recording', e);
     }
-  })
+  });
 
   const server = app.listen(Constants.CH4C_PORT, () => {
     logTS('CH4C listening on port ', Constants.CH4C_PORT)
