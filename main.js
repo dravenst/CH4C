@@ -16,6 +16,7 @@ function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// log function with timestamp
 function logTS(message , ...args) {
   const timestamp = new Date().toLocaleString();
   console.log(`[${timestamp}]`, message, ...args);
@@ -96,12 +97,13 @@ const createCleanupManager = () => {
   };
 };
 
+// use the specified audio source for each encoder
 async function setupBrowserAudio(page, encoderConfig) { 
   // Wait for video elements to be present and ready
   await page.waitForFunction(() => {
     const videos = document.getElementsByTagName('video');
     return videos.length > 0 && Array.from(videos).some(v => v.readyState >= 2);
-  }, { timeout: 20000 });
+  }, { timeout: 60000 });  // set to 60s to allow time to enter web credentials if needed
 
   // If we have an audio device specified, try to set it after page load
   if (encoderConfig.audioDevice) {
@@ -195,6 +197,7 @@ async function setupBrowserAudio(page, encoderConfig) {
   logTS('Final audio status:', audioStatus);
 };
 
+// setup and launch browser
 async function launchBrowser(targetUrl, encoderConfig) {
   logTS(`starting browser for encoder ${encoderConfig.url} at position ${encoderConfig.width},${encoderConfig.height}`);
   
@@ -219,48 +222,42 @@ async function launchBrowser(targetUrl, encoderConfig) {
     // Prepare base launch arguments
     const launchArgs = [
       '--no-first-run',
-      '--disable-infobars',
       '--hide-crash-restore-bubble',
       '--disable-blink-features=AutomationControlled',
-      '--hide-scrollbars',
-      '--start-fullscreen',
-      '--noerrdialogs',
       '--disable-notifications',
+      '--disable-session-crashed-bubble',
+      '--noerrdialogs',
+      '--no-default-browser-check',
+      '--hide-scrollbars',
+      '--start-fullscreen',  // full screen browser
       '--allow-running-insecure-content',
       '--autoplay-policy=no-user-gesture-required',
       `--window-position=${encoderConfig.width},${encoderConfig.height}`,
-      '--new-window',
-      '--no-sandbox',
-      '--disable-session-crashed-bubble',
+      '--new-window', // new browser window for each encoder
       '--disable-background-networking',
       '--disable-background-timer-throttling',
+      '--disable-background-media-suspend',
       '--disable-backgrounding-occluded-windows',
-      //'--disable-features=IsolateOrigins,site-per-process',
-      //'--log-level=2',
-      '--enable-accelerated-video-decode',
-      '--enable-accelerated-video-encode',
-      '--enable-gpu-rasterization',
-      //'--disable-web-security',
+//      '--enable-hardware-overlays=single-fullscreen,single-video',
+//      '--disable-features=UseOzonePlatform',
     ];
 
     // Add audio configuration if device specified
     if (encoderConfig.audioDevice) {
       logTS(`Configuring audio device: ${encoderConfig.audioDevice}`);
       launchArgs.push(
-        '--enable-audio-service',
-        '--enable-audio',
-        '--allow-audio',
         '--use-fake-ui-for-media-stream',
-        '--allow-file-access-from-files',
-        '--enable-system-audio-device-enumeration',
-        '--enable-system-audio-device-selection',
-        '--enable-features=HardwareMediaKeyHandling',
-        '--enable-features=PlatformHEVCDecoderSupport',
-        '--disable-features=AudioServiceSandbox',
-        '--disable-features=AudioServiceOutOfProcess',
-        `--audio-output-device=${encoderConfig.audioDevice}`,
+        `--audio-output-device=${encoderConfig.audioDevice}`,  // doesn't do anything
       );
       logTS(`Added audio configuration flags`);
+    }
+
+    // Couldn't find a way to redirect sound for Google so mute it
+    if (targetUrl.includes("photos.app.goo.gl")) {
+      launchArgs.push(
+        '--mute-audio',
+      );
+      logTS('Mute sound for google photos');
     }
 
     logTS('Launch arguments:', launchArgs);
@@ -307,14 +304,14 @@ async function launchBrowser(targetUrl, encoderConfig) {
       if ((targetUrl.includes("watch.sling.com")) || (targetUrl.includes("photos.app.goo.gl"))) {
         // First wait for initial page load
         await page.goto(targetUrl, {
-          waitUntil: 'load', // Wait for network to be idle
+          waitUntil: 'load', // Wait for page elements to load only
           timeout: 30000
         });
       }
       else {
         await Promise.race([
           page.goto(targetUrl, { 
-            waitUntil: 'networkidle2',
+            waitUntil: 'networkidle2', // Wait for page elements to load and network activity to decrease
             timeout: navigationTimeout 
           }),
           new Promise((_, reject) => 
@@ -646,8 +643,10 @@ async function main() {
           });
         }
       
-        // TODO: MOVE SOUND SETUP TO HERE
-        await setupBrowserAudio(page, availableEncoder);
+        // Setup Browser Audio here (doesn't work for Google photos)
+        if (!targetUrl.includes("photos.app.goo.gl")) {
+          await setupBrowserAudio(page, availableEncoder);
+        }
     
         try {
           // Handle Sling specific page
@@ -730,6 +729,11 @@ async function main() {
     }
     if (req.body.button_tune) {
       res.send(`Tuned to URL on ${availableEncoder.channel}, you can close this page`);
+    }
+
+    // Setup Browser Audio here (doesn't work for Google photos)
+    if (!targetUrl.includes("photos.app.goo.gl")) {
+      await setupBrowserAudio(page, availableEncoder);
     }
 
     try {

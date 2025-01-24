@@ -1,26 +1,26 @@
 # Chrome HDMI for Channels (CH4C) proof of concept
 
-This is a proof of concept that merges elements of the excellent [Chrome Capture for Channels](https://github.com/fancybits/chrome-capture-for-channels) and [HDMI for Channels](https://github.com/tmm1/androidhdmi-for-channels) projects, in an attempt to capture benefits of each.
+This project merges elements of the excellent [Chrome Capture for Channels](https://github.com/fancybits/chrome-capture-for-channels) and [HDMI for Channels](https://github.com/tmm1/androidhdmi-for-channels) projects, in an attempt to capture benefits of each.
 
 Specifically:
-* **vs CC4C**: this proof of concept always delivers 1080p/60 by offloading the encode to an HDMI Encoder box
-* **vs HDMI for Channels**: this proof of concept can capture from any URL with no dependency on the site having an Android TV app
+* **vs CC4C**: this project delivers 1080p by offloading one or more streams to an external HDMI Encoder(s)
+* **vs HDMI for Channels**: this project can capture from any URL with no dependency on the site having an Android TV app
 
 ### My favorite use cases / why I made this
 * Recovering channels that I lost from TV Everywhere - for example NFL Network
 * Recording content that is web-only - for example a high school sports streaming website that doesn't have an app
 * Recording on-demand non-linear content - for example recording an NFL+ game replay
 ![Channels](https://github.com/user-attachments/assets/05306ac8-df2c-4f37-b29a-35a47d0dba19)
-* Can be run on a low cost PC with a relatively low cost external encoder
+* Can be run on a low cost PC with a relatively low cost external encoder e.g. Link Pi ENC1-V3 ~$120
 
 ## Getting started
 
 ### Hardware required
-* **Video source**: It's lightweight enough to run on your existing Channels box.  (Windows exe available too.)
+* **Video source**: It's lightweight enough to run on your existing Channels box or a separate server.  (Windows exe available too.)
 * **Encoder**: I used the [Link Pi v3](https://a.co/d/76zJF9U) with a dual input ports - both hdmi and USB ports - using an [HDMI to USB card like this](https://www.amazon.com/dp/B0C2MDTY8P?ref=ppx_yo2ov_dt_b_fed_asin_title)
 
 ### Config
-* **Encoder**: I largely followed the guidelines [here](https://community.getchannels.com/t/linkpi-encoder-family/38860/4) to configure the encoders. Obviously connect your video source to the encoder and confirm that you're able to see and hear on the encoder's streaming URL before you go any further.  Make sure your PC config is set to 1920x1080 for the display(s).
+* **Encoder**: I largely followed the guidelines [here](https://community.getchannels.com/t/linkpi-encoder-family/38860/4) to configure the encoders (setting 30 fps can help with performance).  Connect your PC HDMI port(s) to the external encoder box and confirm that you're able to see and hear on the encoder's streaming URL before you go any further.  Make sure your PC config is set to 1920x1080 for the PC display(s).
 * **Installation**:
 Download the Windows exe `ch4c.exe` available in the latest [release](https://github.com/dravenst/CH4C/releases). You can create a ".ps1" file that can be used to run as a Windows startup task as outlined in the [chrome-capture thread](https://community.getchannels.com/t/chrome-capture-for-channels/36667/130)
 * **Video source**: on first startup, you will have to manually complete any one-time logins for the sites triggered by CH4C. Each browser instance uses it's own user directory, so you will have to launch browsers through ch4c to get to sites.  Run via node or the ch4c.exe to make this happen.  
@@ -54,7 +54,7 @@ Examples:
   Simple example with channels server at 192.168.50.50 and single encoder at 192.168.50.71.
   
 
-  > main.js -s "http://192.168.50.50" -e "http://192.168.50.71/live/stream0" -e "http://192.168.50.72/live/stream1:24.43:1921:0:MACROSILICON"
+  > main.js -s "http://192.168.50.50" -e "http://192.168.50.71/live/stream0:24.42:0:0:Encoder" -e "http://192.168.50.72/live/stream1:24.43:1921:0:MACROSILICON"
 
   This sets the channels server to 192.168.50.50 and encoder to 192.168.50.71/live/stream0 and a second encoder at stream1. The 1921 position of stream1 moves it to the right on startup on screen 2 in a dual monitor setup.
 
@@ -118,9 +118,5 @@ This works surprisingly well for me, with the failure case usually being flakine
 ## Gaps / next steps
 ### Packaged executable
 Similar to CH4C, create a Mac executable and docker deploy
-### Support for multiple streams
-If you had an encoder box with multiple HDMI ports, you could implement multiple video sources with controller logic across them.
-### Co-hosting Channels and Chrome
-If the box you’re running Channels on is headless, or supports a second HDMI out that you’re not using, I think you could have the Channels box itself be responsible for opening Chrome as the video source. And then the Channels box would HDMI out to the encoder, which would then feed back to Channels via the IP stream.
 ### Business opportunity
 Imagine a Channels all-in-one box, analogous to the [Home Assistant Yellow](https://www.home-assistant.io/yellow/), that is essentially a Pi+Encoder. The Channels Box would seamlessly integrate both TV Everywhere and Chrome URLs, so if a channel drops from TVE then Channels would auto-switch to Chrome and we wouldn’t even notice!
