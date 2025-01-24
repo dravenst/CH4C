@@ -731,12 +731,12 @@ async function main() {
       res.send(`Tuned to URL on ${availableEncoder.channel}, you can close this page`);
     }
 
-    // Setup Browser Audio here (doesn't work for Google photos)
-    if (!targetUrl.includes("photos.app.goo.gl")) {
-      await setupBrowserAudio(page, availableEncoder);
-    }
-
     try {
+      // Setup Browser Audio here (doesn't work for Google photos)
+      if (!req.body.recording_url.includes("photos.app.goo.gl")) {
+        await setupBrowserAudio(page, availableEncoder);
+      }
+
       // Handle Sling specific page
       if (req.body.recording_url.includes("watch.sling.com")) {  // Changed from req.query.url
         await fullScreenVideoSling(page);
