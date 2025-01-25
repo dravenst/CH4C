@@ -97,54 +97,71 @@ const createCleanupManager = () => {
   };
 };
 
-// use the specified audio source for each encoder
 async function setupBrowserAudio(page, encoderConfig) { 
-  // Wait for video elements to be present and ready
-  await page.waitForFunction(() => {
-    const videos = document.getElementsByTagName('video');
-    return videos.length > 0 && Array.from(videos).some(v => v.readyState >= 2);
-  }, { timeout: 60000 });  // set to 60s to allow time to enter web credentials if needed
+  logTS("waiting for video to load")  
+  
+  await page.evaluate(() => {
 
-  // If we have an audio device specified, try to set it after page load
+    // looks for videos in the base document or iframes
+    window.checkForVideos = () => {
+      const videos = [...document.getElementsByTagName('video')];
+      const iframeVideos = [...document.getElementsByTagName('iframe')].reduce((acc, iframe) => {
+        try {
+          const frameVideos = iframe.contentDocument?.getElementsByTagName('video');
+          return frameVideos && frameVideos.length ? [...acc, ...frameVideos] : acc;
+        } catch(e) {
+          return acc;
+        }
+      }, []);
+      return [...videos, ...iframeVideos];
+    };
+  });
+ 
+  // calls checkforvideos constantly until either at least one video is ready or the 60s timer expires
+  await page.waitForFunction(() => {
+    const videos = window.checkForVideos();
+    return videos.length > 0 && videos.some(v => v.readyState >= 2);
+  }, { timeout: 60000 });
+ 
+  let videoLength = await page.evaluate(() => window.checkForVideos().length);
+  logTS(`Found ${videoLength} videos`);
+   
   if (encoderConfig.audioDevice) {
     logTS(`Attempting to set audio device: ${encoderConfig.audioDevice}`);
     
-    // Wait for browser to recognize audio devices
     await page.waitForFunction(() => {
       return navigator.mediaDevices && typeof navigator.mediaDevices.enumerateDevices === 'function';
     }, { timeout: 10000 });
-
+ 
+    logTS("done waiting for browser to find media")
+    
     try {
-      const deviceSet = await page.evaluate(async (deviceName) => {
-        // Function to check if audio can be set
+      const deviceSet = await page.evaluate(async (audioDevice) => {
         async function canSetAudio() {
           const devices = await navigator.mediaDevices.enumerateDevices();
           const audioDevices = devices.filter(d => d.kind === 'audiooutput');
-          return audioDevices.some(d => d.label.includes(deviceName));
+          return audioDevices.some(d => d.label.includes(audioDevice));
         }
-
-        // Function to set audio device with verification
+      
         async function setAndVerifyAudioDevice() {
           const devices = await navigator.mediaDevices.enumerateDevices();
           const targetDevice = devices
             .filter(d => d.kind === 'audiooutput')
-            .find(d => d.label.includes(deviceName));
+            .find(d => d.label.includes(audioDevice));
           
           if (!targetDevice) {
             console.log("Error no audiooutput devices found!")
             return false;
           } 
-
-          const videos = document.getElementsByTagName('video');
+ 
+          const allVideos = window.checkForVideos();
           let success = false;
-
-          for (const video of videos) {
+ 
+          for (const video of allVideos) {
             if (video.setSinkId) {
               try {
                 await video.setSinkId(targetDevice.deviceId);
-                // Verify the setting took effect
-                const currentSinkId = video.sinkId;
-                if (currentSinkId === targetDevice.deviceId) {
+                if (video.sinkId === targetDevice.deviceId) {
                   success = true;
                 }
               } catch (e) {
@@ -154,14 +171,12 @@ async function setupBrowserAudio(page, encoderConfig) {
           }
           return success;
         }
-
-        // Initial check for audio capability
+ 
         if (!await canSetAudio()) {
           await new Promise(resolve => setTimeout(resolve, 2000));
           if (!await canSetAudio()) return false;
         }
-
-        // Attempt to set audio with verification
+ 
         let attempts = 0;
         while (attempts < 5) {
           if (await setAndVerifyAudioDevice()) {
@@ -173,29 +188,28 @@ async function setupBrowserAudio(page, encoderConfig) {
         
         return false;
       }, encoderConfig.audioDevice);
-
+ 
       if (deviceSet) {
         logTS(`Successfully configured and verified audio device: ${encoderConfig.audioDevice}`);
       } else {
         logTS(`Failed to set audio device after verification attempts`);
       }
     } catch (error) {
-      logTS(`Error in audio device configuration: ${error.message}`);
+      logTS(`Error in audio device configuration: ${error.message}`, error);
     }
   }
-
-  // Additional verification after setup
+ 
   const audioStatus = await page.evaluate(() => {
-    const videos = document.getElementsByTagName('video');
-    return Array.from(videos).map(v => ({
+    const videos = window.checkForVideos();
+    return videos.map(v => ({
       readyState: v.readyState,
       sinkId: v.sinkId,
       hasAudio: v.mozHasAudio || Boolean(v.webkitAudioDecodedByteCount) || Boolean(v.audioTracks && v.audioTracks.length)
     }));
   });
-
+ 
   logTS('Final audio status:', audioStatus);
-};
+}
 
 // setup and launch browser
 async function launchBrowser(targetUrl, encoderConfig) {
@@ -238,8 +252,6 @@ async function launchBrowser(targetUrl, encoderConfig) {
       '--disable-background-timer-throttling',
       '--disable-background-media-suspend',
       '--disable-backgrounding-occluded-windows',
-//      '--enable-hardware-overlays=single-fullscreen,single-video',
-//      '--disable-features=UseOzonePlatform',
     ];
 
     // Add audio configuration if device specified
@@ -247,7 +259,7 @@ async function launchBrowser(targetUrl, encoderConfig) {
       logTS(`Configuring audio device: ${encoderConfig.audioDevice}`);
       launchArgs.push(
         '--use-fake-ui-for-media-stream',
-        `--audio-output-device=${encoderConfig.audioDevice}`,  // doesn't do anything
+        `--audio-output-device=${encoderConfig.audioDevice}`,  // didn't work, using different method
       );
       logTS(`Added audio configuration flags`);
     }
