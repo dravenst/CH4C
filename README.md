@@ -1,4 +1,4 @@
-# Chrome HDMI for Channels (CH4C) proof of concept
+# Chrome HDMI for Channels (CH4C)
 
 This project merges elements of the excellent [Chrome Capture for Channels](https://github.com/fancybits/chrome-capture-for-channels) and [HDMI for Channels](https://github.com/tmm1/androidhdmi-for-channels) projects, in an attempt to capture benefits of each.
 
@@ -17,10 +17,10 @@ Specifically:
 
 ### Hardware required
 * **Video source**: It's lightweight enough to run on your existing Channels box or a separate server.  (Windows exe available too.)
-* **Encoder**: I used the [Link Pi v3](https://a.co/d/76zJF9U) with a dual input ports - both hdmi and USB ports - using an [HDMI to USB card like this](https://www.amazon.com/dp/B0C2MDTY8P?ref=ppx_yo2ov_dt_b_fed_asin_title)
+* **Encoder**: I used the [Link Pi ENC1-v3](https://a.co/d/76zJF9U) with dual input ports - both hdmi and USB ports - using an [HDMI to USB card like this for the second port](https://www.amazon.com/dp/B0C2MDTY8P?ref=ppx_yo2ov_dt_b_fed_asin_title)
 
 ### Config
-* **Encoder**: I largely followed the guidelines [here](https://community.getchannels.com/t/linkpi-encoder-family/38860/4) to configure the encoders (setting 30 fps can help with performance).  Connect your PC HDMI port(s) to the external encoder box and confirm that you're able to see and hear on the encoder's streaming URL before you go any further.  Make sure your PC config is set to 1920x1080 for the PC display(s).
+* **Encoder**: I largely followed the guidelines [here](https://community.getchannels.com/t/linkpi-encoder-family/38860/4) to configure the encoders (setting 30 fps can help with performance and I also used the deinterlace feature).  Connect your PC HDMI port(s) to the external encoder box and confirm that you're able to see and hear on the encoder's streaming URL before you go any further using VLC or similar - see Stream menu and Play URL tab for links.  Make sure your PC config is set to 1920x1080 for the PC display(s).
 * **Installation**:
 Download the Windows exe `ch4c.exe` available in the latest [release](https://github.com/dravenst/CH4C/releases). You can create a ".ps1" file that can be used to run as a Windows startup task as outlined in the [chrome-capture thread](https://community.getchannels.com/t/chrome-capture-for-channels/36667/130)
 * **Video source**: on first startup, you will have to manually complete any one-time logins for the sites triggered by CH4C. Each browser instance uses it's own user directory, so you will have to launch browsers through ch4c to get to sites.  Run via node or the ch4c.exe to make this happen.  
@@ -94,7 +94,7 @@ Device               : CoreAudioApi.MMDevice
 
 ```
 
-* **Channels DVR custom channel**: create a custom channel following the example in constants.START_PAGE_HTML. If it's a linear channel like NFL Network you can also map the channel so you get guide data. See the sample.m3u file for more examples. Note the special 24.42 channel which is used for the Instant Recording feature.
+* **Channels DVR custom channel**: create a custom channel in the Channels DVR Settings->Sources following the example below. Be sure to set the Stream Format to `MPEG-TS`. If it's a linear channel like NFL Network you can also map the channel so you get guide data. See the [samples.m3u](https://github.com/dravenst/CH4C/blob/main/samples.m3u)file for more examples for Sling TV. Note the special 24.42 channel which is used for the Instant Recording feature.
 ![CustomChannels](https://github.com/user-attachments/assets/840526e5-3cef-4cd2-95c5-50ac12a32fc9)
 
 ### Using
@@ -107,16 +107,15 @@ CH4C can be used in several ways:
 ## Results
 
 ### Performance
-This works surprisingly well for me, with the failure case usually being flakiness in Chrome loading the video through my Xfinity authorization. Video quality is consistent 1080p/60.
+This works surprisingly well for me, with the failure case usually being flakiness in Chrome loading the video through my Xfinity authorization. Video quality is consistent.
 
 ### Likely Failures / Things I Haven't Tested
-* **Windows and Mac**: I've mainly tested on Pi5 and Windows, so Mac might glitch. The likely error would be in failing to find your Chrome instance and user data. I copied the logic for finding Chrome from CH4C so hopefully it works!
+* **Mac**: I've mainly tested on Pi5 and Windows, so Mac might glitch.
 * **Docker**: Same - I haven't tested at all but I copied from CH4C so hopefully it works!
-* **NBC sites problem 1**: unfortunately on my Pi5 the NBC sites do not load in Chromium. Even when I just open Chromium as a normal user, the video doesn't play and I get some Widevine DRM related error. Hopefully you'll have more luck on a Win/Mac, and if you are able to load NBC sites on a Pi please let me know how to do it!
-* **NBC sites problem 2**: I've also noticed even on my Windows machine that when I go to a NBC site I get a popup asking "Is Xfinity still your provider?". Even though I'm still logged into the site. So I have to figure out some way to have Pupeteer auto-click that popup.
+* **NBC sites on Linux problem**: unfortunately on my Pi5 the NBC sites do not load in Chromium. Even when I just open Chromium as a normal user, the video doesn't play and I get some Widevine DRM related error. Hopefully you'll have more luck on a Win/Mac, and if you are able to load NBC sites on a Pi please let me know how to do it!
 
 ## Gaps / next steps
 ### Packaged executable
-Similar to CH4C, create a Mac executable and docker deploy
+Create a Mac executable and docker deploy
 ### Business opportunity
 Imagine a Channels all-in-one box, analogous to the [Home Assistant Yellow](https://www.home-assistant.io/yellow/), that is essentially a Pi+Encoder. The Channels Box would seamlessly integrate both TV Everywhere and Chrome URLs, so if a channel drops from TVE then Channels would auto-switch to Chrome and we wouldn’t even notice!
