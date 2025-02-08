@@ -21,23 +21,11 @@ Specifically:
 
 ### Config
 * **Encoder**: I largely followed the guidelines [here](https://community.getchannels.com/t/linkpi-encoder-family/38860/4) to configure the encoders (setting 30 fps can help with performance and I also used the deinterlace feature).  Connect your PC HDMI port(s) to the external encoder box and confirm that you're able to see and hear on the encoder's streaming URL before you go any further using VLC or similar - see Stream menu and Play URL tab for links.  Make sure your PC config is set to 1920x1080 for the PC display(s).
-* **Installation**:
-Download the Windows exe `ch4c.exe` available in the latest [release](https://github.com/dravenst/CH4C/releases). You can create a ".ps1" file that can be used to run as a Windows startup task as outlined in the [chrome-capture thread](https://community.getchannels.com/t/chrome-capture-for-channels/36667/130)
-* **Video source**: on first startup, you will have to manually complete any one-time logins for the sites triggered by CH4C. Each browser instance uses it's own user directory, so you will have to launch browsers through ch4c to get to sites.  Run via node or the ch4c.exe to make this happen.  
 
-Or run `npm install` to install node packages if you're going to to run it via `node main.js`.  It uses the rebrowser-puppeteer-core package to help with bot detection for some sites.
+* **Installation Windows**:
+Download the Windows exe `ch4c.exe` available in the latest [release](https://github.com/dravenst/CH4C/releases). You can create a ".ps1" file that can be used to run as a Windows startup task as outlined in the [chrome-capture thread](https://community.getchannels.com/t/chrome-capture-for-channels/36667/130) or summarized below.  Or pull the source code locally and run `npm install` to install node packages if you're going to to run it via `node main.js`.  It uses the rebrowser-puppeteer-core package to help with bot detection for some sites.
 
-* **Windows Startup Configuration**:
-Create a new text file called `ch4c.ps1` and add the following line to it (replacing `(YOUR-PATH)` with your path to where you stored the .exe file, and replacing the IP of the channels url and encoder stream url with your config):
-`Start-Process -WindowStyle hidden -FilePath "(YOUR-PATH)\ch4c.exe" -ArgumentList "--channels-url", "http://192.168.50.50", "--encoder-stream-url", "http://192.168.50.71/live/stream0"`
-
-Or a more complex example using both encoder ports of the ENC1-V3:
-`Start-Process -WindowStyle hidden -FilePath "(YOUR-PATH)\ch4c.exe" -ArgumentList "--channels-url", "http://192.168.50.50", "--encoder-stream-url", "http://192.168.50.71/live/stream0:24.42:0:0:Encoder" "--encoder-stream-url", "http://192.168.50.72/live/stream1:24.43:1921:0:MACROSILICON"`
-
-
-Create a new task to run the `ch4c.ps1` file in Windows Task Scheduler with the highest privileges, and set it to trigger it when the user logs on (it's critical to run after user login to enable the GPU).
-
-Run the new Windows task you created manually to test it and be sure to visit all of the streaming sites within the browser that pops up after you try to stream your first channel.  This will allow you to login to the sites and retain the credentials for later runs. 
+* **First Run - configure video sources**: on first startup, you will have to manually complete any one-time logins for the sites triggered by CH4C. Each browser instance uses it's own user directory, so you will have to launch browsers through ch4c to get to sites.  Run via node or the ch4c.exe to make this happen.  
 
 * **Run parameters**: 
 It's required to pass in at least --channels-url and --encoder for your setup (see example below).  You can specify more than one encoder if you have multiple hdmi outputs available. 
@@ -97,6 +85,18 @@ ID                   : {0.0.0.00000000}.{a14f146f-a40c-41fe-827e-f4f4e6ed3d00}
 Device               : CoreAudioApi.MMDevice
 
 ```
+
+* **Windows Startup using Windows Task Scheduler**:
+  * **Windows Startup Configuration**:
+Create a new text file called `ch4c.ps1` and add the following line to it (replacing `(YOUR-PATH)` with your path to where you stored the .exe file, and replacing the IP of the channels url and encoder stream url with your config):
+`Start-Process -WindowStyle hidden -FilePath "(YOUR-PATH)\ch4c.exe" -ArgumentList "--channels-url", "http://192.168.50.50", "--encoder", "http://192.168.50.71/live/stream0"`
+
+  * **Windows Startup Configuration #2**:
+Or a more complex example for the `ch4c.ps1` file using both encoder ports of the ENC1-V3:
+`Start-Process -WindowStyle hidden -FilePath "(YOUR-PATH)\ch4c.exe" -ArgumentList "--channels-url", "http://192.168.50.50", "--encoder", "http://192.168.50.71/live/stream0:24.42:0:0:Encoder" "--encoder", "http://192.168.50.72/live/stream1:24.43:1921:0:MACROSILICON"`
+
+  * **Create Windows Task Scheduler Task**:
+Create a new task to run the `ch4c.ps1` file in Windows Task Scheduler with the highest privileges, and set it to trigger it when the user logs on (it's critical to run after user login to enable the GPU). Run the new Windows task you created manually to test it and be sure to visit all of the streaming sites within the browser that pops up after you try to stream your first channel.  This will allow you to login to the sites and retain the credentials for later runs. 
 
 * **Channels DVR custom channel**: create a custom channel in the Channels DVR Settings->Sources following the example below. Be sure to set the Stream Format to `MPEG-TS`. If it's a linear channel like NFL Network you can also map the channel so you get guide data. See the [samples.m3u](https://github.com/dravenst/CH4C/blob/main/samples.m3u)file for more examples for Sling TV. Note the special 24.42 channel which is used for the Instant Recording feature.
 ![CustomChannels](https://github.com/user-attachments/assets/840526e5-3cef-4cd2-95c5-50ac12a32fc9)
