@@ -31,6 +31,10 @@ Or run `npm install` to install node packages if you're going to to run it via `
 Create a new text file called `ch4c.ps1` and add the following line to it (replacing `(YOUR-PATH)` with your path to where you stored the .exe file, and replacing the IP of the channels url and encoder stream url with your config):
 `Start-Process -WindowStyle hidden -FilePath "(YOUR-PATH)\ch4c.exe" -ArgumentList "--channels-url", "http://192.168.50.50", "--encoder-stream-url", "http://192.168.50.71/live/stream0"`
 
+Or a more complex example using both encoder ports of the ENC1-V3:
+`Start-Process -WindowStyle hidden -FilePath "(YOUR-PATH)\ch4c.exe" -ArgumentList "--channels-url", "http://192.168.50.50", "--encoder-stream-url", "http://192.168.50.71/live/stream0:24.42:0:0:Encoder" "--encoder-stream-url", "http://192.168.50.72/live/stream1:24.43:1921:0:MACROSILICON"`
+
+
 Create a new task to run the `ch4c.ps1` file in Windows Task Scheduler with the highest privileges, and set it to trigger it when the user logs on (it's critical to run after user login to enable the GPU).
 
 Run the new Windows task you created manually to test it and be sure to visit all of the streaming sites within the browser that pops up after you try to stream your first channel.  This will allow you to login to the sites and retain the credentials for later runs. 
