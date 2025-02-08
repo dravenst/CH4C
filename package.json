@@ -18,7 +18,7 @@
   "homepage": "https://github.com/ParksideParade/CH4C#readme",
   "dependencies": {
     "express": "^4.19.2",
-    "puppeteer-core": "^23.11.1"
+    "puppeteer-core": "npm:rebrowser-puppeteer-core@^23.10.3"
   },
   "devDependencies": {
     "@eslint/js": "^9.11.1",
@@ -34,7 +34,9 @@
       "node_modules/puppeteer-stream/**"
     ],
     "outputPath": "dist",
-    "options": ["experimental-modules"]
+    "options": [
+      "experimental-modules"
+    ]
   },
   "scripts": {
     "build": "pkg ."

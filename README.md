@@ -25,7 +25,7 @@ Specifically:
 Download the Windows exe `ch4c.exe` available in the latest [release](https://github.com/dravenst/CH4C/releases). You can create a ".ps1" file that can be used to run as a Windows startup task as outlined in the [chrome-capture thread](https://community.getchannels.com/t/chrome-capture-for-channels/36667/130)
 * **Video source**: on first startup, you will have to manually complete any one-time logins for the sites triggered by CH4C. Each browser instance uses it's own user directory, so you will have to launch browsers through ch4c to get to sites.  Run via node or the ch4c.exe to make this happen.  
 
-Or run `npm install` to install node packages if you're going to to run it via `node main.js`
+Or run `npm install` to install node packages if you're going to to run it via `node main.js`.  It uses the rebrowser-puppeteer-core package to help with bot detection for some sites.
 
 * **Windows Startup Configuration**:
 Create a new text file called `ch4c.ps1` and add the following line to it (replacing `(YOUR-PATH)` with your path to where you stored the .exe file, and replacing the IP of the channels url and encoder stream url with your config):
