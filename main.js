@@ -465,6 +465,37 @@ async function fullScreenVideoSling(page) {
   logTS("finished change to fullscreen and max volume");
 }
 
+async function fullScreenVideoPeacock(page) {
+  logTS("URL contains peacocktv.com, going fullscreen");
+
+  // look for the mute button no the first screen
+  await page.waitForSelector('[data-testid="playback-volume-muted-icon"]', { visible: true });
+  await delay(200);
+  await page.keyboard.press('m'); // Press 'm' to unmute
+
+  logTS("finished unmuting volume");
+}
+
+async function fullScreenVideoSpectrum(page) {
+  logTS("URL contains spectrum.net, going fullscreen");
+
+  await delay(1030);
+  await page.evaluate(() => {
+    const element = document.documentElement;
+    if (element.requestFullscreen) {
+      element.requestFullscreen();
+    } else if (element.mozRequestFullScreen) {
+      element.mozRequestFullScreen();
+    } else if (element.webkitRequestFullscreen) {
+      element.webkitRequestFullscreen();
+    } else if (element.msRequestFullscreen) {
+      element.msRequestFullscreen();
+    }
+  });
+
+  logTS("finished change to fullscreen");
+}
+
 async function fullScreenVideoGooglePhotos(page) {
   logTS("URL contains Google Photos");
 
@@ -567,6 +598,24 @@ function getFullUrl (req) {
   return urlObj.toString();
 }
 
+async function fetchWithRetry(url, options = {}, maxRetries = 3) {
+  let retries = 0;
+  while (retries < maxRetries) {
+    try {
+      return await fetch(url, options);
+    } catch (error) {
+      if (error.code === 'ECONNRESET' && retries < maxRetries - 1) {
+        const delay = Math.pow(2, retries) * 1000; // Exponential backoff
+        logTS(`Connection reset, retrying in ${delay}ms...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        retries++;
+      } else {
+        throw error;
+      }
+    }
+  }
+}
+
 async function main() {
   const app = express()
   app.use(express.urlencoded({ extended: false }));
@@ -632,7 +681,7 @@ async function main() {
     });
   
     res.on('error', async err => {
-      console.log('response stream error for', availableEncoder.url, err);
+      logTS('response stream error for', availableEncoder.url, err);
       await cleanupManager.cleanup(availableEncoder.url, res);
     });
   
@@ -640,7 +689,9 @@ async function main() {
       page = await launchBrowser(targetUrl, availableEncoder);  // Pass the encoder config
   
       if (!cleanupManager.getState().isClosing) {
-        const fetchResponse = await fetch(availableEncoder.url);
+        const fetchResponse = await fetchWithRetry(availableEncoder.url, { 
+          timeout: 30000 // 30 second timeout
+        });
         if (!fetchResponse.ok) {
           throw new Error(`Encoder stream HTTP error: ${fetchResponse.status}`);
         }
@@ -666,6 +717,12 @@ async function main() {
             logTS("Handling Sling video");
             await fullScreenVideoSling(page);
           }
+          else if (targetUrl.includes("peacocktv.com")) {  
+            await fullScreenVideoPeacock(page);
+          }
+          else if (targetUrl.includes("spectrum.net")) {  
+            await fullScreenVideoSpectrum(page);
+          }
           // Handle Google Photo Album specific page
           else if (targetUrl.includes("photos.app.goo.gl")) {
             logTS("Handling Google Photos");
@@ -681,7 +738,7 @@ async function main() {
         }
       }
     } catch (e) {
-      console.log('failed to start browser or stream: ', targetUrl, e);
+      console.log('failed to start browser or stream, check encoder ip address: ', targetUrl, e);
       if (!res.headersSent) {
         res.status(500).send(`failed to start browser or stream: ${e}`);
       }
@@ -752,6 +809,12 @@ async function main() {
       // Handle Sling specific page
       if (req.body.recording_url.includes("watch.sling.com")) {  // Changed from req.query.url
         await fullScreenVideoSling(page);
+      }
+      else if (req.body.recording_url.includes("peacocktv.com")) {  
+        await fullScreenVideoPeacock(page);
+      }
+      else if (req.body.recording_url.includes("spectrum.net")) {  
+        await fullScreenVideoSpectrum(page);
       }
       // Handle Google Photo Album specific page
       else if (req.body.recording_url.includes("photos.app.goo.gl")) {  // Changed from req.query.url

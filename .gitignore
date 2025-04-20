@@ -3,3 +3,4 @@ node_modules/
 dist/
 *.ps1
 *.bat
+package-lock.json

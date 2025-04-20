@@ -6,6 +6,9 @@ http://192.168.50.71/live/stream0
 #EXTINF:-1 channel-id="CH4C_Weather" tvc-guide-placeholders="3600",Weatherscan
 http://192.168.50.50:2442/stream/?url=https://v2.weatherscan.net/
 
+#EXTINF:-1 channel-id="Hallmark",Hallmark
+http://192.168.50.109:2442/stream/?url=https://www.peacocktv.com/deeplink?deeplinkData=%7B%22serviceKey%22%3A%224846937553519166117%22%2C%22type%22%3A%22LINEAR_CHANNEL%22%2C%22action%22%3A%22PLAY%22%7D
+
 #EXTINF:-1 channel-id="Golf" tvc-guide-stationid="61854" channel-number="218",GOLFHD
 http://192.168.50.50:2442/stream?url=https://watch.sling.com/1/channel/e7c98734f996492187bb868ce5655a0e/watch
 
