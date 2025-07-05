@@ -25,7 +25,7 @@ Specifically:
 * **Installation Windows**:
 Download the Windows exe `ch4c.exe` available in the latest [release](https://github.com/dravenst/CH4C/releases). You can create a ".ps1" file that can be used to run as a Windows startup task as outlined in the [chrome-capture thread](https://community.getchannels.com/t/chrome-capture-for-channels/36667/130) or summarized below.  Or pull the source code locally and run `npm install` to install node packages if you're going to to run it via `node main.js`.  It uses the rebrowser-puppeteer-core package to help with bot detection for some sites.
 
-* **First Run - configure video sources**: on first startup, you will have to manually complete any one-time logins for the sites triggered by CH4C. Each browser instance uses it's own user directory, so you will have to launch browsers through ch4c to get to sites.  Run via node or the ch4c.exe to make this happen.  
+* **First Run - configure video sources**: on first startup, you will have to manually complete any one-time logins for the sites triggered by CH4C. Each browser instance uses it's own user directory, so you will have to launch browsers through ch4c to get to sites.  Run via node or the ch4c.exe to make this happen.  There were will be one browser instance per encoder created at startup and pooled for faster startup.
 
 * **Run parameters**: 
 It's required to pass in at least --channels-url and --encoder for your setup (see example below).  You can specify more than one encoder if you have multiple hdmi outputs available. 
@@ -106,7 +106,23 @@ CH4C can be used in several ways:
 * **Streaming channels**: supports nbc channels, NFL Network, Disney, Sling TV, Google Photos, and others available via web
 * **Custom channel**: using the custom channels that you created in Channels, simply use Channels to tune and record as you always would
 * **Instant**: go to <CH4C_IP_ADDRESS>:<CH4C_PORT>/instant and you should see a simple UI to instantly start recording any given URL. Or you can just "tune" your dedicated encoder channel to that URL, so you can then watch in Channels on channel number 24.42
-![Instant](https://github.com/user-attachments/assets/2e527984-4c09-45f7-84dc-fc39b65e893d)
+
+### Developing
+windows
+```
+winget install -e --id Git.Git
+winget install -e --id OpenJS.NodeJS
+
+git clone https://github.com/dravenst/CH4C
+cd CH4C
+npm install
+node main.js --help
+```
+
+Build the ch4c.exe executable for Windows
+```
+npm run build
+```
 
 ## Results
 

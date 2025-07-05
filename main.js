@@ -79,10 +79,28 @@ const createCleanupManager = () => {
       } catch (e) {
         logTS(`Error during cleanup for ${encoderUrl}:`, e);
       } finally {
-        await delay(2000);
-        closingStates.delete(encoderUrl);
-        activeBrowsers.delete(encoderUrl);
-        logTS(`Cleanup completed for encoder ${encoderUrl}`);
+        await delay(2000); // Original delay
+        closingStates.delete(encoderUrl); // Encoder is no longer in a "closing" state
+        // activeBrowsers.delete(encoderUrl); // REMOVED from here: conditional delete below
+
+        // Re-initialize the browser in the pool
+        const encoderConfig = Constants.ENCODERS.find(e => e.url === encoderUrl);
+        if (encoderConfig) {
+          logTS(`Attempting to re-initialize browser for ${encoderUrl} in pool after cleanup.`);
+          const repoolSuccess = await launchBrowser("about:blank", encoderConfig, true, false);
+
+          if (repoolSuccess) {
+            logTS(`Successfully re-initialized and minimized browser for ${encoderUrl} in pool.`);
+            activeBrowsers.delete(encoderUrl); // Make encoder available ONLY on successful re-pool
+          } else {
+            logTS(`CRITICAL: Failed to re-initialize browser for ${encoderUrl} in pool. Encoder will remain marked as 'active' to prevent reuse.`);
+            // By not deleting from activeBrowsers, it remains "in use" and won't be selected by canStartBrowser().
+          }
+        } else {
+          logTS(`Could not find encoderConfig for ${encoderUrl} to re-initialize browser. Encoder slot ${encoderUrl} will remain active.`);
+          // Not deleting from activeBrowsers as a precaution if config is missing
+        }
+        logTS(`Cleanup process completed for encoder ${encoderUrl}`);
       }
     },
     canStartBrowser: (encoderUrl) => !closingStates.get(encoderUrl) && !activeBrowsers.has(encoderUrl),
@@ -212,7 +230,7 @@ async function setupBrowserAudio(page, encoderConfig) {
 }
 
 // setup and launch browser
-async function launchBrowser(targetUrl, encoderConfig) {
+async function launchBrowser(targetUrl, encoderConfig, startMinimized, applyStartFullScreenArg = true) {
   logTS(`starting browser for encoder ${encoderConfig.url} at position ${encoderConfig.width},${encoderConfig.height}`);
   
   if (browsers.has(encoderConfig.url)) {
@@ -237,38 +255,47 @@ async function launchBrowser(targetUrl, encoderConfig) {
     const launchArgs = [
       '--no-first-run',
       '--hide-crash-restore-bubble',
+      '--test-type', // To hide "Chrome is being controlled..." infobar
       '--disable-blink-features=AutomationControlled',
       '--disable-notifications',
       '--disable-session-crashed-bubble',
       '--noerrdialogs',
       '--no-default-browser-check',
       '--hide-scrollbars',
-      '--start-fullscreen',  // full screen browser
       '--allow-running-insecure-content',
       '--autoplay-policy=no-user-gesture-required',
       `--window-position=${encoderConfig.width},${encoderConfig.height}`,
-      '--new-window', // new browser window for each encoder
+//      '--window-size=1920,1080', // Added fixed window size
+      '--new-window', // Ensures a new window for each encoder/stream
       '--disable-background-networking',
       '--disable-background-timer-throttling',
       '--disable-background-media-suspend',
       '--disable-backgrounding-occluded-windows',
     ];
 
+    if (applyStartFullScreenArg) {
+      launchArgs.push('--start-fullscreen');
+    }
+
+    // The --window-size logic is intentionally left out/commented as per the revert requirement
+    // The --window-size logic based on detectedScreenWidth/Height is removed.
+    // Fixed --window-size=1920,1080 is added directly to launchArgs array above.
+
+    // Ensure '--start-minimized' is NOT added to launchArgs (CDP is used for minimization)
+
     // Add audio configuration if device specified
     if (encoderConfig.audioDevice) {
       logTS(`Configuring audio device: ${encoderConfig.audioDevice}`);
       launchArgs.push(
         '--use-fake-ui-for-media-stream',
-        `--audio-output-device=${encoderConfig.audioDevice}`,  // didn't work, using different method
+        `--audio-output-device=${encoderConfig.audioDevice}`
       );
       logTS(`Added audio configuration flags`);
     }
 
     // Couldn't find a way to redirect sound for Google so mute it
     if (targetUrl.includes("photos.app.goo.gl")) {
-      launchArgs.push(
-        '--mute-audio',
-      );
+      launchArgs.push('--mute-audio');
       logTS('Mute sound for google photos');
     }
 
@@ -300,7 +327,15 @@ async function launchBrowser(targetUrl, encoderConfig) {
     }
 
     browsers.set(encoderConfig.url, browser);
-    const page = await browser.newPage();
+    let page;
+    const pages = await browser.pages();
+    if (pages && pages.length > 0) {
+      logTS(`Using existing page for encoder ${encoderConfig.url}`);
+      page = pages[0];
+    } else {
+      logTS(`No existing page found, creating new page for encoder ${encoderConfig.url}`);
+      page = await browser.newPage();
+    }
 
     logTS(`loading page for encoder ${encoderConfig.url}`);
 
@@ -312,39 +347,74 @@ async function launchBrowser(targetUrl, encoderConfig) {
     }, encoderConfig.width, encoderConfig.height);
     await delay(1000);
 
+    // Navigate the page
     if (targetUrl) {
-      if ((targetUrl.includes("watch.sling.com")) || (targetUrl.includes("photos.app.goo.gl"))) {
-        // First wait for initial page load
-        await page.goto(targetUrl, {
-          waitUntil: 'load', // Wait for page elements to load only
-          timeout: 30000
-        });
-      }
-      else {
-        await Promise.race([
-          page.goto(targetUrl, { 
-            waitUntil: 'networkidle2', // Wait for page elements to load and network activity to decrease
-            timeout: navigationTimeout 
-          }),
-          new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('Navigation timeout')), navigationTimeout)
-          )
-        ]);
+      try {
+        if (targetUrl === "about:blank") {
+          await page.goto(targetUrl, { waitUntil: 'load', timeout: 5000 });
+        } else {
+          // Existing navigation logic for actual content URLs
+          if ((targetUrl.includes("watch.sling.com")) || (targetUrl.includes("photos.app.goo.gl"))) {
+            await page.goto(targetUrl, {
+              waitUntil: 'load',
+              timeout: 30000
+            });
+          } else {
+            await Promise.race([
+              page.goto(targetUrl, { 
+                waitUntil: 'networkidle2',
+                timeout: navigationTimeout 
+              }),
+              new Promise((_, reject) => 
+                setTimeout(() => reject(new Error('Navigation timeout')), navigationTimeout)
+              )
+            ]);
+          }
+        }
+      } catch (error) {
+        if (targetUrl === "about:blank") {
+          logTS(`Error navigating to about:blank for pooling ${encoderConfig.url}: ${error.message}`);
+          if (browser && browser.isConnected()) { // Safely attempt to close
+            try { await browser.close(); } catch (closeErr) { logTS(`Error closing browser during about:blank nav failure: ${closeErr.message}`); }
+          }
+          browsers.delete(encoderConfig.url); // Ensure it's removed from the map
+          return false; // Specific failure for pooling
+        }
+        throw error; // Re-throw for non-pooling goto errors to be caught by outer catch
       }
 
       logTS(`page fully loaded for encoder ${encoderConfig.url}`);
-      return page;
+
+      if (startMinimized) {
+        logTS(`Attempting CDP minimization for encoder ${encoderConfig.url}`);
+        try {
+          const session = await page.createCDPSession();
+          const {windowId} = await session.send('Browser.getWindowForTarget');
+          await session.send('Browser.setWindowBounds', {windowId, bounds: {windowState: 'minimized'}});
+          await session.detach();
+          logTS(`Successfully minimized window via CDP for encoder ${encoderConfig.url}`);
+          await delay(500); // Add 500ms delay to allow window state to settle
+        } catch (cdpError) {
+          logTS(`Error minimizing window via CDP for ${encoderConfig.url}:`, cdpError.message);
+          // Decide if we should throw here or just log. For now, just log.
+        }
+      }
+      return true; // Successfully launched and set up
     }
     else {
-      throw new Error('targetUrl not defined');
+      // This case should ideally not be reached if targetUrl is always expected.
+      // If it can be null/undefined for some valid reason not related to pooling, 
+      // this might need adjustment. For now, treat as error for pooling.
+      logTS(`targetUrl is not defined for encoder ${encoderConfig.url}. This is unexpected.`);
+      return false; // Or throw new Error('targetUrl not defined');
     }
   } catch (error) {
     logTS(`Error launching browser for encoder ${encoderConfig.url}:`);
     logTS(error.stack || error.message || error);
     if (browsers.has(encoderConfig.url)) {
-      browsers.delete(encoderConfig.url);
+      browsers.delete(encoderConfig.url); 
     }
-    throw error;
+    return false; // General launch failure
   }
 }
 
@@ -616,6 +686,21 @@ async function fetchWithRetry(url, options = {}, maxRetries = 3) {
   }
 }
 
+async function initializeBrowserPool() {
+  logTS('Initializing browser pool...');
+  for (const encoderConfig of Constants.ENCODERS) {
+    try {
+      logTS(`Initializing browser for encoder: ${encoderConfig.url}`);
+      await launchBrowser("about:blank", encoderConfig, true, false); // Removed screenWidth, screenHeight
+      logTS(`Successfully initialized browser for encoder: ${encoderConfig.url}`);
+    } catch (error) {
+      logTS(`Error initializing browser for encoder ${encoderConfig.url}:`, error.message);
+      // Continue to initialize other browsers even if one fails
+    }
+  }
+  logTS('Browser pool initialization complete.');
+}
+
 async function main() {
   const app = express()
   app.use(express.urlencoded({ extended: false }));
@@ -624,7 +709,8 @@ async function main() {
   app.locals.config = Constants;
 
   // Create a single cleanup manager instance for the application
-  app.locals.cleanupManager = createCleanupManager();
+  // This is done after screen dimensions are detected.
+  // app.locals.cleanupManager = createCleanupManager(); // Will be set after screen detection
 
   chromeDataDir = Constants.CHROME_USERDATA_DIRECTORIES[process.platform].find(existsSync)
   if (!chromeDataDir) {
@@ -635,6 +721,39 @@ async function main() {
   if (!chromePath) {
     console.log('cannot find Chrome Executable Directory')
     return
+  }
+
+  // Screen dimension detection logic removed.
+  // Fallback to default or encoder-specific config for dimensions.
+  // The createCleanupManager and initializeBrowserPool will need to be updated
+  // if they expect these exact variable names, or be adapted to not require them.
+  // For now, we assume they might use defaults or other config sources if these are not passed.
+  // This step only removes the detection block. Subsequent steps will adjust consumers.
+  //app.locals.cleanupManager = createCleanupManager(); // Will be set after screen detection
+
+  chromeDataDir = Constants.CHROME_USERDATA_DIRECTORIES[process.platform].find(existsSync)
+  if (!chromeDataDir) {
+    console.log('cannot find Chrome User Data Directory')
+    return
+  }
+  chromePath = getExecutablePath()
+  if (!chromePath) {
+    console.log('cannot find Chrome Executable Directory')
+    return
+  }
+
+  // Screen dimension detection logic is removed.
+
+  app.locals.cleanupManager = createCleanupManager();
+
+  // Initialize the browser pool
+  try {
+    await initializeBrowserPool(); 
+  } catch (error) {
+    logTS('Catastrophic error during browser pool initialization:', error);
+    // Depending on the severity, you might want to exit the process
+    // process.exit(1); 
+    // For now, just log and continue, as individual errors are handled in initializeBrowserPool
   }
 
   app.get('/', async (req, res) => {
@@ -653,14 +772,15 @@ async function main() {
     const cleanupManager = req.app.locals.cleanupManager;
     const config = req.app.locals.config;
 
-     // Get the first available encoder config
-    const availableEncoder = Constants.ENCODERS.find(encoder => 
-      !browsers.has(encoder.url) && cleanupManager.canStartBrowser(encoder.url)
+    // Get the first available encoder config from the pool
+    const availableEncoder = Constants.ENCODERS.find(encoder =>
+      browsers.has(encoder.url) && // Ensure it was successfully pooled
+      cleanupManager.canStartBrowser(encoder.url) // Checks not closing AND not active
     );
   
     if (!availableEncoder) {
-      logTS('No available encoders, rejecting request');
-      res.status(503).send('All encoders are currently in use');
+      logTS('No available pooled encoders, rejecting request');
+      res.status(503).send('All encoders are currently in use or not initialized');
       return;
     }
   
@@ -686,7 +806,78 @@ async function main() {
     });
   
     try {
-      page = await launchBrowser(targetUrl, availableEncoder);  // Pass the encoder config
+      const browser = browsers.get(availableEncoder.url);
+      if (!browser) {
+        // This should ideally not happen if availableEncoder logic is correct
+        logTS(`Error: Browser instance not found for available encoder ${availableEncoder.url}`);
+        if (!res.headersSent) {
+          res.status(500).send('Internal server error: encoder browser not found');
+        }
+        await cleanupManager.cleanup(availableEncoder.url, res); // Attempt cleanup
+        return;
+      }
+
+      const pages = await browser.pages();
+      page = pages.length > 0 ? pages[0] : null;
+
+      if (!page) {
+        logTS(`Error: No page found for browser ${availableEncoder.url}. Attempting to open a new one.`);
+        // Try to open a new page if one doesn't exist (e.g. if it was closed accidentally)
+        page = await browser.newPage();
+        if (!page) {
+           logTS(`Error: Failed to open new page for browser ${availableEncoder.url}`);
+           if (!res.headersSent) {
+             res.status(500).send('Internal server error: failed to get browser page');
+           }
+           await cleanupManager.cleanup(availableEncoder.url, res);
+           return;
+        }
+      }
+      
+      await page.bringToFront();
+
+      try {
+        logTS(`Attempting CDP fullscreen for encoder ${availableEncoder.url} before navigation`);
+        const session = await page.createCDPSession(); // Use updated method
+        const {windowId} = await session.send('Browser.getWindowForTarget');
+        await session.send('Browser.setWindowBounds', {windowId, bounds: {windowState: 'fullscreen'}});
+        await session.detach();
+        logTS(`Successfully set window to fullscreen via CDP for encoder ${availableEncoder.url}`);
+      } catch (cdpError) {
+        logTS(`Error setting window to fullscreen via CDP for ${availableEncoder.url}: ${cdpError.message}`);
+        // Continue execution, as navigation and site-specific fullscreen might still work
+      }
+
+      // Navigate the page to the target URL
+      if (targetUrl) {
+        const navigationTimeout = 30000;
+        if ((targetUrl.includes("watch.sling.com")) || (targetUrl.includes("photos.app.goo.gl"))) {
+            await page.goto(targetUrl, {
+                waitUntil: 'load',
+                timeout: 30000
+            });
+        } else {
+            await Promise.race([
+                page.goto(targetUrl, {
+                    waitUntil: 'networkidle2',
+                    timeout: navigationTimeout
+                }),
+                new Promise((_, reject) =>
+                    setTimeout(() => reject(new Error('Navigation timeout')), navigationTimeout)
+                )
+            ]);
+        }
+        logTS(`Page navigated to ${targetUrl} for encoder ${availableEncoder.url}`);
+
+      } else {
+        // This case should ideally be caught by getFullUrl, but as a safeguard:
+        logTS('Error: targetUrl is not defined before navigation attempt.');
+        if (!res.headersSent) {
+          res.status(500).send('Internal server error: target URL not defined.');
+        }
+        await cleanupManager.cleanup(availableEncoder.url, res);
+        return;
+      }
   
       if (!cleanupManager.getState().isClosing) {
         const fetchResponse = await fetchWithRetry(availableEncoder.url, { 
@@ -754,14 +945,15 @@ async function main() {
   app.post('/instant', async (req, res) => {
     const cleanupManager = req.app.locals.cleanupManager;
     
-    // Get the first available encoder config
-    const availableEncoder = Constants.ENCODERS.find(encoder => 
-      cleanupManager.canStartBrowser(encoder.url)
+    // Get the first available encoder config from the pool
+    const availableEncoder = Constants.ENCODERS.find(encoder =>
+      browsers.has(encoder.url) && // Ensure it was successfully pooled
+      cleanupManager.canStartBrowser(encoder.url) // Checks not closing AND not active
     );
 
     if (!availableEncoder) {
-      logTS('No available encoders, rejecting request');
-      res.status(503).send('Server is busy, please try again later');
+      logTS('No available pooled encoders, rejecting request for /instant');
+      res.status(503).send('All encoders are currently in use or not initialized');
       return;
     }
         
@@ -783,7 +975,76 @@ async function main() {
     cleanupManager.setBrowserActive(availableEncoder.url);
 
     try {
-      page = await launchBrowser(req.body.recording_url, availableEncoder);  // Pass the encoder config
+      const browser = browsers.get(availableEncoder.url);
+      if (!browser) {
+        logTS(`Error: Browser instance not found for available encoder ${availableEncoder.url} in /instant`);
+        if (!res.headersSent) {
+          res.status(500).send('Internal server error: encoder browser not found');
+        }
+        await cleanupManager.cleanup(availableEncoder.url, res);
+        return;
+      }
+
+      const pages = await browser.pages();
+      page = pages.length > 0 ? pages[0] : null;
+
+      if (!page) {
+        logTS(`Error: No page found for browser ${availableEncoder.url} in /instant. Attempting to open a new one.`);
+        page = await browser.newPage();
+        if (!page) {
+            logTS(`Error: Failed to open new page for browser ${availableEncoder.url} in /instant`);
+            if (!res.headersSent) {
+                res.status(500).send('Internal server error: failed to get browser page');
+            }
+            await cleanupManager.cleanup(availableEncoder.url, res);
+            return;
+        }
+      }
+
+      await page.bringToFront();
+
+      try {
+        logTS(`Attempting CDP fullscreen for encoder ${availableEncoder.url} in /instant before navigation`);
+        const session = await page.createCDPSession(); // Use updated method
+        const {windowId} = await session.send('Browser.getWindowForTarget');
+        await session.send('Browser.setWindowBounds', {windowId, bounds: {windowState: 'fullscreen'}});
+        await session.detach();
+        logTS(`Successfully set window to fullscreen via CDP for encoder ${availableEncoder.url} in /instant`);
+      } catch (cdpError) {
+        logTS(`Error setting window to fullscreen via CDP for ${availableEncoder.url} in /instant: ${cdpError.message}`);
+        // Continue execution, as navigation and site-specific fullscreen might still work
+      }
+      
+      const targetUrl = req.body.recording_url;
+      if (targetUrl) {
+        const navigationTimeout = 30000;
+        if ((targetUrl.includes("watch.sling.com")) || (targetUrl.includes("photos.app.goo.gl"))) {
+            await page.goto(targetUrl, {
+                waitUntil: 'load',
+                timeout: 30000
+            });
+        } else {
+            await Promise.race([
+                page.goto(targetUrl, {
+                    waitUntil: 'networkidle2',
+                    timeout: navigationTimeout
+                }),
+                new Promise((_, reject) =>
+                    setTimeout(() => reject(new Error('Navigation timeout')), navigationTimeout)
+                )
+            ]);
+        }
+        logTS(`Page navigated to ${targetUrl} for encoder ${availableEncoder.url} in /instant`);
+
+      } else {
+        logTS('Error: recording_url is not defined in /instant.');
+        if (!res.headersSent) {
+            res.status(400).send('Bad request: recording_url is required.');
+        }
+        await cleanupManager.cleanup(availableEncoder.url, res);
+        return;
+      }
+
     } catch (e) {
       console.log('failed to start browser page, ensure not already running', e);
       if (!res.headersSent) {
