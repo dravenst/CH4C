@@ -99,6 +99,9 @@ http://192.168.50.50:2442/stream?url=https://watch.sling.com/1/channel/1594693b9
 #EXTINF:-1 channel-id="CARTOON" tvc-guide-stationid="60048" channel-number="296",CARTOON
 http://192.168.50.50:2442/stream?url=https://watch.sling.com/1/channel/ab508c097c5b41cbb0626dcc3fc9470a/watch
 
+#EXTINF:-1 channel-id="BTN"  tvc-guide-stationid="403557" channel-number="6199",BTN
+http://192.168.50.50:2442/stream?url=https://watch.sling.com/1/channel/0984387944df47b58a687d60babc2c43/watch
+
 #EXTINF:-1 channel-id="nbatv" tvc-guide-stationid="45526" channel-number="216",NBATV
 http://192.168.50.50:2442/stream?url=https://watch.sling.com/1/channel/0e87a84170da4646aa90528abfcbe2a9/watch
 
