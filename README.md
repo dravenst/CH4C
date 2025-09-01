@@ -142,8 +142,8 @@ npm run build
 ### Performance
 This works surprisingly well for me, but the streaming providers can have some glitches that prevent consistent loading of screens.
 
-* **Health Status**: Basic Health status is available at http://<YOUR CH4C IP>:<YOUR CH4C PORT>/health
-* **Audio Devices**: Audio Device list detected by CH4C available at http://<YOUR CH4C IP>:<YOUR CH4C PORT>/audio-devices
+* **Health Status**: Basic Health status is available at http://\<YOUR-CH4C-IP\>:\<YOUR-CH4C-PORT\>/health
+* **Audio Devices**: Audio Device list detected by CH4C available at http://\<YOUR-CH4C-IP\>:\<YOUR-CH4C-PORT\>/audio-devices
 
 ### Likely Failures / Things I Haven't Tested
 * **Mac and Docker**: This is optimized for Windows, so it's not likely to work well on Mac of Docker yet
