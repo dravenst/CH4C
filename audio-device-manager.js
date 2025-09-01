@@ -39,10 +39,7 @@ class AudioDeviceManager {
 
     // Try methods in order of reliability
     const methods = [
-      () => this.getDevicesViaWaveOut(),
-      () => this.getDevicesViaWMI(),
-      () => this.getDevicesViaPowerShellSimple(),
-      () => this.getDefaultDevices()
+      () => this.getDevicesViaWaveOut()
     ];
 
     for (const method of methods) {
@@ -87,45 +84,53 @@ try {
   } catch {
     Write-Host "Get-AudioDevice not available, trying alternative methods..."
   }
-  
-  # Method 2: Try to get full endpoint names using WMI and DirectShow
+
+  # Method 2: Direct registry enumeration of audio endpoints
   try {
-    # Get audio endpoints with full names using WMI Win32_PnPEntity
-    $audioDevices = Get-WmiObject -Class Win32_PnPEntity | Where-Object { 
-      $_.Name -match "audio" -or 
-      $_.Name -match "HDMI" -or 
-      $_.Name -match "Speaker" -or 
-      $_.Name -match "Encoder" -or
-      $_.Name -match "USB" -or
-      $_.Name -match "MACROSILICON" -or
-      $_.DeviceID -match "HDAUDIO" -or
-      $_.DeviceID -match "USB\\\\VID" -or
-      $_.Service -eq "HDAudBus" -or
-      $_.Service -eq "usbaudio"
-    }
+    $devices = @()
+    $renderPath = "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\MMDevices\\Audio\\Render"
     
-    foreach ($device in $audioDevices) {
-      if ($device.Name -and $device.Name.Trim() -ne "" -and $device.Name -notmatch "Generic") {
-        $name = $device.Name.Trim()
-        # Clean up common suffixes that don't help with identification
-        $name = $name -replace "\\s*\\(.*High Definition.*\\)\\s*$", ""
-        $name = $name -replace "\\s*- .*$", ""
-        if ($name -and $name.Length -gt 3) {
-          $devices += $name
+    if (Test-Path $renderPath) {
+      $deviceKeys = Get-ChildItem $renderPath
+      
+      foreach ($deviceKey in $deviceKeys) {
+        try {
+          $propsPath = Join-Path $deviceKey.PSPath "Properties"
+          if (Test-Path $propsPath) {
+            # Try to get the device description (different property)
+            $desc = Get-ItemProperty -Path $propsPath -Name "{a45c254e-df1c-4efd-8020-67d146a850e0},2" -ErrorAction SilentlyContinue
+            if ($desc -and $desc."{a45c254e-df1c-4efd-8020-67d146a850e0},2") {
+              $deviceName = $desc."{a45c254e-df1c-4efd-8020-67d146a850e0},2"
+              if ($deviceName -and $deviceName.Trim() -ne "") {
+                $devices += $deviceName.Trim()
+              }
+            } else {
+              # Fallback to friendly name
+              $friendly = Get-ItemProperty -Path $propsPath -Name "{a45c254e-df1c-4efd-8020-67d146a850e0},14" -ErrorAction SilentlyContinue
+              if ($friendly -and $friendly."{a45c254e-df1c-4efd-8020-67d146a850e0},14") {
+                $deviceName = $friendly."{a45c254e-df1c-4efd-8020-67d146a850e0},14"
+                if ($deviceName -and $deviceName.Trim() -ne "") {
+                  $devices += $deviceName.Trim()
+                }
+              }
+            }
+          }
+        } catch {
+          # Skip this device
+          continue
         }
       }
     }
     
     if ($devices.Count -gt 0) {
-      # Remove duplicates and sort
       $devices = $devices | Sort-Object -Unique
       $devices | ConvertTo-Json -Compress
       exit
     }
   } catch {
-    Write-Host "PnP method failed, trying audio endpoint enumeration..."
+    Write-Host "Registry method failed, trying audio endpoint enumeration..."
   }
-  
+
   # Method 3: Try PowerShell with Audio endpoint enumeration
   try {
     Add-Type -AssemblyName System.Core
@@ -183,70 +188,45 @@ try {
       exit
     }
   } catch {
-    Write-Host "Enhanced WaveOut method failed, trying registry..."
+    Write-Host "Enhanced WaveOut method failed, trying WMI and DirectShow..."
   }
   
-  # Method 4: Direct registry enumeration of audio endpoints
+  # Method 4: Try to get full endpoint names using WMI and DirectShow
   try {
-    $devices = @()
-    $renderPath = "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\MMDevices\\Audio\\Render"
+    # Get audio endpoints with full names using WMI Win32_PnPEntity
+    $audioDevices = Get-WmiObject -Class Win32_PnPEntity | Where-Object { 
+      $_.Name -match "audio" -or 
+      $_.Name -match "HDMI" -or 
+      $_.Name -match "Speaker" -or 
+      $_.Name -match "Encoder" -or
+      $_.Name -match "USB" -or
+      $_.Name -match "MACROSILICON" -or
+      $_.DeviceID -match "HDAUDIO" -or
+      $_.DeviceID -match "USB\\\\VID" -or
+      $_.Service -eq "HDAudBus" -or
+      $_.Service -eq "usbaudio"
+    }
     
-    if (Test-Path $renderPath) {
-      $deviceKeys = Get-ChildItem $renderPath
-      
-      foreach ($deviceKey in $deviceKeys) {
-        try {
-          $propsPath = Join-Path $deviceKey.PSPath "Properties"
-          if (Test-Path $propsPath) {
-            # Try to get the device description (different property)
-            $desc = Get-ItemProperty -Path $propsPath -Name "{a45c254e-df1c-4efd-8020-67d146a850e0},2" -ErrorAction SilentlyContinue
-            if ($desc -and $desc."{a45c254e-df1c-4efd-8020-67d146a850e0},2") {
-              $deviceName = $desc."{a45c254e-df1c-4efd-8020-67d146a850e0},2"
-              if ($deviceName -and $deviceName.Trim() -ne "") {
-                $devices += $deviceName.Trim()
-              }
-            } else {
-              # Fallback to friendly name
-              $friendly = Get-ItemProperty -Path $propsPath -Name "{a45c254e-df1c-4efd-8020-67d146a850e0},14" -ErrorAction SilentlyContinue
-              if ($friendly -and $friendly."{a45c254e-df1c-4efd-8020-67d146a850e0},14") {
-                $deviceName = $friendly."{a45c254e-df1c-4efd-8020-67d146a850e0},14"
-                if ($deviceName -and $deviceName.Trim() -ne "") {
-                  $devices += $deviceName.Trim()
-                }
-              }
-            }
-          }
-        } catch {
-          # Skip this device
-          continue
+    foreach ($device in $audioDevices) {
+      if ($device.Name -and $device.Name.Trim() -ne "" -and $device.Name -notmatch "Generic") {
+        $name = $device.Name.Trim()
+        # Clean up common suffixes that don't help with identification
+        $name = $name -replace "\\s*\\(.*High Definition.*\\)\\s*$", ""
+        $name = $name -replace "\\s*- .*$", ""
+        if ($name -and $name.Length -gt 3) {
+          $devices += $name
         }
       }
     }
     
     if ($devices.Count -gt 0) {
+      # Remove duplicates and sort
       $devices = $devices | Sort-Object -Unique
       $devices | ConvertTo-Json -Compress
       exit
     }
   } catch {
-    Write-Host "Registry method failed, trying WMI..."
-  }
-  
-  # Method 5: Standard WMI fallback
-  try {
-    $devices = @()
-    Get-WmiObject -Class Win32_SoundDevice | ForEach-Object {
-      if ($_.Name -and $_.Name.Trim() -ne "") {
-        $devices += $_.Name.Trim()
-      }
-    }
-    
-    if ($devices.Count -gt 0) {
-      $devices | ConvertTo-Json -Compress
-      exit
-    }
-  } catch {
-    Write-Host "All methods failed"
+    Write-Host "PnP method failed, trying audio endpoint enumeration..."
   }
   
   # Final fallback
@@ -347,74 +327,6 @@ try {
           } catch (parseError) {
             console.log('Failed to parse WaveOut output:', cleanOutput);
             reject(parseError);
-          }
-        });
-    });
-  }
-
-  /**
-   * Method 2: Use WMI (fallback)
-   */
-  async getDevicesViaWMI() {
-    return new Promise((resolve, reject) => {
-      exec('wmic sounddev get Name /format:list',
-        { encoding: 'utf8', windowsHide: true, timeout: 5000 },
-        (error, stdout, stderr) => {
-          if (error) {
-            reject(error);
-            return;
-          }
-
-          const devices = [];
-          const lines = stdout.split('\n');
-          
-          lines.forEach(line => {
-            const trimmedLine = line.trim();
-            if (trimmedLine.startsWith('Name=')) {
-              const name = trimmedLine.substring(5).trim();
-              if (name && name.length > 0 && name !== 'Name') {
-                devices.push(name);
-              }
-            }
-          });
-
-          if (devices.length > 0) {
-            console.log(`Found ${devices.length} audio devices via WMI`);
-            devices.forEach(d => console.log(`  - ${d}`));
-            resolve(devices);
-          } else {
-            reject(new Error('No devices found'));
-          }
-        });
-    });
-  }
-
-  /**
-   * Method 3: Simple PowerShell command
-   */
-  async getDevicesViaPowerShellSimple() {
-    return new Promise((resolve, reject) => {
-      // Very simple PowerShell that lists sound devices
-      const script = 'Get-CimInstance Win32_SoundDevice | Select-Object -ExpandProperty Name';
-      
-      exec(`powershell -NoProfile -Command "${script}"`,
-        { encoding: 'utf8', windowsHide: true, timeout: 5000 },
-        (error, stdout, stderr) => {
-          if (error) {
-            reject(error);
-            return;
-          }
-
-          const devices = stdout.split('\n')
-            .map(line => line.trim())
-            .filter(line => line.length > 0 && !line.startsWith('WARNING:') && !line.startsWith('ERROR:'));
-
-          if (devices.length > 0) {
-            console.log(`Found ${devices.length} audio devices via PowerShell`);
-            devices.forEach(d => console.log(`  - ${d}`));
-            resolve(devices);
-          } else {
-            reject(new Error('No devices found'));
           }
         });
     });
