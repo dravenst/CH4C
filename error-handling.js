@@ -1,5 +1,7 @@
 // error-handling.js
 const fetch = require('node-fetch');
+const { execSync } = require('child_process');
+const os = require('os');
 
 // Helper function - add this since it's used by the error handling code
 function delay(ms) {
@@ -10,6 +12,62 @@ function delay(ms) {
 function logTS(message , ...args) {
   const timestamp = new Date().toLocaleString();
   console.log(`[${timestamp}]`, message, ...args);
+}
+
+/**
+ * Force kill all Chrome processes associated with a specific user data directory
+ * This is needed when Chrome crashes but leaves zombie processes holding locks
+ * @param {string} userDataDir - The user data directory path
+ */
+async function killChromeProcessesForUserData(userDataDir) {
+  if (os.platform() !== 'win32') {
+    // For Linux/Mac, we could use pgrep/pkill but this is mainly for Windows
+    logTS('Chrome process killing only implemented for Windows');
+    return;
+  }
+
+  try {
+    // Normalize the path for comparison
+    const normalizedPath = userDataDir.toLowerCase().replace(/\//g, '\\');
+
+    // Get all Chrome processes with their command lines
+    const output = execSync('wmic process where "name=\'chrome.exe\'" get commandline,processid', {
+      encoding: 'utf8',
+      timeout: 5000
+    });
+
+    const lines = output.split('\n');
+    const pidsToKill = [];
+
+    for (const line of lines) {
+      const lowerLine = line.toLowerCase();
+      if (lowerLine.includes(normalizedPath)) {
+        // Extract PID from the end of the line
+        const match = line.trim().match(/(\d+)\s*$/);
+        if (match) {
+          pidsToKill.push(match[1]);
+        }
+      }
+    }
+
+    if (pidsToKill.length > 0) {
+      logTS(`Found ${pidsToKill.length} Chrome processes using ${userDataDir}, killing them...`);
+      for (const pid of pidsToKill) {
+        try {
+          execSync(`taskkill /F /PID ${pid}`, { timeout: 3000 });
+          logTS(`Killed Chrome process ${pid}`);
+        } catch (killErr) {
+          logTS(`Failed to kill Chrome process ${pid}: ${killErr.message}`);
+        }
+      }
+      // Wait a bit for processes to fully terminate
+      await delay(1000);
+    } else {
+      logTS(`No lingering Chrome processes found for ${userDataDir}`);
+    }
+  } catch (error) {
+    logTS(`Error checking for Chrome processes: ${error.message}`);
+  }
 }
 
 /**
@@ -148,17 +206,17 @@ class BrowserRecoveryManager {
     this.recoveryBackoff = [1000, 5000, 15000]; // Progressive backoff
   }
 
-  async attemptBrowserRecovery(encoderUrl, encoderConfig, browsers, launchBrowserFunc) {
+  async attemptBrowserRecovery(encoderUrl, encoderConfig, browsers, launchBrowserFunc, Constants) {
     const attempts = this.recoveryAttempts.get(encoderUrl) || 0;
-    
+
     if (attempts >= this.maxRecoveryAttempts) {
       logTS(`Max recovery attempts reached for ${encoderUrl}. Marking as failed.`);
       return false;
     }
-    
+
     const backoffDelay = this.recoveryBackoff[attempts] || 30000;
     logTS(`Attempting browser recovery for ${encoderUrl} (attempt ${attempts + 1}/${this.maxRecoveryAttempts})`);
-    
+
     // Close any existing browser instance
     if (browsers.has(encoderUrl)) {
       try {
@@ -171,22 +229,60 @@ class BrowserRecoveryManager {
       }
       browsers.delete(encoderUrl);
     }
-    
+
+    // Kill any lingering Chrome processes for this encoder
+    if (Constants && Constants.ENCODERS) {
+      try {
+        const path = require('path');
+        const encoderIndex = Constants.ENCODERS.findIndex(e => e.url === encoderConfig.url);
+        if (encoderIndex !== -1) {
+          const chromeDataDir = Constants.CHROME_USERDATA_DIRECTORIES[os.platform()][0].replace('User Data', '').trim();
+          const uniqueUserDataDir = path.join(chromeDataDir, 'User Data', `encoder_${encoderIndex}`);
+          logTS(`Checking for lingering Chrome processes for ${uniqueUserDataDir}`);
+          await killChromeProcessesForUserData(uniqueUserDataDir);
+        }
+      } catch (e) {
+        logTS(`Error killing Chrome processes: ${e.message}`);
+      }
+    }
+
     // Wait with backoff
     await delay(backoffDelay);
-    
-    // Attempt to relaunch
-    try {
-      const success = await launchBrowserFunc("about:blank", encoderConfig, true, false);
-      if (success) {
-        logTS(`Successfully recovered browser for ${encoderUrl}`);
-        this.recoveryAttempts.set(encoderUrl, 0); // Reset on success
-        return true;
+
+    // Attempt to relaunch with retry logic
+    let retryCount = 0;
+    const maxRetries = 2;
+
+    while (retryCount < maxRetries) {
+      try {
+        const success = await launchBrowserFunc("about:blank", encoderConfig, true, false);
+        if (success) {
+          logTS(`Successfully recovered browser for ${encoderUrl}`);
+          this.recoveryAttempts.set(encoderUrl, 0); // Reset on success
+          return true;
+        }
+        break; // If success is false, don't retry
+      } catch (error) {
+        retryCount++;
+        logTS(`Recovery attempt ${retryCount} failed for ${encoderUrl}: ${error.message}`);
+
+        // For certain errors, add additional delay and cleanup
+        if (error.message.includes('Failed to launch') || error.message.includes('Target closed')) {
+          if (retryCount < maxRetries) {
+            logTS(`Waiting additional ${5000 * retryCount}ms before retry...`);
+            await delay(5000 * retryCount);
+
+            // Try to clean up any stale processes or locks
+            if (browsers.has(encoderUrl)) {
+              browsers.delete(encoderUrl);
+            }
+          }
+        } else {
+          break; // For other errors, don't retry
+        }
       }
-    } catch (error) {
-      logTS(`Recovery attempt failed for ${encoderUrl}: ${error.message}`);
     }
-    
+
     this.recoveryAttempts.set(encoderUrl, attempts + 1);
     return false;
   }
@@ -395,12 +491,13 @@ const createCleanupManager = () => {
                 // Only re-attach handlers if we have the recovery manager
                 if (global.recoveryManager) {
                   setupBrowserCrashHandlers(
-                    newBrowser, 
-                    encoderUrl, 
-                    global.recoveryManager, 
-                    encoderConfig, 
-                    browsers, 
-                    launchBrowser
+                    newBrowser,
+                    encoderUrl,
+                    global.recoveryManager,
+                    encoderConfig,
+                    browsers,
+                    launchBrowser,
+                    global.Constants
                   );
                 }
               }
@@ -447,59 +544,73 @@ const createCleanupManager = () => {
 
 // Also update setupBrowserCrashHandlers in error-handling.js to check for intentional closes:
 
-function setupBrowserCrashHandlers(browser, encoderUrl, recoveryManager, encoderConfig, browsers, launchBrowserFunc) {
+function setupBrowserCrashHandlers(browser, encoderUrl, recoveryManager, encoderConfig, browsers, launchBrowserFunc, Constants) {
   // Monitor for disconnection
   browser.on('disconnected', async () => {
-    logTS(`Browser disconnected for encoder ${encoderUrl}`);
-    
-    // Check if this is an intentional close
-    if (global.cleanupManager && global.cleanupManager.isIntentionalClose && global.cleanupManager.isIntentionalClose(encoderUrl)) {
-      logTS(`Browser disconnection for ${encoderUrl} is intentional (part of cleanup), skipping recovery`);
-      return;
-    }
-    
-    // Check if this is part of an intentional cleanup (check if browser still exists in map)
-    if (!browsers.has(encoderUrl)) {
-      logTS(`Browser disconnection for ${encoderUrl} appears to be intentional (not in browsers map), skipping recovery`);
-      return;
-    }
-    
-    // Check if cleanup manager is already handling recovery
-    if (global.cleanupManager && global.cleanupManager.isRecoveryInProgress && global.cleanupManager.isRecoveryInProgress(encoderUrl)) {
-      logTS(`Recovery already being handled by cleanup manager for ${encoderUrl}, skipping disconnection recovery`);
-      return;
-    }
-    
-    logTS(`CRITICAL: Unexpected browser disconnection for encoder ${encoderUrl}, attempting recovery`);
-    browsers.delete(encoderUrl);
-    
-    // Mark recovery as in progress if cleanup manager is available
-    if (global.cleanupManager && global.cleanupManager.setRecoveryInProgress) {
-      global.cleanupManager.setRecoveryInProgress(encoderUrl, true);
-    }
-    
-    // Attempt automatic recovery
-    const recovered = await recoveryManager.attemptBrowserRecovery(
-      encoderUrl, 
-      encoderConfig, 
-      browsers,
-      launchBrowserFunc
-    );
-    
-    if (recovered) {
-      logTS(`Successfully recovered browser for ${encoderUrl} after disconnection`);
-      // Re-attach handlers to the new browser
-      if (browsers.has(encoderUrl)) {
-        const newBrowser = browsers.get(encoderUrl);
-        setupBrowserCrashHandlers(newBrowser, encoderUrl, recoveryManager, encoderConfig, browsers, launchBrowserFunc);
+    try {
+      logTS(`Browser disconnected for encoder ${encoderUrl}`);
+
+      // Check if this is an intentional close
+      if (global.cleanupManager && global.cleanupManager.isIntentionalClose && global.cleanupManager.isIntentionalClose(encoderUrl)) {
+        logTS(`Browser disconnection for ${encoderUrl} is intentional (part of cleanup), skipping recovery`);
+        return;
       }
-    } else {
-      logTS(`Failed to recover browser for ${encoderUrl}. Encoder is now offline.`);
-    }
-    
-    // Clear recovery flag
-    if (global.cleanupManager && global.cleanupManager.setRecoveryInProgress) {
-      global.cleanupManager.setRecoveryInProgress(encoderUrl, false);
+
+      // Check if this is part of an intentional cleanup (check if browser still exists in map)
+      if (!browsers.has(encoderUrl)) {
+        logTS(`Browser disconnection for ${encoderUrl} appears to be intentional (not in browsers map), skipping recovery`);
+        return;
+      }
+
+      // Check if cleanup manager is already handling recovery
+      if (global.cleanupManager && global.cleanupManager.isRecoveryInProgress && global.cleanupManager.isRecoveryInProgress(encoderUrl)) {
+        logTS(`Recovery already being handled by cleanup manager for ${encoderUrl}, skipping disconnection recovery`);
+        return;
+      }
+
+      logTS(`CRITICAL: Unexpected browser disconnection for encoder ${encoderUrl}, attempting recovery`);
+      browsers.delete(encoderUrl);
+
+      // Mark recovery as in progress if cleanup manager is available
+      if (global.cleanupManager && global.cleanupManager.setRecoveryInProgress) {
+        global.cleanupManager.setRecoveryInProgress(encoderUrl, true);
+      }
+
+      // Attempt automatic recovery
+      const recovered = await recoveryManager.attemptBrowserRecovery(
+        encoderUrl,
+        encoderConfig,
+        browsers,
+        launchBrowserFunc,
+        Constants
+      );
+
+      if (recovered) {
+        logTS(`Successfully recovered browser for ${encoderUrl} after disconnection`);
+        // Re-attach handlers to the new browser
+        if (browsers.has(encoderUrl)) {
+          const newBrowser = browsers.get(encoderUrl);
+          setupBrowserCrashHandlers(newBrowser, encoderUrl, recoveryManager, encoderConfig, browsers, launchBrowserFunc, Constants);
+        }
+      } else {
+        logTS(`Failed to recover browser for ${encoderUrl}. Encoder is now offline.`);
+      }
+
+      // Clear recovery flag
+      if (global.cleanupManager && global.cleanupManager.setRecoveryInProgress) {
+        global.cleanupManager.setRecoveryInProgress(encoderUrl, false);
+      }
+    } catch (error) {
+      logTS(`ERROR in browser disconnection handler for ${encoderUrl}: ${error.message}`);
+      logTS(`Stack: ${error.stack}`);
+
+      // Clear recovery flag even on error
+      if (global.cleanupManager && global.cleanupManager.setRecoveryInProgress) {
+        global.cleanupManager.setRecoveryInProgress(encoderUrl, false);
+      }
+
+      // Mark encoder as offline
+      browsers.delete(encoderUrl);
     }
   });
   
@@ -522,8 +633,8 @@ function setupBrowserCrashHandlers(browser, encoderUrl, recoveryManager, encoder
           });
           
           page.on('crash', async () => {
-            logTS(`Page crashed for ${encoderUrl}`);
             try {
+              logTS(`Page crashed for ${encoderUrl}`);
               await page.reload({ waitUntil: 'networkidle2', timeout: 30000 });
               logTS(`Successfully reloaded crashed page for ${encoderUrl}`);
             } catch (e) {
@@ -681,7 +792,7 @@ async function initializeBrowserPoolWithValidation(Constants, healthMonitor, rec
       
       if (success && browsers.has(encoderConfig.url)) {
         const browser = browsers.get(encoderConfig.url);
-        setupBrowserCrashHandlers(browser, encoderConfig.url, recoveryManager, encoderConfig, browsers, launchBrowserFunc);
+        setupBrowserCrashHandlers(browser, encoderConfig.url, recoveryManager, encoderConfig, browsers, launchBrowserFunc, Constants);
         
         initResults.push({ 
           encoder: encoderConfig.url, 

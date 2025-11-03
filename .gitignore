@@ -1,6 +1,7 @@
 # Node.js
 node_modules/
 dist/
+.claude/
 *.ps1
 *.bat
 package-lock.json

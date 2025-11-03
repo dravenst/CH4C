@@ -1,5 +1,5 @@
 const express = require('express');
-const puppeteer = require('puppeteer-core');
+const puppeteer = require('rebrowser-puppeteer-core');
 const { existsSync } = require('fs');
 const { Readable } = require('stream');
 const { execSync } = require('child_process');
@@ -25,6 +25,7 @@ const { AudioDeviceManager } = require('./audio-device-manager');
 
 let chromeDataDir, chromePath;
 let browsers = new Map(); // key: encoderUrl, value: {browser, page}
+let launchMutex = new Map(); // key: encoderUrl, value: promise to prevent concurrent launches
 
 
 function delay(ms) {
@@ -222,7 +223,7 @@ async function cleanStaleLocks(profileDir) {
  * Test if Chrome can launch with a profile
  */
 async function testChromeLaunch(profileDir, chromePath) {
-  const puppeteer = require('puppeteer-core');
+  const puppeteer = require('rebrowser-puppeteer-core');
   
   try {
     logTS(`Testing Chrome launch with profile: ${profileDir}`);
@@ -245,7 +246,8 @@ async function testChromeLaunch(profileDir, chromePath) {
       userDataDir: profileDir,
       headless: true,
       args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu'],
-      timeout: 5000
+      protocolTimeout: 30000,
+      timeout: 60000
     });
     
     // If we got here, Chrome launched successfully
@@ -271,7 +273,8 @@ async function testChromeLaunch(profileDir, chromePath) {
               userDataDir: profileDir,
               headless: true,
               args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu'],
-              timeout: 5000
+              protocolTimeout: 30000,
+              timeout: 60000
             });
             await browser2.close();
             logTS(`Successfully launched after cleaning stale locks`);
@@ -378,7 +381,12 @@ const createCleanupManager = () => {
       closingStates.set(encoderUrl, true);
       recoveryInProgress.set(encoderUrl, true); // Mark recovery as in progress
       intentionalClose.set(encoderUrl, true); // Mark this as an intentional close
-      
+
+      // Stop stream monitoring for this encoder
+      if (global.streamMonitor) {
+        global.streamMonitor.stopMonitoring(encoderUrl);
+      }
+
       try {
         // Close the browser
         await closeBrowser(encoderUrl);
@@ -398,40 +406,44 @@ const createCleanupManager = () => {
         const encoderConfig = Constants.ENCODERS.find(e => e.url === encoderUrl);
         if (encoderConfig) {
           logTS(`Attempting to re-initialize browser for ${encoderUrl} in pool after cleanup.`);
-          
+
           // Clear the browser from the map first to ensure launchBrowser doesn't think it exists
           browsers.delete(encoderUrl);
-          
+
+          // Wait a bit longer to ensure cleanup is complete
+          await delay(1000);
+
           try {
             const repoolSuccess = await launchBrowser("about:blank", encoderConfig, true, false);
 
             if (repoolSuccess) {
               logTS(`Successfully re-initialized and minimized browser for ${encoderUrl} in pool.`);
-              
+
               // Re-attach crash handlers if browser was successfully created
               if (browsers.has(encoderUrl)) {
                 const newBrowser = browsers.get(encoderUrl);
                 // Only re-attach handlers if we have the recovery manager
                 if (global.recoveryManager) {
                   setupBrowserCrashHandlers(
-                    newBrowser, 
-                    encoderUrl, 
-                    global.recoveryManager, 
-                    encoderConfig, 
-                    browsers, 
-                    launchBrowser
+                    newBrowser,
+                    encoderUrl,
+                    global.recoveryManager,
+                    encoderConfig,
+                    browsers,
+                    launchBrowser,
+                    Constants
                   );
                 }
               }
-              
+
               activeBrowsers.delete(encoderUrl); // Make encoder available
             } else {
               logTS(`Failed to re-initialize browser for ${encoderUrl} in pool.`);
-              // Don't delete from activeBrowsers to prevent reuse of broken encoder
+              // Keep in activeBrowsers to prevent immediate reuse
             }
           } catch (error) {
             logTS(`Error re-initializing browser for ${encoderUrl}: ${error.message}`);
-            // Don't delete from activeBrowsers to prevent reuse
+            // Keep in activeBrowsers to prevent immediate reuse
           }
         } else {
           logTS(`Could not find encoderConfig for ${encoderUrl} to re-initialize browser.`);
@@ -464,9 +476,93 @@ const createCleanupManager = () => {
   };
 };
 
-async function setupBrowserAudio(page, encoderConfig) { 
-  logTS("waiting for video to load")  
-  
+/**
+ * Handle Sling modal detection by simulating human interaction
+ * @param {Page} page - Puppeteer page object
+ * @returns {Promise<boolean>} - True if modal was handled successfully
+ */
+async function handleSlingModal(page) {
+  const maxAttempts = 7;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const currentUrl = page.url();
+
+    // Check if we're on the modal page
+    if (currentUrl.includes('/modal')) {
+      logTS(`Detected Sling modal (attempt ${attempt}/${maxAttempts}), simulating human interaction...`);
+
+      // Faster timing - just enough to seem human but not waste time
+      await delay(300 + Math.random() * 200); // 300-500ms delay
+
+      // Press Tab key to focus on interactive elements
+      await page.keyboard.press('Tab');
+      await delay(100 + Math.random() * 100); // 100-200ms
+
+      // Press Enter to activate
+      await page.keyboard.press('Enter');
+      await delay(800 + Math.random() * 400); // 800-1200ms wait for navigation
+
+      // Check if we successfully navigated away from modal
+      const newUrl = page.url();
+      if (!newUrl.includes('/modal')) {
+        logTS('Successfully dismissed Sling modal');
+        return true;
+      }
+    } else {
+      // Not on modal page, we're good
+      return true;
+    }
+  }
+
+  logTS(`Warning: Could not dismiss Sling modal after ${maxAttempts} attempts`);
+  return false;
+}
+
+async function setupBrowserAudio(page, encoderConfig, targetUrl = null) {
+  // Handle Sling modals that may appear during video loading
+  if (page.url().includes("watch.sling.com")) {
+    logTS("Checking for Sling modals before video load");
+
+    // Keep looping until we successfully land on the channel page
+    const maxNavigationAttempts = 10;
+    let onCorrectPage = false;
+
+    for (let navAttempt = 1; navAttempt <= maxNavigationAttempts && !onCorrectPage; navAttempt++) {
+      await delay(500);
+
+      // Handle any modals on current page
+      const modalHandled = await handleSlingModal(page);
+      if (modalHandled) {
+        logTS(`Modals handled (navigation attempt ${navAttempt}/${maxNavigationAttempts})`);
+      }
+
+      // Wait for any background redirects after modal dismissal
+      await delay(1500);
+
+      // Check if we're on the correct channel URL
+      const currentUrl = page.url();
+      if (targetUrl && currentUrl.endsWith('/watch')) {
+        logTS(`Confirmed on correct channel page: ${currentUrl}`);
+        onCorrectPage = true;
+      } else if (targetUrl && !currentUrl.endsWith('/watch')) {
+        logTS(`After modal dismissal, on wrong page: ${currentUrl}`);
+        logTS(`Forcing navigation back to channel (attempt ${navAttempt}/${maxNavigationAttempts}): ${targetUrl}`);
+        await page.goto(targetUrl, {
+          waitUntil: 'load',
+          timeout: 15000
+        });
+        logTS("Navigated back to channel, checking for more modals...");
+        await delay(800);
+      }
+    }
+
+    if (!onCorrectPage) {
+      logTS(`Warning: Could not confirm correct channel page after ${maxNavigationAttempts} attempts`);
+    }
+  }
+
+  logTS("waiting for video to load")
+
   await page.evaluate(() => {
 
     // looks for videos in the base document or iframes
@@ -485,10 +581,41 @@ async function setupBrowserAudio(page, encoderConfig) {
   });
  
   // calls checkforvideos constantly until either at least one video is ready or the 60s timer expires
-  await page.waitForFunction(() => {
-    const videos = window.checkForVideos();
-    return videos.length > 0 && videos.some(v => v.readyState >= 2);
-  }, { timeout: 60000 });
+  // For Sling, we need to handle modals that may appear during video loading
+  if (page.url().includes("watch.sling.com")) {
+    const maxVideoWaitAttempts = 5;
+    let videoFound = false;
+
+    for (let attempt = 1; attempt <= maxVideoWaitAttempts && !videoFound; attempt++) {
+      try {
+        await page.waitForFunction(() => {
+          const videos = window.checkForVideos();
+          return videos.length > 0 && videos.some(v => v.readyState >= 2);
+        }, { timeout: 12000 }); // 12 second timeout per attempt
+        videoFound = true;
+        logTS("Video found and ready");
+      } catch (e) {
+        // Check if we hit a modal during video wait
+        if (page.url().includes('/modal')) {
+          logTS(`Modal appeared during video wait (attempt ${attempt}/${maxVideoWaitAttempts})`);
+          await handleSlingModal(page);
+          // The modal handler should navigate away, just continue waiting for video
+          await delay(500); // Brief delay to let page settle
+        } else {
+          logTS(`Video wait attempt ${attempt}/${maxVideoWaitAttempts} timed out`);
+          if (attempt >= maxVideoWaitAttempts) {
+            throw e; // Re-throw on final attempt
+          }
+        }
+      }
+    }
+  } else {
+    // Non-Sling sites use original logic
+    await page.waitForFunction(() => {
+      const videos = window.checkForVideos();
+      return videos.length > 0 && videos.some(v => v.readyState >= 2);
+    }, { timeout: 60000 });
+  }
  
   let videoLength = await page.evaluate(() => window.checkForVideos().length);
   logTS(`Found ${videoLength} videos`);
@@ -581,11 +708,31 @@ async function setupBrowserAudio(page, encoderConfig) {
 // setup and launch browser
 async function launchBrowser(targetUrl, encoderConfig, startMinimized, applyStartFullScreenArg = true) {
   logTS(`starting browser for encoder ${encoderConfig.url} at position ${encoderConfig.width},${encoderConfig.height}`);
-  
+
+  // Check if a launch is already in progress for this encoder
+  if (launchMutex.has(encoderConfig.url)) {
+    logTS(`Browser launch already in progress for encoder ${encoderConfig.url}, waiting...`);
+    try {
+      await launchMutex.get(encoderConfig.url);
+      return browsers.has(encoderConfig.url);
+    } catch (e) {
+      logTS(`Previous launch failed for ${encoderConfig.url}: ${e.message}`);
+      // Continue with new launch attempt
+    }
+  }
+
   if (browsers.has(encoderConfig.url)) {
     logTS(`Browser already exists for encoder ${encoderConfig.url}`);
-    return null;
+    return true;
   }
+
+  // Create a mutex promise for this launch
+  let launchResolve, launchReject;
+  const launchPromise = new Promise((resolve, reject) => {
+    launchResolve = resolve;
+    launchReject = reject;
+  });
+  launchMutex.set(encoderConfig.url, launchPromise);
 
   try {
     // Create unique user data directory for this encoder
@@ -610,10 +757,11 @@ async function launchBrowser(targetUrl, encoderConfig, startMinimized, applyStar
       '--disable-session-crashed-bubble',
       '--noerrdialogs',
       '--no-default-browser-check',
-      '--hide-scrollbars',
+      //'--hide-scrollbars',
       '--allow-running-insecure-content',
       '--autoplay-policy=no-user-gesture-required',
       `--window-position=${encoderConfig.width},${encoderConfig.height}`,
+      '--window-size=1280,720',  // Set explicit window size for proper rendering
       '--new-window',
       '--disable-background-networking',
       '--disable-background-timer-throttling',
@@ -661,7 +809,8 @@ async function launchBrowser(targetUrl, encoderConfig, startMinimized, applyStar
         headless: false,
         defaultViewport: null,
         args: launchArgs,
-        timeout: 30000,
+        protocolTimeout: 30000,
+        timeout: 60000,
         ignoreDefaultArgs: [
           '--enable-automation',
           '--disable-extensions',
@@ -833,9 +982,11 @@ async function launchBrowser(targetUrl, encoderConfig, startMinimized, applyStar
           logTS(`Error minimizing window via CDP for ${encoderConfig.url}:`, cdpError.message);
         }
       }
+      launchResolve();
       return true;
     } else {
       logTS(`targetUrl is not defined for encoder ${encoderConfig.url}. This is unexpected.`);
+      launchReject(new Error('targetUrl not defined'));
       return false;
     }
   } catch (error) {
@@ -845,7 +996,7 @@ async function launchBrowser(targetUrl, encoderConfig, startMinimized, applyStar
     if (error.stack) {
       logTS(`Stack trace:\n${error.stack}`);
     }
-    
+
     // Clean up any partial browser instance
     if (browsers.has(encoderConfig.url)) {
       const browser = browsers.get(encoderConfig.url);
@@ -856,22 +1007,27 @@ async function launchBrowser(targetUrl, encoderConfig, startMinimized, applyStar
           logTS(`Error closing failed browser: ${closeErr.message}`);
         }
       }
-      browsers.delete(encoderConfig.url); 
+      browsers.delete(encoderConfig.url);
     }
+
+    launchReject(error);
     return false;
+  } finally {
+    // Always clean up the mutex
+    launchMutex.delete(encoderConfig.url);
   }
 }
 
 async function hideCursor(page) {
   try {
     await Promise.race([
-      frame.addStyleTag({
+      page.addStyleTag({
         content: `
-          *:hover{cursor:none!important} 
+          *:hover{cursor:none!important}
           *{cursor:none!important}
         `
       }),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout adding style tag')), 1000)) 
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout adding style tag')), 1000))
     ]);
 
     // NFL Network requires mouse wiggle to hide cursor
@@ -886,6 +1042,52 @@ async function hideCursor(page) {
 
 async function GetProperty(element, property) {
   return await (await element.getProperty(property)).jsonValue();
+}
+
+/**
+ * Sets up a pause monitor that runs in the browser context
+ * Automatically resumes video playback if it gets paused
+ * @param {Object} frameHandle - The frame containing the video element
+ * @param {Object} videoHandle - The video element handle
+ * @param {Object} page - The page object for console forwarding
+ */
+async function setupPauseMonitor(frameHandle, videoHandle, page) {
+  if (!Constants.ENABLE_PAUSE_MONITOR) {
+    return;
+  }
+
+  try {
+    // Forward browser console messages to Node.js console (only [CH4C] tagged messages)
+    page.on('console', msg => {
+      const text = msg.text();
+      if (text.startsWith('[CH4C]')) {
+        logTS(text);
+      }
+    });
+
+    await frameHandle.evaluate((video, intervalSeconds) => {
+      // Prevent multiple monitors on the same video
+      if (video.__pauseMonitorActive) {
+        return;
+      }
+      video.__pauseMonitorActive = true;
+
+      setInterval(() => {
+        if (video.paused && !video.ended) {
+          console.log('[CH4C] Video paused - attempting to resume...');
+          video.play().catch(err => {
+            console.log('[CH4C] Failed to resume video:', err.message);
+          });
+        }
+      }, intervalSeconds * 1000);
+
+      console.log(`[CH4C] Pause monitor active - checking every ${intervalSeconds} seconds`);
+    }, videoHandle, Constants.PAUSE_MONITOR_INTERVAL);
+
+    logTS(`Pause monitor enabled (interval: ${Constants.PAUSE_MONITOR_INTERVAL}s)`);
+  } catch (error) {
+    logTS(`Failed to setup pause monitor (non-fatal): ${error.message}`);
+  }
 }
 
 async function fullScreenVideo(page) {
@@ -913,8 +1115,6 @@ async function fullScreenVideo(page) {
       console.log('error looking for video', error)
       videoHandle=null
     }
-    // Don't think this timeout is necessary?
-    //await new Promise(r => setTimeout(r, Constants.FIND_VIDEO_WAIT * 1000));
   }
 
   if (videoHandle) {
@@ -935,12 +1135,7 @@ async function fullScreenVideo(page) {
       } else {
         await videoHandle.click()
       }
-      // not sure we need this?
-      // await new Promise(r => setTimeout(r, Constants.PLAY_VIDEO_WAIT * 1000))
     }
-
-    // redundant with last one?
-    //await hideCursor(page)
 
     logTS("going full screen and unmuting");
     await frameHandle.evaluate((video) => {
@@ -950,8 +1145,9 @@ async function fullScreenVideo(page) {
       video.requestFullscreen()
     }, videoHandle)
 
-    // Don't think this is needed?
-    //await new Promise(r => setTimeout(r, Constants.FULL_SCREEN_WAIT * 1000))
+    // Setup pause monitor to automatically resume if video gets paused
+    await setupPauseMonitor(frameHandle, videoHandle, page);
+
   } else {
     console.log('did not find video')
   }
@@ -1017,7 +1213,7 @@ async function fullScreenVideoGooglePhotos(page) {
   for (let i = 0; i < 8; i++) {
     await delay(200);
     await page.keyboard.press('Tab');
-  }   
+  }
 
   // Press Enter twice to start Slideshow
   await page.keyboard.press('Enter');
@@ -1025,6 +1221,80 @@ async function fullScreenVideoGooglePhotos(page) {
   await page.keyboard.press('Enter');
 
   logTS("changed to fullscreen and max volume");
+}
+
+async function fullScreenVideoYouTube(page) {
+  logTS("URL contains YouTube, setting up fullscreen");
+
+  // Wait a bit for the page to settle
+  await delay(2000);
+
+  let frameHandle, videoHandle;
+
+  // Find the video element
+  videoSearch: for (let step = 0; step < Constants.FIND_VIDEO_RETRIES; step++) {
+    try {
+      const frames = await page.frames({ timeout: 1000 });
+      for (const frame of frames) {
+        try {
+          videoHandle = await frame.waitForSelector('video', { timeout: 1000 });
+        } catch (error) {
+          // Continue searching
+        }
+        if (videoHandle) {
+          frameHandle = frame;
+          logTS('Found YouTube video frame');
+          break videoSearch;
+        }
+      }
+    } catch (error) {
+      logTS('Error looking for YouTube video:', error.message);
+      videoHandle = null;
+    }
+    await delay(Constants.FIND_VIDEO_WAIT * 1000);
+  }
+
+  if (videoHandle) {
+    // Confirm video is actually playing
+    for (let step = 0; step < Constants.PLAY_VIDEO_RETRIES; step++) {
+      const currentTime = await GetProperty(videoHandle, 'currentTime');
+      const readyState = await GetProperty(videoHandle, 'readyState');
+      const paused = await GetProperty(videoHandle, 'paused');
+      const ended = await GetProperty(videoHandle, 'ended');
+
+      if (!!(currentTime > 0 && readyState > 2 && !paused && !ended)) break;
+
+      logTS("Attempting to play YouTube video");
+      // Try clicking the video to play
+      try {
+        await videoHandle.click();
+      } catch (e) {
+        // Try play command
+        await frameHandle.evaluate((video) => {
+          video.play();
+        }, videoHandle);
+      }
+      await delay(Constants.PLAY_VIDEO_WAIT * 1000);
+    }
+
+    logTS("Going fullscreen and unmuting YouTube video");
+    await frameHandle.evaluate((video) => {
+      video.muted = false;
+      video.removeAttribute('muted');
+      video.style.cursor = 'none!important';
+      video.requestFullscreen();
+    }, videoHandle);
+
+    // Setup pause monitor to automatically resume if video gets paused
+    await setupPauseMonitor(frameHandle, videoHandle, page);
+  } else {
+    logTS('Could not find YouTube video element');
+  }
+
+  // Hide cursor
+  await hideCursor(page);
+
+  logTS("YouTube fullscreen setup complete");
 }
 
 
@@ -1311,10 +1581,12 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
 
   const cleanupManager = createCleanupManager();
   app.locals.cleanupManager = cleanupManager;
-  
+
   global.cleanupManager = cleanupManager;
   global.recoveryManager = recoveryManager;
   global.setupBrowserCrashHandlers = setupBrowserCrashHandlers;
+  global.streamMonitor = streamMonitor;
+  global.Constants = Constants;
 
   // Start health monitoring
   await healthMonitor.startMonitoring(Constants.ENCODERS);
@@ -1370,7 +1642,8 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
           recoverableEncoder.url,
           recoverableEncoder,
           browsers,
-          launchBrowser  // Add launchBrowser parameter
+          launchBrowser,
+          Constants
         );
         
         if (recovered) {
@@ -1443,27 +1716,90 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
         const maxNavRetries = 2;
         let navSuccess = false;
 
-        for (let navAttempt = 1; navAttempt <= maxNavRetries && !navSuccess; navAttempt++) {
+        // Special handling for Sling - navigate to home page first to avoid bot detection
+        if (targetUrl.includes("watch.sling.com")) {
+          logTS("Sling URL detected - navigating to home page first to avoid bot detection");
+
           try {
-            if (targetUrl.includes("watch.sling.com") || targetUrl.includes("photos.app.goo.gl")) {
+            // Step 1: Go to Sling home page
+            await page.goto("https://watch.sling.com", {
+              waitUntil: 'load',
+              timeout: navigationTimeout
+            });
+            logTS("Navigated to Sling home page");
+
+            // Handle modal if present on home page
+            await delay(800); // Wait for page to settle
+            const modalHandledHome = await handleSlingModal(page);
+
+            if (!modalHandledHome) {
+              logTS("Warning: Modal may not have been fully dismissed on home page");
+            }
+
+            // Add brief delay before navigating to channel
+            await delay(400 + Math.random() * 300); // 0.4-0.7 seconds
+
+            // Step 2: Now navigate directly to the actual channel URL
+            logTS(`Navigating to channel: ${targetUrl}`);
+            await page.goto(targetUrl, {
+              waitUntil: 'load',
+              timeout: navigationTimeout
+            });
+
+            // Handle modal again if it appears on channel page
+            await delay(800);
+            const modalHandledOnChannel = await handleSlingModal(page);
+
+            // After dismissing modal, navigate back to the channel URL if needed
+            if (modalHandledOnChannel && page.url().includes('/modal')) {
+              logTS("Modal was on channel page, re-navigating to channel URL");
+              await delay(500 + Math.random() * 300); // 0.5-0.8s delay
               await page.goto(targetUrl, {
                 waitUntil: 'load',
                 timeout: navigationTimeout
               });
-            } else {
+              logTS("Re-navigation to channel complete");
+            } else if (!page.url().includes(targetUrl.split('?')[0])) {
+              // URL changed after modal dismissal, navigate back
+              logTS("URL changed after modal dismissal, navigating back to channel");
+              await delay(500 + Math.random() * 300);
               await page.goto(targetUrl, {
-                waitUntil: 'networkidle2',
+                waitUntil: 'load',
                 timeout: navigationTimeout
               });
+              logTS("Re-navigation to channel complete");
             }
+
             navSuccess = true;
-            logTS(`Page navigated successfully to ${targetUrl}`);
-          } catch (navError) {
-            logTS(`Navigation attempt ${navAttempt} failed: ${navError.message}`);
-            if (navAttempt < maxNavRetries) {
-              await delay(3000);
-            } else {
-              throw navError;
+            logTS(`Successfully navigated to Sling channel`);
+          } catch (slingError) {
+            logTS(`Sling navigation error: ${slingError.message}`);
+            throw slingError;
+          }
+        } else {
+          // Non-Sling navigation (existing logic)
+          for (let navAttempt = 1; navAttempt <= maxNavRetries && !navSuccess; navAttempt++) {
+            try {
+              if (targetUrl.includes("photos.app.goo.gl")) {
+                await page.goto(targetUrl, {
+                  waitUntil: 'load',
+                  timeout: navigationTimeout
+                });
+              } else {
+                await page.goto(targetUrl, {
+                  waitUntil: 'networkidle2',
+                  timeout: navigationTimeout
+                });
+              }
+              navSuccess = true;
+              logTS(`Page navigated successfully to ${targetUrl}`);
+            } catch (navError) {
+              logTS(`Navigation attempt ${navAttempt} failed: ${navError.message}`);
+              if (navAttempt < maxNavRetries) {
+                await delay(3000);
+              } else {
+                throw navError;
+              }
             }
           }
         }
@@ -1502,7 +1838,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
 
           // Setup audio and fullscreen (existing code)
           if (!targetUrl.includes("photos.app.goo.gl")) {
-            await setupBrowserAudio(page, availableEncoder);
+            await setupBrowserAudio(page, availableEncoder, targetUrl);
           }
 
           // Handle site-specific fullscreen
@@ -1515,7 +1851,8 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
           availableEncoder.url,
           availableEncoder,
           browsers,
-          launchBrowser  // Add launchBrowser parameter
+          launchBrowser,
+          Constants
         );
         if (!recovered) {
           throw new Error('Recovery failed');
@@ -1544,6 +1881,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
       encoders: Constants.ENCODERS.map(encoder => ({
         url: encoder.url,
         channel: encoder.channel,
+        audioDevice: encoder.audioDevice,
         isHealthy: healthMonitor.isEncoderHealthy(encoder.url),
         hasBrowser: browsers.has(encoder.url),
         isAvailable: cleanupManager.canStartBrowser(encoder.url),
@@ -1566,12 +1904,272 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
     res.json(devices);
   });
 
-  // Existing endpoints (/, /instant) remain the same but with similar error handling additions
+  // GET /instant - Serve the instant recording form
+  app.get('/instant', (req, res) => {
+    res.send(Constants.INSTANT_PAGE_HTML.replaceAll('<<host>>', req.get('host')));
+  });
+
+  // POST /instant - Handle instant recording or tuning
+  app.post('/instant', async (req, res) => {
+    const { recording_name, recording_url, recording_duration, button_record, button_tune } = req.body;
+
+    // Validate URL
+    if (!recording_url) {
+      res.status(400).send('URL is required');
+      return;
+    }
+
+    let targetUrl;
+    try {
+      targetUrl = new URL(recording_url).toString();
+    } catch (e) {
+      res.status(400).send('Invalid URL format');
+      return;
+    }
+
+    const cleanupManager = req.app.locals.cleanupManager;
+    const healthMonitor = req.app.locals.healthMonitor;
+
+    // Get the first available AND healthy encoder
+    const availableEncoder = Constants.ENCODERS.find(encoder =>
+      browsers.has(encoder.url) &&
+      cleanupManager.canStartBrowser(encoder.url) &&
+      healthMonitor.isEncoderHealthy(encoder.url)
+    );
+
+    if (!availableEncoder) {
+      res.status(503).send('No encoders are currently available. Please try again later.');
+      return;
+    }
+
+    if (button_record) {
+      // Handle recording
+      const duration = parseInt(recording_duration);
+      if (isNaN(duration) || duration <= 0) {
+        res.status(400).send('Invalid duration. Must be a positive number.');
+        return;
+      }
+
+      const recordingName = recording_name || 'Instant Recording';
+
+      logTS(`Starting instant recording: ${recordingName} for ${duration} minutes`);
+
+      // Start the recording in Channels DVR
+      const recordingStarted = await startRecording(recordingName, duration, availableEncoder.channel);
+
+      if (recordingStarted) {
+        // Set a timer to stop the stream after the recording duration
+        // Add 15 second buffer to ensure recording completes before stream stops
+        const bufferSeconds = 15;
+        const totalDurationMs = (duration * 60 + bufferSeconds) * 1000;
+        logTS(`Setting timer to stop stream after ${duration} minutes (+ ${bufferSeconds}s buffer)`);
+        setTimeout(async () => {
+          logTS(`Recording duration expired for ${recordingName}, stopping stream on ${availableEncoder.channel}...`);
+          await cleanupManager.cleanup(availableEncoder.url, null);
+        }, totalDurationMs);
+
+        // Show success page instead of redirecting to stream
+        res.send(`
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <title>CH4C - Recording Started</title>
+            <meta charset="UTF-8">
+            <meta http-equiv="refresh" content="3;url=/instant">
+            <style>
+              body { font-family: system-ui; max-width: 600px; margin: 50px auto; padding: 20px; }
+              .message { padding: 30px; background: #d4edda; border: 1px solid #c3e6cb; border-radius: 8px; text-align: center; }
+              h2 { color: #155724; margin-bottom: 16px; }
+              p { color: #155724; margin: 8px 0; }
+              .detail { font-family: monospace; background: white; padding: 8px; border-radius: 4px; margin: 16px 0; }
+              a { display: inline-block; margin-top: 20px; padding: 10px 20px; background: #667eea; color: white; text-decoration: none; border-radius: 6px; }
+              a:hover { background: #5568d3; }
+            </style>
+          </head>
+          <body>
+            <div class="message">
+              <h2>✓ Recording Started</h2>
+              <p><strong>${recordingName}</strong></p>
+              <p>Duration: ${duration} minutes</p>
+              <p>Channel: ${availableEncoder.channel}</p>
+              <div class="detail">The stream is now being recorded by Channels DVR and will automatically stop after ${duration} minutes.</div>
+              <p style="font-size: 14px; color: #666;">Redirecting back to instant page in 3 seconds...</p>
+              <a href="/instant">← Back to Instant</a>
+            </div>
+          </body>
+          </html>
+        `);
+
+        // Start the stream in the background (don't wait for response)
+        fetch(`http://localhost:${Constants.CH4C_PORT}/stream?url=${encodeURIComponent(targetUrl)}`)
+          .catch(err => logTS(`Stream fetch error (expected): ${err.message}`));
+      } else {
+        res.status(500).send('Failed to start recording in Channels DVR');
+      }
+    } else if (button_tune) {
+      // Handle tuning (just navigate to the URL without recording)
+      const duration = parseInt(recording_duration);
+
+      // If duration is provided and valid, use it for auto-stop
+      if (!isNaN(duration) && duration > 0) {
+        logTS(`Tuning encoder ${availableEncoder.channel} to ${targetUrl} for ${duration} minutes`);
+
+        // Set a timer to stop the stream after the specified duration
+        setTimeout(async () => {
+          logTS(`Duration expired for tuned stream on ${availableEncoder.channel}, stopping...`);
+          await cleanupManager.cleanup(availableEncoder.url, null);
+        }, duration * 60 * 1000);
+
+        // Show success page with duration
+        res.send(`
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <title>CH4C - Tuned to Channel</title>
+            <meta charset="UTF-8">
+            <meta http-equiv="refresh" content="3;url=/instant">
+            <style>
+              body { font-family: system-ui; max-width: 600px; margin: 50px auto; padding: 20px; }
+              .message { padding: 30px; background: #d1ecf1; border: 1px solid #bee5eb; border-radius: 8px; text-align: center; }
+              h2 { color: #0c5460; margin-bottom: 16px; }
+              p { color: #0c5460; margin: 8px 0; }
+              .detail { font-family: monospace; background: white; padding: 8px; border-radius: 4px; margin: 16px 0; font-size: 13px; }
+              a { display: inline-block; margin: 12px 8px; padding: 10px 20px; background: #667eea; color: white; text-decoration: none; border-radius: 6px; }
+              a:hover { background: #5568d3; }
+              .stop-link { background: #dc3545; }
+              .stop-link:hover { background: #c82333; }
+            </style>
+          </head>
+          <body>
+            <div class="message">
+              <h2>📺 Tuned to Channel ${availableEncoder.channel}</h2>
+              <p>Streaming will automatically stop in ${duration} minutes</p>
+              <div class="detail">Watch on channel ${availableEncoder.channel} in Channels DVR</div>
+              <p style="font-size: 14px; color: #666;">Redirecting back to instant page in 3 seconds...</p>
+              <a href="/instant">← Back to Instant</a>
+              <a href="/stop" class="stop-link">Stop Now</a>
+            </div>
+          </body>
+          </html>
+        `);
+      } else {
+        logTS(`Tuning encoder ${availableEncoder.channel} to ${targetUrl} (indefinitely)`);
+
+        // Show success page without duration
+        res.send(`
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <title>CH4C - Tuned to Channel</title>
+            <meta charset="UTF-8">
+            <meta http-equiv="refresh" content="3;url=/instant">
+            <style>
+              body { font-family: system-ui; max-width: 600px; margin: 50px auto; padding: 20px; }
+              .message { padding: 30px; background: #d1ecf1; border: 1px solid #bee5eb; border-radius: 8px; text-align: center; }
+              h2 { color: #0c5460; margin-bottom: 16px; }
+              p { color: #0c5460; margin: 8px 0; }
+              .detail { font-family: monospace; background: white; padding: 8px; border-radius: 4px; margin: 16px 0; font-size: 13px; }
+              a { display: inline-block; margin: 12px 8px; padding: 10px 20px; background: #667eea; color: white; text-decoration: none; border-radius: 6px; }
+              a:hover { background: #5568d3; }
+              .stop-link { background: #dc3545; }
+              .stop-link:hover { background: #c82333; }
+            </style>
+          </head>
+          <body>
+            <div class="message">
+              <h2>📺 Tuned to Channel ${availableEncoder.channel}</h2>
+              <p>Streaming indefinitely until manually stopped</p>
+              <div class="detail">Watch on channel ${availableEncoder.channel} in Channels DVR</div>
+              <p style="font-size: 14px; color: #666;">Redirecting back to instant page in 3 seconds...</p>
+              <a href="/instant">← Back to Instant</a>
+              <a href="/stop" class="stop-link">Stop Stream</a>
+            </div>
+          </body>
+          </html>
+        `);
+      }
+
+      // Start the stream in the background (don't wait for response)
+      fetch(`http://localhost:${Constants.CH4C_PORT}/stream?url=${encodeURIComponent(targetUrl)}`)
+        .catch(err => logTS(`Stream fetch error (expected): ${err.message}`));
+    } else {
+      res.status(400).send('Invalid form submission');
+    }
+  });
+
+  // GET /stop - Stop all active streams and return encoders to pool
+  app.get('/stop', async (req, res) => {
+    const cleanupManager = req.app.locals.cleanupManager;
+    const streamMonitor = req.app.locals.streamMonitor;
+
+    const activeStreams = Array.from(streamMonitor.activeStreams.keys());
+
+    if (activeStreams.length === 0) {
+      res.send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <title>CH4C - Stop Streams</title>
+          <meta charset="UTF-8">
+          <style>
+            body { font-family: system-ui; max-width: 600px; margin: 50px auto; padding: 20px; }
+            .message { padding: 20px; background: #f0f0f0; border-radius: 8px; text-align: center; }
+            a { display: inline-block; margin-top: 20px; padding: 10px 20px; background: #667eea; color: white; text-decoration: none; border-radius: 6px; }
+            a:hover { background: #5568d3; }
+          </style>
+        </head>
+        <body>
+          <div class="message">
+            <h2>No Active Streams</h2>
+            <p>There are currently no active streams to stop.</p>
+            <a href="/instant">← Back to Instant</a>
+          </div>
+        </body>
+        </html>
+      `);
+      return;
+    }
+
+    logTS(`Stopping ${activeStreams.length} active stream(s)...`);
+
+    for (const encoderUrl of activeStreams) {
+      try {
+        await cleanupManager.cleanup(encoderUrl, null);
+        logTS(`Stopped stream on ${encoderUrl}`);
+      } catch (error) {
+        logTS(`Error stopping stream on ${encoderUrl}: ${error.message}`);
+      }
+    }
+
+    res.send(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>CH4C - Streams Stopped</title>
+        <meta charset="UTF-8">
+        <style>
+          body { font-family: system-ui; max-width: 600px; margin: 50px auto; padding: 20px; }
+          .message { padding: 20px; background: #d4edda; border: 1px solid #c3e6cb; border-radius: 8px; text-align: center; }
+          h2 { color: #155724; }
+          a { display: inline-block; margin-top: 20px; padding: 10px 20px; background: #667eea; color: white; text-decoration: none; border-radius: 6px; }
+          a:hover { background: #5568d3; }
+        </style>
+      </head>
+      <body>
+        <div class="message">
+          <h2>✓ Streams Stopped</h2>
+          <p>All active streams have been stopped and encoders returned to the pool.</p>
+          <a href="/instant">← Back to Instant</a>
+        </div>
+      </body>
+      </html>
+    `);
+  });
 
   const server = app.listen(Constants.CH4C_PORT, () => {
     logTS('CH4C listening on port', Constants.CH4C_PORT);
-    logTS(`Health status available at http://localhost:${Constants.CH4C_PORT}/health`);
-    logTS(`Audio Device list available at http://localhost:${Constants.CH4C_PORT}/audio-devices`);
+    logTS(`See status at http://localhost:${Constants.CH4C_PORT}/`);
+    logTS(`Instant recording/tuning available at http://localhost:${Constants.CH4C_PORT}/instant`);
   });
 
   // Handle server startup errors
@@ -1614,7 +2212,10 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
 // Helper function to consolidate site-specific fullscreen logic
 async function handleSiteSpecificFullscreen(targetUrl, page) {
   try {
-    if (targetUrl.includes("watch.sling.com")) {
+    if (targetUrl.includes("youtube.com") || targetUrl.includes("youtu.be")) {
+      logTS("Handling YouTube video");
+      await fullScreenVideoYouTube(page);
+    } else if (targetUrl.includes("watch.sling.com")) {
       logTS("Handling Sling video");
       await fullScreenVideoSling(page);
     } else if (targetUrl.includes("peacocktv.com")) {

@@ -1,10 +1,10 @@
 # Chrome HDMI for Channels (CH4C)
 
-This project merges elements of the excellent [Chrome Capture for Channels](https://github.com/fancybits/chrome-capture-for-channels) and [HDMI for Channels](https://github.com/tmm1/androidhdmi-for-channels) projects, in an attempt to capture benefits of each.
+This project merges elements of the excellent [Chrome Capture for Channels](https://github.com/fancybits/chrome-capture-for-channels) and [HDMI for Channels](https://github.com/tmm1/androidhdmi-for-channels) projects, in an attempt to capture benefits of each.  It builds on the original idea from [ParksideParade](https://github.com/ParksideParade/CH4C).
 
 Specifically:
 * **vs CC4C**: this project can run on a lower performance PC by offloading the encoding of one or more streams to an external HDMI encoder(s)
-* **vs HDMI for Channels**: this project can capture from any web URL with no dependency on the site having an Android TV app
+* **vs Android HDMI for Channels**: this project can capture from any web URL with no dependency on the site having an Android TV app
 
 ### My favorite use cases / why I made this
 * Recovering channels that I lost from TV Everywhere - for example NFL Network
@@ -25,7 +25,7 @@ Specifically:
 * **Encoder**: I largely followed the guidelines [here](https://community.getchannels.com/t/linkpi-encoder-family/38860/4) to configure the encoders (setting 30 fps can help with performance and I also used the deinterlace feature).  Connect your PC HDMI port(s) to the external encoder box and confirm that you're able to see and hear on the encoder's streaming URL before you go any further using VLC or similar - see Stream menu and Play URL tab for links.  Make sure your PC config is set to 1920x1080 for the PC display(s).
 
 * **Installation on Windows**:
-Download the Windows exe `ch4c.exe` available in the latest [release](https://github.com/dravenst/CH4C/releases). You can create a ".ps1" file that can be used to run as a Windows startup task as outlined in the [chrome-capture thread](https://community.getchannels.com/t/chrome-capture-for-channels/36667/130) or summarized below. Or pull the source code locally and run `npm install` to install node packages if you're going to to run it via `node main.js`.  It uses the rebrowser-puppeteer-core package to help with bot detection for some sites.
+Download the Windows exe `ch4c.exe` available in the latest [release](https://github.com/dravenst/CH4C/releases). You can create a ".ps1" file that can be used to run as a Windows startup task as outlined in the [chrome-capture thread](https://community.getchannels.com/t/chrome-capture-for-channels/36667/130) or summarized below. Or pull the source code locally and run `npm install` to install node packages if you're going to to run it via `node main.js`.
 
 * **DO NOT run in a Windows Remote Desktop session**: Video and audio sources change when running with Windows Remote Desktop aka Windows App.  For remote access, use VNC instead (e.g. [TightVNC server](https://www.tightvnc.com/) or similar.)
 
@@ -42,6 +42,8 @@ Options:
   -p, --channels-port  Channels server port  [string] [default: "8089"]
   -e, --encoder        Encoder configurations in format "url[:channel:width_pos:height_pos:audio_device]" where channel is optional (format: xx.xx, default: 24.42), width_pos/height_pos are optional screen positions (default: 0:0), and audio_device is the optional audio output device name  [array] [required]
   -c, --ch4c-port      CH4C port number  [number] [default: 2442]
+  -m, --enable-pause-monitor    Enable automatic video pause detection and resume  [boolean] [default: true]
+  -i, --pause-monitor-interval  Interval in seconds to check for paused video  [number] [default: 10]
   -h, --help           Show help  [boolean]
 
 Examples:
@@ -50,7 +52,7 @@ Examples:
   Simple example with channels server at 192.168.50.50 and single encoder at 192.168.50.71.
   
 
-  > main.js -s "http://192.168.50.50" -e "http://192.168.50.71/live/stream0:24.42:0:0:Encoder" -e "http://192.168.50.72/live/stream1:24.43:1921:0:MACROSILICON"
+  > main.js -s "http://192.168.50.50" -e "http://192.168.50.71/live/stream0:24.42:0:0:Encoder" -e "http://192.168.50.71/live/stream1:24.43:1921:0:MACROSILICON"
 
   This sets the channels server to 192.168.50.50 and encoder to 192.168.50.71/live/stream0 and a second encoder at stream1. The 1921 position of stream1 moves it to the right on startup on screen 2 in a dual monitor setup.
 
@@ -110,15 +112,20 @@ Or a more complex example for the `ch4c.ps1` file using both encoder ports of th
   * **Create Windows Task Scheduler Task**:
 Create a new task to run the `ch4c.ps1` file in Windows Task Scheduler, leave "Run with highest privileges" UNCHECKED (the latest Chrome browser security settings don't like this), and set it to trigger it when the user logs on (it's critical to run after user login to enable the GPU). Run the new Windows task you created manually to test it and be sure to visit all of the streaming sites within the browser that pops up after you try to stream your first channel.  This will allow you to login to the sites and retain the credentials for later runs. 
 
-* **Channels DVR custom channel**: create a custom channel in the Channels DVR Settings->Sources following the example below. Be sure to set the Stream Format to `MPEG-TS`. If it's a linear channel like NFL Network you can also map the channel so you get guide data. See the [samples.m3u](./assets/samples.m3u)file for more examples for Sling TV. CH4C also supports Spectrum and Peacocktv.com [(see how to do peacock links)](https://community.getchannels.com/t/adbtuner-a-channel-tuning-application-for-networked-google-tv-android-tv-devices/36822/1895).  Please note that in the example below that 192.168.50.71 is the IP address of the Link Pi encoder and 192.168.50.50 is the IP address where CH4C is running.
+* **Channels DVR custom channel**: create a custom channel in the Channels DVR Settings->Sources following the example below. Be sure to set the Stream Format to `MPEG-TS`. If it's a linear channel like NFL Network you can also map the channel so you get guide data. See the [samples.m3u](./assets/samples.m3u)file for more examples for Sling TV. CH4C also supports NBC.com, Spectrum and Peacocktv.com [(see how to do peacock links)](https://community.getchannels.com/t/adbtuner-a-channel-tuning-application-for-networked-google-tv-android-tv-devices/36822/1895).  Please note that in the example below that 192.168.50.71 is the IP address of the Link Pi encoder and 192.168.50.50 is the IP address where CH4C is running.
 
 ![CustomChannels](./assets/channelsetup.jpg)
 
-### Using
-CH4C can be used in several ways:
-* **Streaming channels**: supports nbc channels, NFL Network, Disney, Sling TV, Google Photos, and others available via web
-* **Custom channel**: using the custom channels that you created in Channels, simply use Channels to tune and record as you always would
-* **Instant**: go to <CH4C_IP_ADDRESS>:<CH4C_PORT>/instant and you should see a simple UI to instantly start recording any given URL. Or you can just "tune" your dedicated encoder channel to that URL, so you can then watch in Channels on channel number 24.42
+### Web Pages
+A couple of web pages are available from the running CH4C instance:
+
+* **Status Dashboard**: Navigate to http://\<CH4C_IP_ADDRESS\>:\<CH4C_PORT\>/ to see the main status page with encoder health, audio devices, command-line reference, and M3U configuration examples
+
+![StatusPage](./assets/statuspage.jpg)
+
+* **Instant Recording or Viewing**: go to http://\<CH4C_IP_ADDRESS\>:\<CH4C_PORT\>/instant for a simple UI to instantly start recording any given URL. Or you can just "tune" your encoder to that URL (without recording), so you can watch in Channels on the encoder's channel number (default: 24.42, or whatever you specified in the --encoder parameter)
+
+![InstantRecordings](./assets/instantpage.jpg)
 
 ### Developing
 windows
@@ -142,9 +149,6 @@ npm run build
 ### Performance
 This works surprisingly well for me, but the streaming providers can have some glitches that prevent consistent loading of screens.
 
-* **Health Status**: Basic Health status is available at http://\<YOUR-CH4C-IP\>:\<YOUR-CH4C-PORT\>/health
-* **Audio Devices**: Audio Device list detected by CH4C available at http://\<YOUR-CH4C-IP\>:\<YOUR-CH4C-PORT\>/audio-devices
-
-### Likely Failures / Things I Haven't Tested
-* **Mac and Docker**: This is optimized for Windows, so it's not likely to work well on Mac of Docker yet
-* **NBC sites on Linux problem**: unfortunately on my Pi5 the NBC sites do not load in Chromium. Even when I just open Chromium as a normal user, the video doesn't play and I get some Widevine DRM related error. Hopefully you'll have more luck on a Win/Mac, and if you are able to load NBC sites on a Pi please let me know how to do it!
+### Other Notes
+* **Mac and Docker**: This is optimized for Windows, so it's not likely to work well on Mac or Docker yet
+* **HLS**: The examples above use MPEG-TS, but you can likely use HLS as well.  You just need to setup your encoder to enable HLS and then adjust your Custom Channel setup in Channels to use HLS. The final setup is to update the startup Encoder parameter to use the HLS stream.

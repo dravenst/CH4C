@@ -1,6 +1,6 @@
 {
   "name": "ch4c",
-  "version": "0.0.2",
+  "version": "0.1.2",
   "bin": {
     "ch4c": "./main.js"
   },
@@ -8,18 +8,23 @@
   "main": "main.js",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ParksideParade/CH4C.git"
+    "url": "git+https://github.com/dravenst/CH4C.git"
   },
-  "author": "",
+  "author": "dravenst",
+  "keywords": ["channels", "dvr", "channelsdvr", "hdmi", "streaming", "puppeteer"],
   "license": "ISC",
-  "bugs": {
-    "url": "https://github.com/ParksideParade/CH4C/issues"
+  "engines": {
+    "node": ">=18.0.0"
   },
-  "homepage": "https://github.com/ParksideParade/CH4C#readme",
+  "bugs": {
+    "url": "https://github.com/dravenst/CH4C/issues"
+  },
+  "homepage": "https://github.com/dravenst/CH4C#readme",
   "dependencies": {
     "express": "^5.1.0",
-    "puppeteer-core": "^24.6.1",
-    "rebrowser-puppeteer-core": "^24.8.1"
+    "node-fetch": "^2.7.0",
+    "rebrowser-puppeteer-core": "^24.8.1",
+    "yargs": "^17.7.2"
   },
   "devDependencies": {
     "@eslint/js": "^9.25.0",
@@ -30,14 +35,7 @@
     "targets": [
       "latest-win-x64"
     ],
-    "assets": [
-      "node_modules/vm2/**",
-      "node_modules/puppeteer-stream/**"
-    ],
-    "outputPath": "dist",
-    "options": [
-      "experimental-modules"
-    ]
+    "outputPath": "dist"
   },
   "scripts": {
     "build": "pkg ."
