@@ -482,82 +482,91 @@ const createCleanupManager = () => {
  * @returns {Promise<boolean>} - True if modal was handled successfully
  */
 async function handleSlingModal(page) {
-  const maxAttempts = 7;
+  const currentUrl = page.url();
 
+  // Check if we're on the modal page
+  if (currentUrl.includes('/modal')) {
+    logTS('Detected Sling modal, skipping (will retry on next attempt)');
+    // Don't wait - modal won't auto-dismiss, just return false and let retry handle it
+    return false;
+  } else {
+    // Not on modal page, we're good
+    return true;
+  }
+}
+
+/**
+ * Navigate to a Sling URL and handle any modals that appear
+ * @param {Page} page - Puppeteer page object
+ * @param {string} url - URL to navigate to
+ * @param {number} maxAttempts - Maximum number of modal dismissal attempts
+ * @param {string} expectedUrlPattern - Optional URL pattern to validate successful navigation (e.g., '/dashboard')
+ * @returns {Promise<boolean>} - True if successfully navigated past modals to expected destination
+ */
+async function navigateSlingWithModalHandling(page, url, maxAttempts = 10, expectedUrlPattern = null) {
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    await page.goto(url, {
+      waitUntil: 'load',
+      timeout: 15000
+    });
+
+    await delay(1500 + Math.random() * 500); // 1.5-2 second delay
+
+    // Re-inject checkForVideos function after navigation
+    await page.evaluate(() => {
+      window.checkForVideos = () => {
+        const videos = [...document.getElementsByTagName('video')];
+        const iframeVideos = [...document.getElementsByTagName('iframe')].reduce((acc, iframe) => {
+          try {
+            const frameVideos = iframe.contentDocument?.getElementsByTagName('video');
+            return frameVideos && frameVideos.length ? [...acc, ...frameVideos] : acc;
+          } catch(e) {
+            return acc;
+          }
+        }, []);
+        return [...videos, ...iframeVideos];
+      };
+    });
+
     const currentUrl = page.url();
 
-    // Check if we're on the modal page
+    // Check if we're still on a modal page
     if (currentUrl.includes('/modal')) {
-      logTS(`Detected Sling modal (attempt ${attempt}/${maxAttempts}), simulating human interaction...`);
-
-      // Faster timing - just enough to seem human but not waste time
-      await delay(300 + Math.random() * 200); // 300-500ms delay
-
-      // Press Tab key to focus on interactive elements
-      await page.keyboard.press('Tab');
-      await delay(100 + Math.random() * 100); // 100-200ms
-
-      // Press Enter to activate
-      await page.keyboard.press('Enter');
-      await delay(800 + Math.random() * 400); // 800-1200ms wait for navigation
-
-      // Check if we successfully navigated away from modal
-      const newUrl = page.url();
-      if (!newUrl.includes('/modal')) {
-        logTS('Successfully dismissed Sling modal');
-        return true;
+      logTS(`Modal detected on attempt ${attempt}/${maxAttempts}, will retry...`);
+      if (attempt >= maxAttempts) {
+        logTS(`Failed to get past modals after ${maxAttempts} attempts`);
+        return false; // Failed to get past modals
       }
-    } else {
-      // Not on modal page, we're good
-      return true;
+      continue; // Try again
     }
+
+    // If we have an expected URL pattern, validate we landed there
+    if (expectedUrlPattern && !currentUrl.includes(expectedUrlPattern)) {
+      logTS(`Got past modal but landed on unexpected page: ${currentUrl} (expected pattern: ${expectedUrlPattern})`);
+      if (attempt >= maxAttempts) {
+        return false;
+      }
+      continue; // Try again
+    }
+
+    // Successfully got past modals and landed on expected page
+    logTS(`Successfully navigated to ${currentUrl}`);
+    return true;
   }
 
-  logTS(`Warning: Could not dismiss Sling modal after ${maxAttempts} attempts`);
   return false;
 }
 
 async function setupBrowserAudio(page, encoderConfig, targetUrl = null) {
-  // Handle Sling modals that may appear during video loading
-  if (page.url().includes("watch.sling.com")) {
-    logTS("Checking for Sling modals before video load");
-
-    // Keep looping until we successfully land on the channel page
-    const maxNavigationAttempts = 10;
-    let onCorrectPage = false;
-
-    for (let navAttempt = 1; navAttempt <= maxNavigationAttempts && !onCorrectPage; navAttempt++) {
-      await delay(500);
-
-      // Handle any modals on current page
-      const modalHandled = await handleSlingModal(page);
-      if (modalHandled) {
-        logTS(`Modals handled (navigation attempt ${navAttempt}/${maxNavigationAttempts})`);
-      }
-
-      // Wait for any background redirects after modal dismissal
-      await delay(1500);
-
-      // Check if we're on the correct channel URL
-      const currentUrl = page.url();
-      if (targetUrl && currentUrl.endsWith('/watch')) {
-        logTS(`Confirmed on correct channel page: ${currentUrl}`);
-        onCorrectPage = true;
-      } else if (targetUrl && !currentUrl.endsWith('/watch')) {
-        logTS(`After modal dismissal, on wrong page: ${currentUrl}`);
-        logTS(`Forcing navigation back to channel (attempt ${navAttempt}/${maxNavigationAttempts}): ${targetUrl}`);
-        await page.goto(targetUrl, {
-          waitUntil: 'load',
-          timeout: 15000
-        });
-        logTS("Navigated back to channel, checking for more modals...");
-        await delay(800);
-      }
-    }
-
-    if (!onCorrectPage) {
-      logTS(`Warning: Could not confirm correct channel page after ${maxNavigationAttempts} attempts`);
+  // For Sling, just navigate to channel if not already there
+  if (page.url().includes("watch.sling.com") && targetUrl) {
+    // If not on the channel page, navigate there
+    if (!page.url().endsWith('/watch')) {
+      logTS(`Not on channel page, navigating to: ${targetUrl}`);
+      await page.goto(targetUrl, {
+        waitUntil: 'load',
+        timeout: 15000
+      });
     }
   }
 
@@ -583,30 +592,86 @@ async function setupBrowserAudio(page, encoderConfig, targetUrl = null) {
   // calls checkforvideos constantly until either at least one video is ready or the 60s timer expires
   // For Sling, we need to handle modals that may appear during video loading
   if (page.url().includes("watch.sling.com")) {
-    const maxVideoWaitAttempts = 5;
+    const maxVideoWaitAttempts = 10;
     let videoFound = false;
+    let tryCount = 0;
+    const maxTries = 2; // Try 10 attempts, then detour to root sling.com, then 10 more attempts
 
-    for (let attempt = 1; attempt <= maxVideoWaitAttempts && !videoFound; attempt++) {
-      try {
-        await page.waitForFunction(() => {
-          const videos = window.checkForVideos();
-          return videos.length > 0 && videos.some(v => v.readyState >= 2);
-        }, { timeout: 12000 }); // 12 second timeout per attempt
-        videoFound = true;
-        logTS("Video found and ready");
-      } catch (e) {
-        // Check if we hit a modal during video wait
-        if (page.url().includes('/modal')) {
-          logTS(`Modal appeared during video wait (attempt ${attempt}/${maxVideoWaitAttempts})`);
-          await handleSlingModal(page);
-          // The modal handler should navigate away, just continue waiting for video
-          await delay(500); // Brief delay to let page settle
-        } else {
-          logTS(`Video wait attempt ${attempt}/${maxVideoWaitAttempts} timed out`);
-          if (attempt >= maxVideoWaitAttempts) {
-            throw e; // Re-throw on final attempt
+    while (!videoFound && tryCount < maxTries) {
+      tryCount++;
+      logTS(`Starting attempt set ${tryCount}/${maxTries} for video detection`);
+
+      for (let attempt = 1; attempt <= maxVideoWaitAttempts && !videoFound; attempt++) {
+        // Check if we're on the wrong page (modal or dashboard) before waiting for video
+        const currentUrl = page.url();
+        if (currentUrl.includes('/modal') || currentUrl.includes('/dashboard')) {
+          logTS(`On modal/dashboard, navigating to channel (set ${tryCount}, attempt ${attempt}/${maxVideoWaitAttempts})`);
+
+          // Navigate back to channel with modal handling
+          if (targetUrl) {
+            await page.goto(targetUrl, {
+              waitUntil: 'load',
+              timeout: 15000
+            });
+            await delay(1500 + Math.random() * 500); // 1.5-2 second delay between modal navigations
+
+            // Re-inject checkForVideos function after navigation
+            await page.evaluate(() => {
+              window.checkForVideos = () => {
+                const videos = [...document.getElementsByTagName('video')];
+                const iframeVideos = [...document.getElementsByTagName('iframe')].reduce((acc, iframe) => {
+                  try {
+                    const frameVideos = iframe.contentDocument?.getElementsByTagName('video');
+                    return frameVideos && frameVideos.length ? [...acc, ...frameVideos] : acc;
+                  } catch(e) {
+                    return acc;
+                  }
+                }, []);
+                return [...videos, ...iframeVideos];
+              };
+            });
           }
+
+          // Skip video wait and continue to next attempt immediately
+          continue;
         }
+
+        // Only wait for video if we're actually on the channel page
+        try {
+          await page.waitForFunction(() => {
+            const videos = window.checkForVideos();
+            return videos.length > 0 && videos.some(v => v.readyState >= 2);
+          }, { timeout: 5000 }); // Shorter timeout - if modal appears it will show quickly
+          videoFound = true;
+          logTS("Video found and ready");
+        } catch (e) {
+          logTS(`Video wait attempt ${attempt}/${maxVideoWaitAttempts} (set ${tryCount}) timed out`);
+          // If we timed out, wait a bit before next attempt
+          await delay(500);
+        }
+      }
+
+      // If we didn't find video and haven't exhausted all try sets, do the detour
+      if (!videoFound && tryCount < maxTries) {
+        logTS(`Failed attempt set ${tryCount}. Navigating to root sling.com with modal handling...`);
+
+        // Use the helper function to navigate to root Sling with modal handling
+        // Expect to land on /dashboard after navigating through any modals
+        const detourSuccess = await navigateSlingWithModalHandling(page, 'https://watch.sling.com', 10, '/dashboard');
+
+        if (!detourSuccess) {
+          logTS(`Warning: Detour to root sling.com failed to reach dashboard after 10 attempts`);
+        } else {
+          logTS(`Successfully reached dashboard page`);
+        }
+
+        // Wait a bit longer to let things settle after detour
+        await delay(2000 + Math.random() * 1000); // 2-3 second pause
+
+        logTS(`Detour complete, will retry channel navigation`);
+      } else if (!videoFound) {
+        // Exhausted all tries
+        throw new Error(`Failed to find video after ${maxTries * maxVideoWaitAttempts} total attempts across ${maxTries} attempt sets`);
       }
     }
   } else {
@@ -917,6 +982,61 @@ async function launchBrowser(targetUrl, encoderConfig, startMinimized, applyStar
       page = await browser.newPage();
     }
 
+    // Set realistic HTTP headers for better bot detection evasion
+    await page.setExtraHTTPHeaders({
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    });
+
+    // Block requests to local network addresses to prevent permission popup
+    await page.setRequestInterception(true);
+
+    page.on('request', (request) => {
+      try {
+        // Skip if request is already handled
+        if (request.isInterceptResolutionHandled()) {
+          return;
+        }
+
+        const url = request.url();
+
+        // Check if URL is trying to access local network
+        const isLocalNetwork =
+          // Private IP ranges (192.168.x.x, 10.x.x.x, 172.16-31.x.x)
+          /^https?:\/\/(192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})/.test(url) ||
+          // Localhost
+          /^https?:\/\/(localhost|127\.0\.0\.1)/.test(url) ||
+          // .local domains
+          /^https?:\/\/[^\/]+\.local/.test(url) ||
+          // Dish set-top box communication (dishboxes.com)
+          /dishboxes\.com/.test(url);
+
+        if (isLocalNetwork) {
+          logTS(`Blocked local network request: ${url}`);
+          request.abort('blockedbyclient');
+        } else {
+          request.continue();
+        }
+      } catch (error) {
+        // Request might already be handled or page might be closing
+        // Don't log errors as this is expected during navigation/cleanup
+      }
+    });
+
+    // Hide the Chrome warning banner about unsupported flags
+    await page.evaluateOnNewDocument(() => {
+      const style = document.createElement('style');
+      style.innerHTML = `
+        #unsupported-flag-banner,
+        div[style*="background: rgb(255, 249, 199)"] {
+          display: none !important;
+        }
+      `;
+      document.head?.appendChild(style) || document.addEventListener('DOMContentLoaded', () => {
+        document.head.appendChild(style);
+      });
+    });
+
     logTS(`loading page for encoder ${encoderConfig.url}`);
 
     const navigationTimeout = 30000;
@@ -1221,6 +1341,28 @@ async function fullScreenVideoGooglePhotos(page) {
   await page.keyboard.press('Enter');
 
   logTS("changed to fullscreen and max volume");
+}
+
+async function fullScreenVideoESPN(page) {
+  logTS("URL contains ESPN, maximizing volume and going fullscreen");
+
+  // Always press up arrow 5 times to ensure max volume
+  for (let i = 0; i < 5; i++) {
+    await delay(200);
+    await page.keyboard.press('ArrowUp');
+  }
+  await delay(200);
+
+  // Press Tab 10 times to navigate to fullscreen button
+  for (let i = 0; i < 10; i++) {
+    await delay(200);
+    await page.keyboard.press('Tab');
+  }
+
+  // Press Enter to activate fullscreen
+  await page.keyboard.press('Enter');
+
+  logTS("finished maximizing volume and fullscreen");
 }
 
 async function fullScreenVideoYouTube(page) {
@@ -1668,7 +1810,6 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
 
     logTS(`streaming to ${targetUrl} using encoder ${availableEncoder.url}`);
     cleanupManager.setBrowserActive(availableEncoder.url);
-    streamMonitor.startMonitoring(availableEncoder.url);
 
     // Enhanced cleanup on stream close
     res.on('close', async err => {
@@ -1716,59 +1857,17 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
         const maxNavRetries = 2;
         let navSuccess = false;
 
-        // Special handling for Sling - navigate to home page first to avoid bot detection
+        // Special handling for Sling - navigate directly to channel
         if (targetUrl.includes("watch.sling.com")) {
-          logTS("Sling URL detected - navigating to home page first to avoid bot detection");
+          logTS("Sling URL detected - navigating directly to channel");
 
           try {
-            // Step 1: Go to Sling home page
-            await page.goto("https://watch.sling.com", {
-              waitUntil: 'load',
-              timeout: navigationTimeout
-            });
-            logTS("Navigated to Sling home page");
-
-            // Handle modal if present on home page
-            await delay(800); // Wait for page to settle
-            const modalHandledHome = await handleSlingModal(page);
-
-            if (!modalHandledHome) {
-              logTS("Warning: Modal may not have been fully dismissed on home page");
-            }
-
-            // Add brief delay before navigating to channel
-            await delay(400 + Math.random() * 300); // 0.4-0.7 seconds
-
-            // Step 2: Now navigate directly to the actual channel URL
-            logTS(`Navigating to channel: ${targetUrl}`);
+            // Navigate directly to the channel URL
             await page.goto(targetUrl, {
               waitUntil: 'load',
               timeout: navigationTimeout
             });
-
-            // Handle modal again if it appears on channel page
-            await delay(800);
-            const modalHandledOnChannel = await handleSlingModal(page);
-
-            // After dismissing modal, navigate back to the channel URL if needed
-            if (modalHandledOnChannel && page.url().includes('/modal')) {
-              logTS("Modal was on channel page, re-navigating to channel URL");
-              await delay(500 + Math.random() * 300); // 0.5-0.8s delay
-              await page.goto(targetUrl, {
-                waitUntil: 'load',
-                timeout: navigationTimeout
-              });
-              logTS("Re-navigation to channel complete");
-            } else if (!page.url().includes(targetUrl.split('?')[0])) {
-              // URL changed after modal dismissal, navigate back
-              logTS("URL changed after modal dismissal, navigating back to channel");
-              await delay(500 + Math.random() * 300);
-              await page.goto(targetUrl, {
-                waitUntil: 'load',
-                timeout: navigationTimeout
-              });
-              logTS("Re-navigation to channel complete");
-            }
+            logTS("Navigated to Sling channel page");
 
             navSuccess = true;
             logTS(`Successfully navigated to Sling channel`);
@@ -1822,11 +1921,19 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
 
           if (res && !res.headersSent) {
             const stream = Readable.from(fetchResponse.body);
-            
-            // Monitor stream for activity
-            stream.on('data', () => {
-              streamMonitor.updateActivity(availableEncoder.url);
-            });
+
+            // Only start monitoring if this is a real stream consumer (not internal fetch from /instant tune)
+            // Internal fetches from localhost won't consume the stream, so monitoring would show false inactivity
+            const isRealConsumer = req.headers['user-agent'] && !req.headers['user-agent'].includes('node-fetch');
+            if (isRealConsumer) {
+              // Start monitoring now that encoder stream is established
+              streamMonitor.startMonitoring(availableEncoder.url);
+
+              // Monitor stream for activity
+              stream.on('data', () => {
+                streamMonitor.updateActivity(availableEncoder.url);
+              });
+            }
 
             stream.pipe(res, { end: true })
               .on('error', (error) => {
@@ -1836,7 +1943,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
               });
           }
 
-          // Setup audio and fullscreen (existing code)
+          // Setup audio and fullscreen AFTER starting encoder stream
           if (!targetUrl.includes("photos.app.goo.gl")) {
             await setupBrowserAudio(page, availableEncoder, targetUrl);
           }
@@ -2225,6 +2332,9 @@ async function handleSiteSpecificFullscreen(targetUrl, page) {
     } else if (targetUrl.includes("photos.app.goo.gl")) {
       logTS("Handling Google Photos");
       await fullScreenVideoGooglePhotos(page);
+    } else if (targetUrl.includes("espn.com")) {
+      logTS("Handling ESPN video");
+      await fullScreenVideoESPN(page);
     } else {
       logTS("Handling default video");
       await fullScreenVideo(page);

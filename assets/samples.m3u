@@ -72,10 +72,10 @@ http://192.168.50.50:2442/stream/?url=https://www.nbc.com/live?brand=e&callsign=
 #EXTINF:-1 channel-id="Oxygen (East)" tvc-guide-stationid="70522" channel-number="251",Oxygen (East)
 http://192.168.50.50:2442/stream/?url=https://www.nbc.com/live?brand=oxygen&callsign=oxygen_east
 
-#EXTINF:-1 channel-id="SyFy (East)" tvc-guide-stationid="58623" channel-number="244",SyFy (East)
+#EXTINF:-1 channel-id="SyFy" tvc-guide-stationid="58623" channel-number="244",SyFy
 http://192.168.50.50:2442/stream/?url=https://www.nbc.com/live?brand=syfy&callsign=syfy_east
 
-#EXTINF:-1 channel-id="SyFy (West)" channel-number="245",SyFy (West)
+#EXTINF:-1 channel-id="SyFyP" tvc-guide-stationid="24533" channel-number="243",SyFyP
 http://192.168.50.50:2442/stream/?url=https://www.nbc.com/live?brand=syfy&callsign=syfy_west
 
 #EXTINF:-1 channel-id="USA (East)" tvc-guide-stationid="58452" channel-number="242",USA (East)
@@ -117,3 +117,11 @@ http://192.168.50.50:2442/stream?url=https://watch.sling.com/1/channel/7bd920fab
 #EXTINF:-1 channel-id="bein" tvc-guide-stationid="76950", BEIN1HD
 http://192.168.50.50:2442/stream?url=https://watch.sling.com/1/channel/9125fbd1c6cd4c93b01387201878f063/watch
 
+#EXTINF:-1 channel-id="tnt" tvg-chno="245" tvc-guide-stationid="42642" channel-number=“245”, TNTHD
+http://192.168.50.50:2442/stream?url=https://watch.sling.com/1/channel/23a92a8fb160489b97fd746536551d50/watch
+
+#EXTINF:-1 channel-id="tbs" tvg-chno="247" tvc-guide-stationid="58515" channel-number=“247”, TBSHD
+http://192.168.50.50:2442/stream?url=https://watch.sling.com/1/channel/6f8a36632f45462db3b843ed96a1f96c/watch
+
+#EXTINF:-1 channel-id="trutvhd" tvg-chno="246" tvc-guide-stationid="64490" channel-number=“246”, TRUTVHD
+http://192.168.50.50:2442/stream?url=https://watch.sling.com/1/channel/1ed623f9dc97498cbe332bd5216a87c1/watch

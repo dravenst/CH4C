@@ -11,7 +11,14 @@
     "url": "git+https://github.com/dravenst/CH4C.git"
   },
   "author": "dravenst",
-  "keywords": ["channels", "dvr", "channelsdvr", "hdmi", "streaming", "puppeteer"],
+  "keywords": [
+    "channels",
+    "dvr",
+    "channelsdvr",
+    "hdmi",
+    "streaming",
+    "puppeteer"
+  ],
   "license": "ISC",
   "engines": {
     "node": ">=18.0.0"
