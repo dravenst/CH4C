@@ -125,3 +125,9 @@ http://192.168.50.50:2442/stream?url=https://watch.sling.com/1/channel/6f8a36632
 
 #EXTINF:-1 channel-id="trutvhd" tvg-chno="246" tvc-guide-stationid="64490" channel-number=“246”, TRUTVHD
 http://192.168.50.50:2442/stream?url=https://watch.sling.com/1/channel/1ed623f9dc97498cbe332bd5216a87c1/watch
+
+#EXTINF:-1 channel-id="amchd" tvg-chno="254" tvc-guide-stationid="59337" channel-number=“254”, AMCHD
+http://192.168.50.50:2442/stream?url=https://watch.sling.com/1/channel/8da93b497e644312b17d2420f1cb77f4/watch
+
+#EXTINF:-1 channel-id="ifchd" tvg-chno="333" tvc-guide-stationid="59444" channel-number=“333”, IFCHD
+http://192.168.50.50:2442/stream?url=https://watch.sling.com/1/channel/d990d3f3d1a04c92ab2d1c76fba0b072/watch

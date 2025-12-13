@@ -510,7 +510,7 @@ async function navigateSlingWithModalHandling(page, url, maxAttempts = 10, expec
       timeout: 15000
     });
 
-    await delay(1500 + Math.random() * 500); // 1.5-2 second delay
+    await delay(1000 + Math.random() * 500); // 1-1.5 second delay
 
     // Re-inject checkForVideos function after navigation
     await page.evaluate(() => {
@@ -528,17 +528,41 @@ async function navigateSlingWithModalHandling(page, url, maxAttempts = 10, expec
       };
     });
 
-    const currentUrl = page.url();
+    let currentUrl = page.url();
 
-    // Check if we're still on a modal page
+    // Check if we're on a modal page
     if (currentUrl.includes('/modal')) {
-      logTS(`Modal detected on attempt ${attempt}/${maxAttempts}, will retry...`);
-      if (attempt >= maxAttempts) {
-        logTS(`Failed to get past modals after ${maxAttempts} attempts`);
-        return false; // Failed to get past modals
+      logTS(`Modal detected on attempt ${attempt}/${maxAttempts}, attempting to dismiss...`);
+
+      // Try to dismiss modal using Tab+Enter (5 times with random delays)
+      for (let dismissAttempt = 1; dismissAttempt <= 5; dismissAttempt++) {
+        logTS(`Modal dismiss attempt ${dismissAttempt}/5 using Tab+Enter`);
+        await page.keyboard.press('Tab');
+        await delay(1000 + Math.random() * 1000); // 1-2 second wait
+        await page.keyboard.press('Enter');
+        await delay(1000 + Math.random() * 1000); // 1-2 second wait
+
+        // Check if we're still on modal
+        currentUrl = page.url();
+        if (!currentUrl.includes('/modal')) {
+          logTS(`Modal dismissed successfully on Tab+Enter attempt ${dismissAttempt}`);
+          break;
+        }
       }
-      continue; // Try again
+
+      // If still on modal after Tab+Enter attempts, force navigate again
+      if (currentUrl.includes('/modal')) {
+        logTS(`Modal still present after Tab+Enter attempts, forcing navigation...`);
+        if (attempt >= maxAttempts) {
+          logTS(`Failed to get past modals after ${maxAttempts} attempts`);
+          return false;
+        }
+        continue; // Try full navigation again
+      }
     }
+
+    // Re-check current URL after modal handling
+    currentUrl = page.url();
 
     // If we have an expected URL pattern, validate we landed there
     if (expectedUrlPattern && !currentUrl.includes(expectedUrlPattern)) {
@@ -552,6 +576,69 @@ async function navigateSlingWithModalHandling(page, url, maxAttempts = 10, expec
     // Successfully got past modals and landed on expected page
     logTS(`Successfully navigated to ${currentUrl}`);
     return true;
+  }
+
+  return false;
+}
+
+/**
+ * Navigate to Sling channel using human-like UI navigation to avoid rate limiting
+ * Follows the user flow: Home -> Guide -> Browse -> Watch
+ * @param {Page} page - Puppeteer page object
+ * @param {string} channelWatchUrl - The final /watch URL to navigate to
+ * @param {number} maxRetries - Maximum number of full sequence retries
+ * @returns {Promise<boolean>} - True if successfully navigated to watch page
+ */
+async function navigateSlingLikeHuman(page, channelWatchUrl, maxRetries = 3) {
+  for (let retry = 1; retry <= maxRetries; retry++) {
+    logTS(`Starting Sling human-like navigation (attempt ${retry}/${maxRetries})`);
+
+    try {
+      // STEP 1: Navigate to home page and handle modals
+      logTS('Step 1: Navigating to watch.sling.com home...');
+      const homeSuccess = await navigateSlingWithModalHandling(
+        page,
+        'https://watch.sling.com',
+        10,
+        '/dashboard/home'
+      );
+
+      if (!homeSuccess) {
+        logTS('Step 1 failed: Could not reach home page');
+        if (retry >= maxRetries) return false;
+        await delay(1000);
+        continue;
+      }
+
+      logTS('Step 1 complete: On home page');
+      await delay(500 + Math.random() * 500); // 0.5-1s pause
+
+      // STEP 2: Navigate directly to watch page
+      logTS(`Step 2: Navigating to watch page: ${channelWatchUrl}`);
+      const watchSuccess = await navigateSlingWithModalHandling(
+        page,
+        channelWatchUrl,
+        10,
+        '/watch'
+      );
+
+      if (!watchSuccess) {
+        logTS('Step 2 failed: Could not reach watch page');
+        if (retry >= maxRetries) return false;
+        await delay(1000);
+        continue;
+      }
+
+      logTS('Step 2 complete: Successfully on watch page!');
+      return true;
+
+    } catch (error) {
+      logTS(`Error during navigation sequence: ${error.message}`);
+      if (retry >= maxRetries) {
+        return false;
+      }
+      await delay(1000);
+    }
   }
 
   return false;
@@ -1012,7 +1099,7 @@ async function launchBrowser(targetUrl, encoderConfig, startMinimized, applyStar
           /dishboxes\.com/.test(url);
 
         if (isLocalNetwork) {
-          logTS(`Blocked local network request: ${url}`);
+          // logTS(`Blocked local network request: ${url}`); // Suppressed to reduce log noise
           request.abort('blockedbyclient');
         } else {
           request.continue();
@@ -1544,6 +1631,12 @@ async function fetchWithRetry(url, options = {}, maxRetries = 3) {
 
 // Modified main() function with enhanced error handling
 async function main() {
+  // Check if Constants was properly initialized (will be empty if --help or missing args)
+  if (!Constants.CHANNELS_URL) {
+    // Constants module exited early (help/missing args), so don't start the server
+    return;
+  }
+
   const app = express();
   app.use(express.urlencoded({ extended: false }));
 
@@ -1857,20 +1950,19 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
         const maxNavRetries = 2;
         let navSuccess = false;
 
-        // Special handling for Sling - navigate directly to channel
+        // Special handling for Sling - use human-like navigation to avoid rate limiting
         if (targetUrl.includes("watch.sling.com")) {
-          logTS("Sling URL detected - navigating directly to channel");
+          logTS("Sling URL detected - using human-like navigation flow");
 
           try {
-            // Navigate directly to the channel URL
-            await page.goto(targetUrl, {
-              waitUntil: 'load',
-              timeout: navigationTimeout
-            });
-            logTS("Navigated to Sling channel page");
+            // Use the human-like navigation sequence: Home -> Guide -> Browse -> Watch
+            navSuccess = await navigateSlingLikeHuman(page, targetUrl, 3);
 
-            navSuccess = true;
-            logTS(`Successfully navigated to Sling channel`);
+            if (!navSuccess) {
+              throw new Error("Failed to navigate to Sling channel using human-like flow");
+            }
+
+            logTS(`Successfully navigated to Sling channel: ${targetUrl}`);
           } catch (slingError) {
             logTS(`Sling navigation error: ${slingError.message}`);
             throw slingError;

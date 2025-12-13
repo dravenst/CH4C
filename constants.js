@@ -6,6 +6,23 @@ const { URL } = require('url');
 const { AudioDeviceManager } = require('./audio-device-manager');
 
 /**
+ * Show available audio devices synchronously (blocking)
+ * This works in both regular Node.js and bundled executables
+ */
+async function showAudioDevices() {
+  console.log('\nAvailable Audio Output Devices:');
+  try {
+    const audioManager = new AudioDeviceManager();
+    const devices = await audioManager.getAudioDevices();
+    devices.forEach((device, index) => {
+      console.log(`  ${index + 1}. ${device}`);
+    });
+  } catch (error) {
+    console.log('  Error retrieving audio devices:', error.message);
+  }
+}
+
+/**
  * Validate if a string is a valid URL
  * @param {string} url - URL to validate
  * @returns {boolean} - True if valid URL
@@ -199,26 +216,18 @@ const argv = yargs(rawArgs)
     // Show help
     yargs.showHelp();
 
-    // Show audio devices using the same synchronous method as error case
-    console.log('\nAvailable Audio Output Devices:');
-    try {
-      const { execSync } = require('child_process');
-
-      // Execute audio device detection synchronously - suppress AudioDeviceManager logging
-      const result = execSync('node -e "const { AudioDeviceManager } = require(\'./audio-device-manager\'); (async () => { try { const originalLog = console.log; console.log = () => {}; const audioManager = new AudioDeviceManager(); const devices = await audioManager.getAudioDevices(); console.log = originalLog; devices.forEach((device, index) => { console.log(`  ${index + 1}. ${device}`); }); } catch (error) { console.log = originalLog; console.log(\'Error:\', error.message); } })();"', { encoding: 'utf8' });
-
-      process.stdout.write(result);
-    } catch (error) {
-      console.log('  Error retrieving audio devices:', error.message);
-    }
-
-    process.exit(1);
+    // Show audio devices and exit when done
+    (async () => {
+      await showAudioDevices();
+      process.exit(1);
+    })();
   })
   .parse();
 
-// Check if help was requested and trigger the same flow as missing args
+// If help was requested explicitly, handle it here
+// Note: yargs .help(false) disables built-in help, so we need to check for it manually
 if (argv.help) {
-  // Create a temporary yargs instance for showing help in fail handler
+  // Create a temporary yargs instance for showing help
   const helpYargs = yargs()
     .option('channels-url', { alias: 's', type: 'string', demandOption: true, describe: 'Channels server URL' })
     .option('channels-port', { alias: 'p', type: 'string', default: '8089', describe: 'Channels server port' })
@@ -239,38 +248,15 @@ if (argv.help) {
   // Show help
   helpYargs.showHelp();
 
-  // Show audio devices using the same synchronous method as error case
-  console.log('\nAvailable Audio Output Devices:');
-  try {
-    const { execSync } = require('child_process');
+  // Show audio devices and exit when done
+  (async () => {
+    await showAudioDevices();
+    process.exit(0);
+  })();
 
-    // Execute audio device detection synchronously - suppress AudioDeviceManager logging
-    const result = execSync('node -e "const { AudioDeviceManager } = require(\'./audio-device-manager\'); (async () => { try { const originalLog = console.log; console.log = () => {}; const audioManager = new AudioDeviceManager(); const devices = await audioManager.getAudioDevices(); console.log = originalLog; devices.forEach((device, index) => { console.log(`  ${index + 1}. ${device}`); }); } catch (error) { console.log = originalLog; console.log(\'Error:\', error.message); } })();"', { encoding: 'utf8' });
-
-    process.stdout.write(result);
-  } catch (error) {
-    console.log('  Error retrieving audio devices:', error.message);
-  }
-
-  process.exit(0);
-}
-
-// Check if required arguments are missing and show audio devices
-if (!argv['channels-url'] || !argv['encoder']) {
-  console.log('\nAvailable Audio Output Devices:');
-
-  try {
-    const { execSync } = require('child_process');
-
-    // Execute audio device detection synchronously - suppress AudioDeviceManager logging
-    const result = execSync('node -e "const { AudioDeviceManager } = require(\'./audio-device-manager\'); (async () => { try { const originalLog = console.log; console.log = () => {}; const audioManager = new AudioDeviceManager(); const devices = await audioManager.getAudioDevices(); console.log = originalLog; devices.forEach((device, index) => { console.log(`  ${index + 1}. ${device}`); }); } catch (error) { console.log = originalLog; console.log(\'Error:\', error.message); } })();"', { encoding: 'utf8' });
-
-    console.log(result);
-  } catch (error) {
-    console.log('  Error retrieving audio devices:', error.message);
-  }
-
-  process.exit(1);
+  // Export empty config and return to prevent further initialization
+  module.exports = {};
+  return;
 }
 
 // Safely extract config, handling case where argv might be incomplete due to errors
