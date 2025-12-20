@@ -131,3 +131,9 @@ http://192.168.50.50:2442/stream?url=https://watch.sling.com/1/channel/8da93b497
 
 #EXTINF:-1 channel-id="ifchd" tvg-chno="333" tvc-guide-stationid="59444" channel-number=“333”, IFCHD
 http://192.168.50.50:2442/stream?url=https://watch.sling.com/1/channel/d990d3f3d1a04c92ab2d1c76fba0b072/watch
+
+#EXTINF:-1 channel-id="SyFy" tvc-guide-stationid="58623" channel-number="244",SyFy
+http://192.168.50.50:2442/stream/?url=https://watch.sling.com/1/channel/385c71f4210f457eb393041e36ed50b2/watch
+
+#EXTINF:-1 channel-id="USA" tvc-guide-stationid="58452" channel-number="242",USA
+http://192.168.50.50:2442/stream/?url=https://watch.sling.com/1/channel/35b320ac77ce4a2fbaf685e401933dc1/watch

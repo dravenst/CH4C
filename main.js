@@ -501,9 +501,10 @@ async function handleSlingModal(page) {
  * @param {string} url - URL to navigate to
  * @param {number} maxAttempts - Maximum number of modal dismissal attempts
  * @param {string} expectedUrlPattern - Optional URL pattern to validate successful navigation (e.g., '/dashboard')
+ * @param {string} encoderUrl - Encoder URL for logging purposes
  * @returns {Promise<boolean>} - True if successfully navigated past modals to expected destination
  */
-async function navigateSlingWithModalHandling(page, url, maxAttempts = 10, expectedUrlPattern = null) {
+async function navigateSlingWithModalHandling(page, url, maxAttempts = 10, expectedUrlPattern = null, encoderUrl = 'unknown') {
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     await page.goto(url, {
       waitUntil: 'load',
@@ -532,11 +533,11 @@ async function navigateSlingWithModalHandling(page, url, maxAttempts = 10, expec
 
     // Check if we're on a modal page
     if (currentUrl.includes('/modal')) {
-      logTS(`Modal detected on attempt ${attempt}/${maxAttempts}, attempting to dismiss...`);
+      logTS(`[${encoderUrl}] Modal detected on attempt ${attempt}/${maxAttempts}, attempting to dismiss...`);
 
       // Try to dismiss modal using Tab+Enter (5 times with random delays)
       for (let dismissAttempt = 1; dismissAttempt <= 5; dismissAttempt++) {
-        logTS(`Modal dismiss attempt ${dismissAttempt}/5 using Tab+Enter`);
+        logTS(`[${encoderUrl}] Modal dismiss attempt ${dismissAttempt}/5 using Tab+Enter`);
         await page.keyboard.press('Tab');
         await delay(1000 + Math.random() * 1000); // 1-2 second wait
         await page.keyboard.press('Enter');
@@ -545,16 +546,16 @@ async function navigateSlingWithModalHandling(page, url, maxAttempts = 10, expec
         // Check if we're still on modal
         currentUrl = page.url();
         if (!currentUrl.includes('/modal')) {
-          logTS(`Modal dismissed successfully on Tab+Enter attempt ${dismissAttempt}`);
+          logTS(`[${encoderUrl}] Modal dismissed successfully on Tab+Enter attempt ${dismissAttempt}`);
           break;
         }
       }
 
       // If still on modal after Tab+Enter attempts, force navigate again
       if (currentUrl.includes('/modal')) {
-        logTS(`Modal still present after Tab+Enter attempts, forcing navigation...`);
+        logTS(`[${encoderUrl}] Modal still present after Tab+Enter attempts, forcing navigation...`);
         if (attempt >= maxAttempts) {
-          logTS(`Failed to get past modals after ${maxAttempts} attempts`);
+          logTS(`[${encoderUrl}] Failed to get past modals after ${maxAttempts} attempts`);
           return false;
         }
         continue; // Try full navigation again
@@ -566,7 +567,7 @@ async function navigateSlingWithModalHandling(page, url, maxAttempts = 10, expec
 
     // If we have an expected URL pattern, validate we landed there
     if (expectedUrlPattern && !currentUrl.includes(expectedUrlPattern)) {
-      logTS(`Got past modal but landed on unexpected page: ${currentUrl} (expected pattern: ${expectedUrlPattern})`);
+      logTS(`[${encoderUrl}] Got past modal but landed on unexpected page: ${currentUrl} (expected pattern: ${expectedUrlPattern})`);
       if (attempt >= maxAttempts) {
         return false;
       }
@@ -574,7 +575,7 @@ async function navigateSlingWithModalHandling(page, url, maxAttempts = 10, expec
     }
 
     // Successfully got past modals and landed on expected page
-    logTS(`Successfully navigated to ${currentUrl}`);
+    logTS(`[${encoderUrl}] Successfully navigated to ${currentUrl}`);
     return true;
   }
 
@@ -582,66 +583,81 @@ async function navigateSlingWithModalHandling(page, url, maxAttempts = 10, expec
 }
 
 /**
- * Navigate to Sling channel using human-like UI navigation to avoid rate limiting
- * Follows the user flow: Home -> Guide -> Browse -> Watch
+ * Navigate to Sling channel with fallback strategy
+ * Strategy: Try direct navigation first (fast). If that fails, go to dashboard then retry direct navigation.
  * @param {Page} page - Puppeteer page object
  * @param {string} channelWatchUrl - The final /watch URL to navigate to
- * @param {number} maxRetries - Maximum number of full sequence retries
+ * @param {string} encoderUrl - Encoder URL for logging purposes
  * @returns {Promise<boolean>} - True if successfully navigated to watch page
  */
-async function navigateSlingLikeHuman(page, channelWatchUrl, maxRetries = 3) {
-  for (let retry = 1; retry <= maxRetries; retry++) {
-    logTS(`Starting Sling human-like navigation (attempt ${retry}/${maxRetries})`);
+async function navigateSlingLikeHuman(page, channelWatchUrl, encoderUrl = 'unknown') {
+  // STEP 1: Try direct navigation to watch page (fast path) - single attempt with modal handling
+  logTS(`[${encoderUrl}] Attempting direct navigation to watch page (fast path)`);
 
-    try {
-      // STEP 1: Navigate to home page and handle modals
-      logTS('Step 1: Navigating to watch.sling.com home...');
-      const homeSuccess = await navigateSlingWithModalHandling(
-        page,
-        'https://watch.sling.com',
-        10,
-        '/dashboard/home'
-      );
+  try {
+    const watchSuccess = await navigateSlingWithModalHandling(
+      page,
+      channelWatchUrl,
+      10,
+      '/watch',
+      encoderUrl
+    );
 
-      if (!homeSuccess) {
-        logTS('Step 1 failed: Could not reach home page');
-        if (retry >= maxRetries) return false;
-        await delay(1000);
-        continue;
-      }
-
-      logTS('Step 1 complete: On home page');
-      await delay(500 + Math.random() * 500); // 0.5-1s pause
-
-      // STEP 2: Navigate directly to watch page
-      logTS(`Step 2: Navigating to watch page: ${channelWatchUrl}`);
-      const watchSuccess = await navigateSlingWithModalHandling(
-        page,
-        channelWatchUrl,
-        10,
-        '/watch'
-      );
-
-      if (!watchSuccess) {
-        logTS('Step 2 failed: Could not reach watch page');
-        if (retry >= maxRetries) return false;
-        await delay(1000);
-        continue;
-      }
-
-      logTS('Step 2 complete: Successfully on watch page!');
+    if (watchSuccess) {
+      logTS(`[${encoderUrl}] Direct navigation successful!`);
       return true;
-
-    } catch (error) {
-      logTS(`Error during navigation sequence: ${error.message}`);
-      if (retry >= maxRetries) {
-        return false;
-      }
-      await delay(1000);
     }
+
+    logTS(`[${encoderUrl}] Direct navigation failed, will try dashboard-first fallback`);
+
+  } catch (error) {
+    logTS(`[${encoderUrl}] Error during direct navigation: ${error.message}`);
   }
 
-  return false;
+  // STEP 2: Direct navigation failed - try dashboard-first approach as fallback
+  logTS(`[${encoderUrl}] Trying dashboard-first fallback...`);
+
+  try {
+    // Navigate to dashboard/home first
+    logTS(`[${encoderUrl}] Fallback: Navigating to watch.sling.com dashboard...`);
+    const homeSuccess = await navigateSlingWithModalHandling(
+      page,
+      'https://watch.sling.com',
+      10,
+      '/dashboard/home',
+      encoderUrl
+    );
+
+    if (!homeSuccess) {
+      logTS(`[${encoderUrl}] Fallback failed: Could not reach dashboard page`);
+      return false;
+    }
+
+    logTS(`[${encoderUrl}] Fallback: Successfully reached dashboard, pausing before channel navigation...`);
+    await delay(500 + Math.random() * 500); // 0.5-1s pause to mimic human behavior
+
+    // Now try navigating to the watch page from dashboard
+    logTS(`[${encoderUrl}] Fallback: Navigating from dashboard to watch page: ${channelWatchUrl}`);
+    const watchSuccess = await navigateSlingWithModalHandling(
+      page,
+      channelWatchUrl,
+      10,
+      '/watch',
+      encoderUrl
+    );
+
+    if (!watchSuccess) {
+      logTS(`[${encoderUrl}] Fallback failed: Could not reach watch page from dashboard`);
+      return false;
+    }
+
+    logTS(`[${encoderUrl}] Fallback successful: Reached watch page via dashboard!`);
+    return true;
+
+  } catch (error) {
+    logTS(`[${encoderUrl}] Error during dashboard fallback: ${error.message}`);
+    return false;
+  }
 }
 
 async function setupBrowserAudio(page, encoderConfig, targetUrl = null) {
@@ -1643,14 +1659,14 @@ async function main() {
   // Check for admin mode FIRST, before any other initialization
   if (isRunningAsAdmin()) {
     const errorMsg = `
-╔══════════════════════════════════════════════════════════════════════╗
-║                    ⚠️  ADMINISTRATOR MODE DETECTED ⚠️                  ║
-╠══════════════════════════════════════════════════════════════════════╣
-║ CH4C is running with Administrator privileges.                       ║
-║ This will cause Chrome browser launch to fail.                       ║
-║                                                                       ║
-║ Please restart CH4C as a regular user (not as Administrator).       ║
-╚══════════════════════════════════════════════════════════════════════╝
++----------------------------------------------------------------------+
+|                   ADMINISTRATOR MODE DETECTED                        |
++----------------------------------------------------------------------+
+| CH4C is running with Administrator privileges.                       |
+| This will cause Chrome browser launch to fail.                       |
+|                                                                      |
+| Please restart CH4C as a regular user (not as Administrator).        |
++----------------------------------------------------------------------+
 `;
     console.error(errorMsg);
     logTS('Exiting due to Administrator mode...');
@@ -1695,26 +1711,26 @@ async function main() {
     const processInfo = await findProcessUsingPort(Constants.CH4C_PORT);
     
     console.error(`
-╔══════════════════════════════════════════════════════════════════════╗
-║                    ⚠️  PORT ALREADY IN USE ⚠️                         ║
-╠══════════════════════════════════════════════════════════════════════╣
-║                                                                       ║
-║  Port ${String(Constants.CH4C_PORT).padEnd(5)} is already being used by another process.          ║
-${processInfo ? 
-`║  Process: ${processInfo.name.padEnd(59)} ║
-║  PID: ${processInfo.pid.padEnd(64)} ║` : 
-`║  Could not determine which process is using the port.                ║`}
-║                                                                       ║
-║  This usually means CH4C is already running.                         ║
-║                                                                       ║
-║  SOLUTIONS:                                                          ║
-║  1. Stop the other CH4C instance                                    ║
-║  2. Use a different port with -c option (e.g., -c 2443)            ║
-${processInfo && processInfo.pid !== 'Unknown' ? 
-`║  3. Force stop: taskkill /F /PID ${processInfo.pid.padEnd(36)} ║` : 
-`║  3. Check Task Manager for Node.js or CH4C processes               ║`}
-║                                                                       ║
-╚══════════════════════════════════════════════════════════════════════╝
++----------------------------------------------------------------------+
+|                      PORT ALREADY IN USE                             |
++----------------------------------------------------------------------+
+|                                                                      |
+|  Port ${String(Constants.CH4C_PORT).padEnd(5)} is already being used by another process.                |
+${processInfo ?
+`|  Process: ${processInfo.name.padEnd(58)} |
+|  PID: ${String(processInfo.pid).padEnd(62)} |` :
+`|  Could not determine which process is using the port.               |`}
+|                                                                      |
+|  This usually means CH4C is already running.                         |
+|                                                                      |
+|  SOLUTIONS:                                                          |
+|  1. Stop the other CH4C instance                                     |
+|  2. Use a different port with -c option (e.g., -c 2443)              |
+${processInfo && processInfo.pid !== 'Unknown' ?
+`|  3. Force stop: taskkill /F /PID ${String(processInfo.pid).padEnd(35)} |` :
+`|  3. Check Task Manager for Node.js or CH4C processes                 |`}
+|                                                                      |
++----------------------------------------------------------------------+
 `);
     process.exit(1);
   }
@@ -1725,23 +1741,23 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
 
   if (runningProfiles.length > 0) {
     console.error(`
-╔══════════════════════════════════════════════════════════════════════╗
-║           ⚠️  CHROME IS USING ENCODER PROFILES ⚠️                     ║
-╠══════════════════════════════════════════════════════════════════════╣
-║                                                                       ║
-║  Active Chrome processes are using these encoder profiles:           ║`);
-    
++----------------------------------------------------------------------+
+|              CHROME IS USING ENCODER PROFILES                        |
++----------------------------------------------------------------------+
+|                                                                      |
+|  Active Chrome processes are using these encoder profiles:           |`);
+
     runningProfiles.forEach((profile, index) => {
-      console.error(`║  ${(index + 1)}. ${profile.encoder.padEnd(63)} ║`);
+      console.error(`|  ${(index + 1)}. ${profile.encoder.padEnd(62)} |`);
     });
-    
-    console.error(`║                                                                       ║
-║  SOLUTIONS:                                                          ║
-║  1. Close all Chrome windows                                        ║
-║  2. Force close Chrome: taskkill /F /IM chrome.exe                  ║
-║  3. Check Task Manager for chrome.exe processes                     ║
-║                                                                       ║
-╚══════════════════════════════════════════════════════════════════════╝
+
+    console.error(`|                                                                      |
+|  SOLUTIONS:                                                          |
+|  1. Close all Chrome windows                                         |
+|  2. Force close Chrome: taskkill /F /IM chrome.exe                   |
+|  3. Check Task Manager for chrome.exe processes                      |
+|                                                                      |
++----------------------------------------------------------------------+
 `);
     process.exit(1);
   }
@@ -1786,20 +1802,23 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
   // Only show error if there are real problems (actual Chrome processes)
   if (profileProblems.length > 0) {
     console.error(`
-╔══════════════════════════════════════════════════════════════════════╗
-║              ⚠️  CHROME PROFILES IN USE ⚠️                            ║
-╠══════════════════════════════════════════════════════════════════════╣
-║                                                                       ║
-║  Chrome is actively using these encoder profiles:                    ║`);
-    
++----------------------------------------------------------------------+
+|                   CHROME PROFILES IN USE                             |
++----------------------------------------------------------------------+
+|                                                                      |
+|  Chrome is actively using these encoder profiles:                    |`);
+
     profileProblems.forEach((issue, index) => {
-      console.error(`║  ${(index + 1)}. ${issue.encoder.padEnd(63)} ║`);
+      console.error(`|  ${(index + 1)}. ${issue.encoder.padEnd(62)} |`);
     });
-    
-    console.error(`║                                                                       ║
-║  Please close Chrome and try again.                                 ║
-║                                                                       ║
-╚══════════════════════════════════════════════════════════════════════╝
+
+    console.error(`|                                                                      |
+|  SOLUTIONS:                                                          |
+|  1. Close all Chrome windows                                         |
+|  2. Force close Chrome: taskkill /F /IM chrome.exe                   |
+|  3. Check Task Manager for chrome.exe processes                      |
+|                                                                      |
++----------------------------------------------------------------------+
 `);
     process.exit(1);
   }
@@ -1901,7 +1920,8 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
       return;
     }
 
-    logTS(`streaming to ${targetUrl} using encoder ${availableEncoder.url}`);
+    logTS(`[${availableEncoder.url}] Selected encoder for streaming to ${targetUrl}`);
+    logTS(`[${availableEncoder.url}] Browser exists: ${browsers.has(availableEncoder.url)}, Can start: ${cleanupManager.canStartBrowser(availableEncoder.url)}`);
     cleanupManager.setBrowserActive(availableEncoder.url);
 
     // Enhanced cleanup on stream close
@@ -1923,16 +1943,20 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
       await safeStreamOperation(async () => {
         const browser = browsers.get(availableEncoder.url);
         if (!browser || !browser.isConnected()) {
+          logTS(`[${availableEncoder.url}] Browser not connected, cannot start stream`);
           throw new Error('Browser not connected');
         }
 
+        logTS(`[${availableEncoder.url}] Getting browser page for streaming`);
         const pages = await browser.pages();
         page = pages.length > 0 ? pages[0] : await browser.newPage();
 
         if (!page) {
+          logTS(`[${availableEncoder.url}] Failed to get browser page`);
           throw new Error('Failed to get browser page');
         }
 
+        logTS(`[${availableEncoder.url}] Bringing page to front`);
         await page.bringToFront();
 
         // Set fullscreen with error handling
@@ -1952,19 +1976,19 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
 
         // Special handling for Sling - use human-like navigation to avoid rate limiting
         if (targetUrl.includes("watch.sling.com")) {
-          logTS("Sling URL detected - using human-like navigation flow");
+          logTS(`[${availableEncoder.url}] Sling URL detected - using navigation flow`);
 
           try {
-            // Use the human-like navigation sequence: Home -> Guide -> Browse -> Watch
-            navSuccess = await navigateSlingLikeHuman(page, targetUrl, 3);
+            // Use the navigation sequence with encoder context for logging
+            navSuccess = await navigateSlingLikeHuman(page, targetUrl, availableEncoder.url);
 
             if (!navSuccess) {
-              throw new Error("Failed to navigate to Sling channel using human-like flow");
+              throw new Error("Failed to navigate to Sling channel using navigation flow");
             }
 
-            logTS(`Successfully navigated to Sling channel: ${targetUrl}`);
+            logTS(`[${availableEncoder.url}] Successfully navigated to Sling channel: ${targetUrl}`);
           } catch (slingError) {
-            logTS(`Sling navigation error: ${slingError.message}`);
+            logTS(`[${availableEncoder.url}] Sling navigation error: ${slingError.message}`);
             throw slingError;
           }
         } else {
