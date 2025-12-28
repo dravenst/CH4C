@@ -1654,6 +1654,7 @@ async function main() {
   }
 
   const app = express();
+  app.use(express.json());
   app.use(express.urlencoded({ extended: false }));
 
   // Check for admin mode FIRST, before any other initialization
@@ -1860,6 +1861,92 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
   if (workingEncoders.length === 0) {
     logTS('FATAL: No encoders could be initialized. Exiting.');
     process.exit(1);
+  }
+
+  // Initialize M3U Manager
+  const { StreamingM3UManager } = require('./streaming-m3u-manager');
+  const { SlingService } = require('./services/sling-service');
+  const { CustomService } = require('./services/custom-service');
+
+  const m3uManager = new StreamingM3UManager();
+
+  // Initialize async operations (ensure directory exists and load data)
+  await m3uManager.initialize();
+
+  m3uManager.registerService('sling', new SlingService(browsers, Constants));
+  m3uManager.registerService('custom', new CustomService());
+  logTS('[M3U Manager] Initialized with Sling and Custom services');
+
+  // Auto-create custom channels for each encoder
+  await createEncoderChannels(m3uManager);
+
+  /**
+   * Create custom M3U channels for configured encoders
+   */
+  async function createEncoderChannels(manager) {
+    try {
+      const existingChannels = manager.getAllChannels();
+
+      for (let i = 0; i < Constants.ENCODERS.length; i++) {
+        const encoder = Constants.ENCODERS[i];
+        const channelId = `encoder-${i}`;
+
+        // Check if this encoder channel already exists
+        const existingChannel = existingChannels.find(ch => ch.id === channelId);
+
+        if (!existingChannel) {
+          // Create new encoder channel
+          // Use audio device name if available, otherwise use generic name
+          const encoderName = encoder.audioDevice || `Encoder ${i + 1}`;
+          const encoderCallSign = encoder.audioDevice || `ENC${i + 1}`;
+
+          const channelData = {
+            id: channelId,
+            name: encoderName,
+            streamUrl: encoder.url,
+            channelNumber: encoder.channel || null, // Use encoder's configured channel number
+            stationId: null,
+            duration: 60, // Default 60 minutes placeholder
+            category: 'Other',
+            logo: '',
+            callSign: encoderCallSign
+          };
+
+          // Manually create the channel with fixed ID
+          const channel = {
+            ...channelData,
+            service: 'custom',
+            enabled: true,
+            createdAt: new Date().toISOString()
+          };
+
+          const enriched = await manager.enrichChannel(channel);
+          manager.channels.push(enriched);
+
+          logTS(`[M3U Manager] Auto-created encoder channel: ${enriched.name} (channel ${enriched.channelNumber})`);
+        } else {
+          // Update existing encoder channel - only update streamUrl to match current encoder config
+          // Preserve user modifications to name, callSign, channelNumber, etc.
+          const channelIndex = manager.channels.findIndex(ch => ch.id === channelId);
+          if (channelIndex !== -1) {
+            manager.channels[channelIndex] = {
+              ...manager.channels[channelIndex],
+              streamUrl: encoder.url, // Always sync streamUrl with encoder config
+              updatedAt: new Date().toISOString()
+            };
+            logTS(`[M3U Manager] Refreshed encoder channel streamUrl: ${manager.channels[channelIndex].name} (channel ${manager.channels[channelIndex].channelNumber})`);
+          }
+        }
+      }
+
+      // Save all channels to disk
+      if (Constants.ENCODERS.length > 0) {
+        manager.lastUpdate = new Date().toISOString();
+        await manager.saveToDisk();
+      }
+    } catch (error) {
+      logTS(`[M3U Manager] Error creating encoder channels: ${error.message}`);
+    }
   }
 
   app.get('/', async (req, res) => {
@@ -2318,6 +2405,101 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
     } else {
       res.status(400).send('Invalid form submission');
     }
+  });
+
+  // ===== M3U Manager Routes =====
+
+  // GET /m3u-manager - Admin UI page
+  app.get('/m3u-manager', (req, res) => {
+    res.send(Constants.M3U_MANAGER_PAGE_HTML.replaceAll('<<host>>', req.get('host')));
+  });
+
+  // GET /m3u-manager/channels - Get all channels
+  app.get('/m3u-manager/channels', (req, res) => {
+    res.json(m3uManager.getAllChannels());
+  });
+
+  // GET /m3u-manager/channels/:service - Get channels from specific service
+  app.get('/m3u-manager/channels/:service', (req, res) => {
+    res.json(m3uManager.getChannelsByService(req.params.service));
+  });
+
+  // GET /m3u-manager/status - Get manager status
+  app.get('/m3u-manager/status', (req, res) => {
+    res.json(m3uManager.getStatus());
+  });
+
+  // GET /m3u-manager/search-stations - Search for stations by query
+  app.get('/m3u-manager/search-stations', async (req, res) => {
+    try {
+      const query = req.query.q || req.query.query || '';
+      const limit = parseInt(req.query.limit || '10', 10);
+      const results = await m3uManager.searchStations(query, limit);
+      res.json(results);
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // POST /m3u-manager/refresh/:service - Refresh specific service
+  app.post('/m3u-manager/refresh/:service', async (req, res) => {
+    try {
+      const resetEdits = req.query.resetEdits === 'true';
+      const favoritesOnly = req.query.favoritesOnly !== 'false'; // Default to true
+      const result = await m3uManager.refreshService(req.params.service, resetEdits, favoritesOnly);
+      res.json(result);
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // POST /m3u-manager/custom - Add custom channel
+  app.post('/m3u-manager/custom', async (req, res) => {
+    try {
+      const channel = await m3uManager.addCustomChannel(req.body);
+      res.json(channel);
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  // PUT /m3u-manager/channels/:id - Update channel
+  app.put('/m3u-manager/channels/:id', async (req, res) => {
+    try {
+      const channel = await m3uManager.updateChannel(req.params.id, req.body);
+      res.json(channel);
+    } catch (error) {
+      res.status(404).json({ error: error.message });
+    }
+  });
+
+  // DELETE /m3u-manager/channels/:id - Delete channel
+  app.delete('/m3u-manager/channels/:id', async (req, res) => {
+    try {
+      await m3uManager.deleteChannel(req.params.id);
+      res.json({ success: true });
+    } catch (error) {
+      res.status(404).json({ error: error.message });
+    }
+  });
+
+  // PATCH /m3u-manager/channels/:id/toggle - Toggle channel enabled/disabled
+  app.patch('/m3u-manager/channels/:id/toggle', async (req, res) => {
+    try {
+      const channel = await m3uManager.toggleChannel(req.params.id);
+      res.json(channel);
+    } catch (error) {
+      res.status(404).json({ error: error.message });
+    }
+  });
+
+  // GET /m3u-manager/playlist.m3u - Generate M3U playlist
+  app.get('/m3u-manager/playlist.m3u', (req, res) => {
+    const host = req.get('host').split(':')[0]; // Get hostname without port
+    const m3u = m3uManager.generateM3U(host);
+    res.type('audio/x-mpegurl');
+    res.setHeader('Content-Disposition', 'attachment; filename="streaming_channels.m3u"');
+    res.send(m3u);
   });
 
   // GET /stop - Stop all active streams and return encoders to pool

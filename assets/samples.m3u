@@ -6,37 +6,37 @@ http://192.168.50.71/live/stream0
 #EXTINF:-1 channel-id="CH4C_Weather" tvc-guide-placeholders="3600",Weatherscan
 http://192.168.50.50:2442/stream/?url=https://v2.weatherscan.net/
 
-#EXTINF:-1 channel-id="Hallmark",Hallmark
+#EXTINF:-1 channel-id="HALLHD" tvc-guide-stationid="66268",Hallmark
 http://192.168.50.109:2442/stream/?url=https://www.peacocktv.com/deeplink?deeplinkData=%7B%22serviceKey%22%3A%224846937553519166117%22%2C%22type%22%3A%22LINEAR_CHANNEL%22%2C%22action%22%3A%22PLAY%22%7D
 
 #EXTINF:-1 channel-id="Golf" tvc-guide-stationid="61854" channel-number="218",GOLFHD
 http://192.168.50.50:2442/stream?url=https://watch.sling.com/1/channel/e7c98734f996492187bb868ce5655a0e/watch
 
-#EXTINF:-1 channel-id="Paramount+" tvc-guide-stationid="59186" channel-number="241",Paramount+
+#EXTINF:-1 channel-id="PARHD" tvc-guide-stationid="59186" channel-number="241",Paramount+
 http://192.168.50.50:2442/stream?url=https://watch.sling.com/1/channel/e8cabe959f194a7b97b1c807dc9b267e/watch
 
-#EXTINF:-1 channel-id="Paramount+Showtime" tvc-guide-stationid="21868" channel-number="545",Paramount+Showtime
+#EXTINF:-1 channel-id="PARSHOH" tvc-guide-stationid="21868" channel-number="545",Paramount+Showtime
 http://192.168.50.50:2442/stream?url=https://watch.sling.com/1/channel/7f5f5993457648d68db2fa5d5103cbcc/watch
 
-#EXTINF:-1 channel-id="Paramount+ShowtimeW" tvc-guide-stationid="22532" channel-number="546",Paramount+ShowtimeW
+#EXTINF:-1 channel-id="PASHOHW" tvc-guide-stationid="22532" channel-number="546",Paramount+ShowtimeW
 http://192.168.50.50:2442/stream?url=https://watch.sling.com/1/channel/f8ee74606d2a47ec8ca14842b2762b9b/watch
 
-#EXTINF:-1 channel-id="Showtime2" tvc-guide-stationid="58533" channel-number="547",Showtime2
+#EXTINF:-1 channel-id="SHO2HD" tvc-guide-stationid="58533" channel-number="547",Showtime2
 http://192.168.50.50:2442/stream?url=https://watch.sling.com/1/channel/30b674a6204f4d9b8ec053e0f6381a28/watch
 
-#EXTINF:-1 channel-id="ShowtimeExtreme" tvc-guide-stationid="60947" channel-number="549",ShowtimeExtreme
+#EXTINF:-1 channel-id="SHOWXHD" tvc-guide-stationid="60947" channel-number="549",ShowtimeExtreme
 http://192.168.50.50:2442/stream?url=https://watch.sling.com/1/channel/ea47544f20394a4b83a2c0678c078d66/watch
 
-#EXTINF:-1 channel-id="ShowtimeNext" tvc-guide-stationid="25270" channel-number="551",ShowtimeNext
+#EXTINF:-1 channel-id="NEXT" tvc-guide-stationid="25270" channel-number="551",ShowtimeNext
 http://192.168.50.50:2442/stream?url=https://watch.sling.com/1/channel/b5540f5fb9b542aeb0f253d9854c174f/watch
 
-#EXTINF:-1 channel-id="ShowtimeClassic" tvc-guide-stationid="61001" channel-number="550",ShowtimeClassic
+#EXTINF:-1 channel-id="SHOCSHD" tvc-guide-stationid="61001" channel-number="550",ShowtimeShowcase
 http://192.168.50.50:2442/stream?url=https://watch.sling.com/1/channel/b24b20f009e94eb1ad2441a19f98b7ff/watch
 
-#EXTINF:-1 channel-id="Starz" tvc-guide-stationid="34941" channel-number="525",Starz
+#EXTINF:-1 channel-id="STZHD" tvc-guide-stationid="34941" channel-number="525",Starz
 http://192.168.50.50:2442/stream?url=https://watch.sling.com/1/channel/1a3c345b84b149918e0bad8f797df70a/watch
 
-#EXTINF:-1 channel-id="Starz West" tvc-guide-stationid="34949" channel-number="526", Starz West
+#EXTINF:-1 channel-id="STZHDP" tvc-guide-stationid="34949" channel-number="526", Starz West
 http://192.168.50.50:2442/stream?url=https://watch.sling.com/1/channel/8a84458592844ff5849712ef7766fb4e/watch
 
 #EXTINF:-1 channel-id="STZEHD" tvc-guide-stationid="16311" channel-number="529",Starz Edge East
@@ -51,10 +51,10 @@ http://192.168.50.50:2442/stream?url=https://watch.sling.com/1/channel/ed5d0f859
 #EXTINF:-1 channel-id="STZENSU" tvc-guide-stationid="14766" channel-number="539",Starz Encore Suspense
 http://192.168.50.50:2442/stream?url=https://watch.sling.com/1/channel/04e4a4f1e0ec4dfba961414197e57d7f/watch
 
-#EXTINF:-1 channel-id="Starz Cinema" tvc-guide-stationid="67236" channel-number="531",Starz Cinema
+#EXTINF:-1 channel-id="STRZCIH" tvc-guide-stationid="67236" channel-number="531",Starz Cinema
 http://192.168.50.50:2442/stream?url=https://watch.sling.com/1/channel/0eedb59656d243da914fef990a8db903/watch
 
-#EXTINF:-1 channel-id="Starz Comedy" tvc-guide-stationid="57569" channel-number="528",Starz Comedy
+#EXTINF:-1 channel-id="STZCHD" tvc-guide-stationid="57569" channel-number="528",Starz Comedy
 http://192.168.50.50:2442/stream?url=https://watch.sling.com/1/channel/d96b102ac5c54967bf56b8b57e20c84e/watch
 
 #EXTINF:-1 channel-id="CC" tvc-guide-stationid="62420" channel-number="249",Comedy Central
