@@ -1325,32 +1325,102 @@ async function fullScreenVideo(page) {
       const frames = await page.frames( { timeout: 1000 })
       for (const frame of frames) {
         try {
-          videoHandle = await frame.waitForSelector('video', { timeout: 1000 });
+          // Improvement 1: Smart video selection - prefer videos with audio
+          const videos = await frame.$$('video');
+
+          if (videos.length > 0) {
+            // If multiple videos, try to find one with audio
+            if (videos.length > 1) {
+              logTS(`Found ${videos.length} videos, selecting best candidate`);
+
+              for (const video of videos) {
+                const hasAudio = await frame.evaluate((v) => {
+                  return v.mozHasAudio || Boolean(v.webkitAudioDecodedByteCount) ||
+                         Boolean(v.audioTracks && v.audioTracks.length);
+                }, video);
+
+                if (hasAudio) {
+                  videoHandle = video;
+                  frameHandle = frame;
+                  logTS('Selected video element with audio');
+                  break videoSearch;
+                } else if (!videoHandle) {
+                  // Keep first video as fallback
+                  videoHandle = video;
+                  frameHandle = frame;
+                }
+              }
+            } else {
+              // Single video, use it
+              videoHandle = videos[0];
+              frameHandle = frame;
+              logTS('found video frame');
+            }
+
+            if (videoHandle) {
+              break videoSearch;
+            }
+          }
         } catch (error) {
-        }
-        if (videoHandle) {
-          frameHandle = frame;
-          logTS('found video frame')
-          break videoSearch
+          // Continue searching
         }
       }
     } catch (error) {
       console.log('error looking for video', error)
       videoHandle=null
     }
+
+    if (!videoHandle) {
+      await delay(Constants.FIND_VIDEO_WAIT * 1000);
+    }
   }
 
   if (videoHandle) {
-    // confirm video is actually playing
+    // Improvement 2: Less aggressive - check if already playing first
+    logTS("Checking video playback status");
+
+    let isPlaying = false;
     for (let step = 0; step < Constants.PLAY_VIDEO_RETRIES; step++) {
       const currentTime = await GetProperty(videoHandle, 'currentTime')
       const readyState = await GetProperty(videoHandle, 'readyState')
       const paused = await GetProperty(videoHandle, 'paused')
       const ended = await GetProperty(videoHandle, 'ended')
 
-      if (!!(currentTime > 0 && readyState > 2 && !paused && !ended)) break
-      logTS("calling play/click");
-      // alternate between calling play and click (Disney)
+      // Check if video is already playing or ready to play
+      if (!!(currentTime > 0 && readyState > 2 && !paused && !ended)) {
+        logTS("Video is already playing");
+        isPlaying = true;
+        break;
+      }
+
+      // Check if video is ready but just paused (may autoplay)
+      if (readyState >= 3 && !ended) {
+        // Wait a moment to see if autoplay kicks in
+        if (step === 0) {
+          logTS("Video ready, waiting for autoplay...");
+          await delay(1500);
+
+          // Check again after waiting
+          const stillPaused = await GetProperty(videoHandle, 'paused');
+          const newTime = await GetProperty(videoHandle, 'currentTime');
+
+          if (!stillPaused || newTime > 0) {
+            logTS("Video autoplayed successfully");
+            isPlaying = true;
+            break;
+          }
+        }
+      }
+
+      // Video not playing, try to start it
+      logTS("Attempting to play video");
+
+      // Improvement 3: Add delay between attempts
+      if (step > 0) {
+        await delay(1000);
+      }
+
+      // alternate between calling play and click (Disney needs click)
       if (step % 2 === 0) {
         await frameHandle.evaluate((video) => {
           video.play()
@@ -1367,6 +1437,14 @@ async function fullScreenVideo(page) {
       video.style.cursor = 'none!important'
       video.requestFullscreen()
     }, videoHandle)
+
+    // Some sites pause video when going fullscreen, so explicitly play after fullscreen
+    await delay(500); // Brief delay to let fullscreen transition start
+    await frameHandle.evaluate((video) => {
+      if (video.paused) {
+        video.play().catch(err => console.log('Play after fullscreen failed:', err));
+      }
+    }, videoHandle);
 
     // Setup pause monitor to automatically resume if video gets paused
     await setupPauseMonitor(frameHandle, videoHandle, page);
@@ -1530,6 +1608,14 @@ async function fullScreenVideoYouTube(page) {
       video.requestFullscreen();
     }, videoHandle);
 
+    // YouTube may pause video when going fullscreen, so explicitly play after fullscreen
+    await delay(500); // Brief delay to let fullscreen transition start
+    await frameHandle.evaluate((video) => {
+      if (video.paused) {
+        video.play().catch(err => console.log('Play after fullscreen failed:', err));
+      }
+    }, videoHandle);
+
     // Setup pause monitor to automatically resume if video gets paused
     await setupPauseMonitor(frameHandle, videoHandle, page);
   } else {
@@ -1540,6 +1626,104 @@ async function fullScreenVideoYouTube(page) {
   await hideCursor(page);
 
   logTS("YouTube fullscreen setup complete");
+}
+
+async function fullScreenVideoAmazon(page) {
+  logTS("URL contains amazon.com, setting up fullscreen for Amazon Prime Video");
+
+  // Wait a bit for the Amazon player to initialize
+  await delay(2000);
+
+  let frameHandle, videoHandle;
+
+  // Find the video element - Amazon typically has multiple video elements
+  videoSearch: for (let step = 0; step < Constants.FIND_VIDEO_RETRIES; step++) {
+    try {
+      const frames = await page.frames({ timeout: 1000 });
+      for (const frame of frames) {
+        try {
+          // Amazon uses video elements, find one with actual content
+          const videos = await frame.$$('video');
+          for (const video of videos) {
+            const hasAudio = await frame.evaluate((v) => {
+              return v.mozHasAudio || Boolean(v.webkitAudioDecodedByteCount) ||
+                     Boolean(v.audioTracks && v.audioTracks.length);
+            }, video);
+
+            // Prefer video elements with audio
+            if (hasAudio) {
+              videoHandle = video;
+              frameHandle = frame;
+              logTS('Found Amazon Prime Video element with audio');
+              break videoSearch;
+            } else if (!videoHandle) {
+              // Keep first video as fallback
+              videoHandle = video;
+              frameHandle = frame;
+            }
+          }
+        } catch (error) {
+          // Continue searching
+        }
+      }
+    } catch (error) {
+      logTS('Error looking for Amazon video:', error.message);
+      videoHandle = null;
+    }
+
+    if (!videoHandle) {
+      await delay(Constants.FIND_VIDEO_WAIT * 1000);
+    }
+  }
+
+  if (videoHandle) {
+    // Wait for video to be ready - Amazon autoplays so we don't need to click play
+    logTS("Waiting for Amazon video to be ready (autoplay expected)");
+
+    // Just wait for ready state, don't try to force play
+    let isReady = false;
+    for (let step = 0; step < Constants.PLAY_VIDEO_RETRIES && !isReady; step++) {
+      const readyState = await GetProperty(videoHandle, 'readyState');
+      const paused = await GetProperty(videoHandle, 'paused');
+
+      // Ready state 3+ means we have enough data
+      if (readyState >= 3) {
+        logTS(`Amazon video ready (readyState: ${readyState}, paused: ${paused})`);
+        isReady = true;
+        break;
+      }
+
+      await delay(1000);
+    }
+
+    logTS("Going fullscreen and ensuring Amazon video is unmuted");
+    await frameHandle.evaluate((video) => {
+      video.muted = false;
+      video.removeAttribute('muted');
+      video.style.cursor = 'none!important';
+      video.requestFullscreen();
+    }, videoHandle);
+
+    // Amazon pauses video when going fullscreen, so explicitly play after fullscreen
+    await delay(500); // Brief delay to let fullscreen transition start
+    await frameHandle.evaluate((video) => {
+      if (video.paused) {
+        video.play().catch(err => console.log('Play after fullscreen failed:', err));
+      }
+    }, videoHandle);
+
+    // Setup pause monitor with more aggressive checking for Amazon
+    // Amazon's player sometimes pauses unexpectedly
+    await setupPauseMonitor(frameHandle, videoHandle, page);
+
+  } else {
+    logTS('Could not find Amazon Prime Video element');
+  }
+
+  // Hide cursor
+  await hideCursor(page);
+
+  logTS("Amazon Prime Video fullscreen setup complete");
 }
 
 
@@ -2268,6 +2452,10 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
       const recordingStarted = await startRecording(recordingName, duration, availableEncoder.channel);
 
       if (recordingStarted) {
+        // Start monitoring this stream
+        const streamMonitor = req.app.locals.streamMonitor;
+        streamMonitor.startMonitoring(availableEncoder.url);
+
         // Set a timer to stop the stream after the recording duration
         // Add 15 second buffer to ensure recording completes before stream stops
         const bufferSeconds = 15;
@@ -2319,6 +2507,10 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
     } else if (button_tune) {
       // Handle tuning (just navigate to the URL without recording)
       const duration = parseInt(recording_duration);
+
+      // Start monitoring this stream
+      const streamMonitor = req.app.locals.streamMonitor;
+      streamMonitor.startMonitoring(availableEncoder.url);
 
       // If duration is provided and valid, use it for auto-stop
       if (!isNaN(duration) && duration > 0) {
@@ -2620,6 +2812,9 @@ async function handleSiteSpecificFullscreen(targetUrl, page) {
     if (targetUrl.includes("youtube.com") || targetUrl.includes("youtu.be")) {
       logTS("Handling YouTube video");
       await fullScreenVideoYouTube(page);
+    } else if (targetUrl.includes("amazon.com")) {
+      logTS("Handling Amazon Prime Video");
+      await fullScreenVideoAmazon(page);
     } else if (targetUrl.includes("watch.sling.com")) {
       logTS("Handling Sling video");
       await fullScreenVideoSling(page);
