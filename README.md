@@ -142,7 +142,7 @@ Some other features are available from the running CH4C instance:
 
 * **Status Dashboard**: Navigate to http://\<CH4C_IP_ADDRESS\>:\<CH4C_PORT\>/ to see the main status page with encoder health, audio devices, command-line reference, and M3U configuration examples
 
-![StatusPage](./assets/newstatuspage.jpg)
+![StatusPage](./assets/statuspage.jpg)
 
 * **Instant Recording or Viewing**: go to http://\<CH4C_IP_ADDRESS\>:\<CH4C_PORT\>/instant for a simple UI to instantly start recording any given URL. Or you can just "tune" your encoder to that URL (without recording), so you can watch in Channels on the encoder's channel number (default: 24.42, or whatever you specified in the --encoder parameter)
 
