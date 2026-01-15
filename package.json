@@ -31,6 +31,8 @@
     "express": "^5.1.0",
     "node-fetch": "^2.7.0",
     "rebrowser-puppeteer-core": "^24.8.1",
+    "selfsigned": "^5.5.0",
+    "ws": "^8.18.0",
     "yargs": "^17.7.2"
   },
   "devDependencies": {
@@ -42,7 +44,10 @@
     "targets": [
       "latest-win-x64"
     ],
-    "outputPath": "dist"
+    "outputPath": "dist",
+    "assets": [
+      "novnc/**/*"
+    ]
   },
   "scripts": {
     "build": "pkg ."

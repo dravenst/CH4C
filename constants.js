@@ -200,6 +200,40 @@ const argv = yargs(rawArgs)
       return interval;
     }
   })
+  .option('browser-health-interval', {
+    alias: 'b',
+    type: 'number',
+    default: 6,
+    describe: 'Interval in hours to check browser health (validates browsers can navigate)',
+    coerce: (value) => {
+      const interval = parseFloat(value);
+      if (isNaN(interval) || interval < 0.5 || interval > 168) {
+        throw new Error('Browser health interval must be between 0.5 and 168 hours (1 week)');
+      }
+      return interval;
+    }
+  })
+  .option('ch4c-ssl-port', {
+    alias: 't',
+    type: 'number',
+    describe: 'Enable HTTPS on specified port (auto-generates SSL certificate if needed)',
+    coerce: (value) => {
+      const port = parseInt(value);
+      if (isNaN(port) || port < 1 || port > 65535) {
+        throw new Error('SSL port must be a number between 1 and 65535');
+      }
+      return port;
+    }
+  })
+  .option('ssl-hostnames', {
+    alias: 'n',
+    type: 'string',
+    describe: 'Additional hostnames/IPs for SSL certificate (comma-separated). Auto-detects local IPs if not specified.',
+    coerce: (value) => {
+      if (!value) return [];
+      return value.split(',').map(h => h.trim()).filter(h => h.length > 0);
+    }
+  })
   .usage('Usage: $0 [options]')
   .example('> $0 -s "http://192.168.50.50" -e "http://192.168.50.71/live/stream0"')
   .example('\nSimple example with channels server at 192.168.50.50 and single encoder at 192.168.50.71')
@@ -242,6 +276,7 @@ if (argv.help) {
     .option('data-dir', { alias: 'd', type: 'string', default: 'data', describe: 'Directory for storing channel data. Can be relative or absolute path (default: data)' })
     .option('enable-pause-monitor', { alias: 'm', type: 'boolean', default: true, describe: 'Enable automatic video pause detection and resume' })
     .option('pause-monitor-interval', { alias: 'i', type: 'number', default: 10, describe: 'Interval in seconds to check for paused video' })
+    .option('browser-health-interval', { alias: 'b', type: 'number', default: 6, describe: 'Interval in hours to check browser health (default: 6)' })
     .usage('Usage: $0 [options]')
     .example('> $0 -s "http://192.168.50.50" -e "http://192.168.50.71/live/stream0"')
     .example('\nSimple example with channels server at 192.168.50.50 and single encoder at 192.168.50.71')
@@ -278,9 +313,12 @@ const config = {
     audioDevice: encoder.audioDevice
   })),
   CH4C_PORT: argv['ch4c-port'],
+  CH4C_SSL_PORT: argv['ch4c-ssl-port'],
+  SSL_HOSTNAMES: argv['ssl-hostnames'] || [],
   DATA_DIR: argv['data-dir'],
   ENABLE_PAUSE_MONITOR: argv['enable-pause-monitor'],
-  PAUSE_MONITOR_INTERVAL: argv['pause-monitor-interval']
+  PAUSE_MONITOR_INTERVAL: argv['pause-monitor-interval'],
+  BROWSER_HEALTH_INTERVAL: argv['browser-health-interval']
 };
 
 console.log('Current configuration:');
@@ -304,6 +342,9 @@ const FULL_SCREEN_WAIT = 3        // seconds
 // pause monitor settings - use values from command line arguments
 const ENABLE_PAUSE_MONITOR = config.ENABLE_PAUSE_MONITOR
 const PAUSE_MONITOR_INTERVAL = config.PAUSE_MONITOR_INTERVAL
+
+// browser health monitor settings - use values from command line arguments
+const BROWSER_HEALTH_INTERVAL = config.BROWSER_HEALTH_INTERVAL
 
 // path to create recording jobs on Channels
 const CHANNELS_POST_URL = `${CHANNELS_URL}:${CHANNELS_PORT}/dvr/jobs/new`
@@ -528,7 +569,15 @@ const START_PAGE_HTML = `
         <div class="quick-links">
             <a href="/instant" class="quick-link">📺 Instant Recording</a>
             <a href="/m3u-manager" class="quick-link">📋 M3U Manager</a>
+            <a href="/remote-access" class="quick-link">🖥️ Remote Access</a>
             <a href="https://github.com/dravenst/CH4C#readme" target="_blank" class="quick-link">📖 Documentation</a>
+        </div>
+
+        <div id="https-notice" style="display: none; margin: 24px 0; padding: 12px 16px; background: #fff3cd; border: 1px solid #ffc107; border-radius: 8px; color: #856404; position: relative;">
+            <button onclick="dismissHttpsNotice()" style="position: absolute; top: 8px; right: 8px; background: none; border: none; color: #856404; font-size: 20px; cursor: pointer; padding: 4px 8px; line-height: 1;" title="Dismiss">×</button>
+            <strong>🔒 HTTPS Enabled:</strong> To avoid browser security warnings and enable full clipboard functionality in Remote Access,
+            <a href="/data/cert.pem" style="color: #856404; text-decoration: underline;">download cert.pem</a> and
+            <a href="https://github.com/dravenst/CH4C/blob/main/HTTPS_SETUP.md" target="_blank" style="color: #856404; text-decoration: underline;">install as trusted</a>.
         </div>
 
         <div class="section">
@@ -544,6 +593,84 @@ const START_PAGE_HTML = `
             <h2 class="section-title">Available Audio Devices</h2>
             <div id="audio-devices">
                 <p style="color: #718096;">Loading audio devices...</p>
+            </div>
+        </div>
+
+        <div class="info-box" style="margin: 24px 0;">
+            <p><strong>Features:</strong></p>
+            <p style="margin-top: 8px;">• <strong><a href="/instant" style="color: #667eea; text-decoration: none;">Instant Recording</a>:</strong> Start recording web streams immediately with a single click</p>
+            <p>• <strong><a href="/m3u-manager" style="color: #667eea; text-decoration: none;">M3U Manager</a>:</strong> Visual interface to create and manage your channel lineup</p>
+            <p>• <strong><a href="/remote-access" style="color: #667eea; text-decoration: none;">Remote Access</a>:</strong> View and control CH4C browsers through VNC in your web browser</p>
+            <p>• <strong>Multi-Encoder Support:</strong> Run multiple encoders with independent browser instances</p>
+        </div>
+
+        <div class="section">
+            <h2 class="section-title">How CH4C Works</h2>
+            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 12px; padding: 32px; color: white; margin-bottom: 24px;">
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 24px; align-items: center; text-align: center;">
+
+                    <!-- Streaming Services -->
+                    <div>
+                        <div style="background: rgba(255,255,255,0.15); border-radius: 8px; padding: 16px; backdrop-filter: blur(10px);">
+                            <div style="font-size: 32px; margin-bottom: 8px;">🌐</div>
+                            <div style="font-weight: 600; margin-bottom: 4px;">Web Streams</div>
+                            <div style="font-size: 12px; opacity: 0.9;">NBC, NFL, Disney+<br>Peacock, Sling, etc.</div>
+                        </div>
+                    </div>
+
+                    <!-- Arrow -->
+                    <div style="font-size: 24px; opacity: 0.7;">→</div>
+
+                    <!-- CH4C Server -->
+                    <div>
+                        <div style="background: rgba(255,255,255,0.25); border-radius: 8px; padding: 16px; border: 2px solid rgba(255,255,255,0.5); backdrop-filter: blur(10px);">
+                            <div style="font-size: 32px; margin-bottom: 8px;">💻</div>
+                            <div style="font-weight: 700; margin-bottom: 4px; font-size: 16px;">CH4C Server</div>
+                            <div style="font-size: 11px; opacity: 0.9;">Chrome browsers<br>capture web streams</div>
+                            <div style="margin-top: 12px; font-size: 10px; opacity: 0.8;">HDMI Output ↓</div>
+                        </div>
+                    </div>
+
+                    <!-- Arrow -->
+                    <div style="font-size: 24px; opacity: 0.7;">→</div>
+
+                    <!-- Hardware Encoder -->
+                    <div>
+                        <div style="background: rgba(255,255,255,0.15); border-radius: 8px; padding: 16px; backdrop-filter: blur(10px);">
+                            <div style="font-size: 32px; margin-bottom: 8px;">📹</div>
+                            <div style="font-weight: 600; margin-bottom: 4px;">HDMI Encoder</div>
+                            <div style="font-size: 12px; opacity: 0.9;">LinkPi, Brightsign<br>or similar hardware</div>
+                        </div>
+                    </div>
+
+                    <!-- Arrow -->
+                    <div style="font-size: 24px; opacity: 0.7;">→</div>
+
+                    <!-- Channels DVR -->
+                    <div>
+                        <div style="background: rgba(255,255,255,0.15); border-radius: 8px; padding: 16px; backdrop-filter: blur(10px);">
+                            <div style="font-size: 32px; margin-bottom: 8px;">📺</div>
+                            <div style="font-weight: 600; margin-bottom: 4px;">Channels DVR</div>
+                            <div style="font-size: 12px; opacity: 0.9;">Records & streams<br>to your devices</div>
+                        </div>
+                    </div>
+
+                    <!-- Arrow -->
+                    <div style="font-size: 24px; opacity: 0.7;">→</div>
+
+                    <!-- End Users -->
+                    <div>
+                        <div style="background: rgba(255,255,255,0.15); border-radius: 8px; padding: 16px; backdrop-filter: blur(10px);">
+                            <div style="font-size: 32px; margin-bottom: 8px;">📱</div>
+                            <div style="font-weight: 600; margin-bottom: 4px;">Your Devices</div>
+                            <div style="font-size: 12px; opacity: 0.9;">Watch anywhere<br>TV, phone, tablet</div>
+                        </div>
+                    </div>
+
+                </div>
+                <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid rgba(255,255,255,0.2); text-align: center; font-size: 13px; opacity: 0.9;">
+                    CH4C controls Chrome browsers that display web content via HDMI to hardware encoders, making web streams available as TV channels in Channels DVR
+                </div>
             </div>
         </div>
 
@@ -568,20 +695,48 @@ const START_PAGE_HTML = `
                                 and audio_device is the optional audio output device name
                                 [array] [required]
 
-  -c, --ch4c-port               CH4C port number
+  -c, --ch4c-port               CH4C port number (HTTP)
                                 [number] [default: 2442]
+
+  -t, --ch4c-ssl-port           Enable HTTPS on specified port
+                                Auto-generates SSL certificate if needed
+                                [number] [optional]
+
+  -n, --ssl-hostnames           Additional hostnames/IPs for SSL certificate
+                                Comma-separated list (e.g., "192.168.1.100,myserver.local")
+                                Auto-detects local network IPs if not specified
+                                [string] [optional]
+
+  -d, --data-dir                Directory for storing channel data
+                                Can be relative or absolute path
+                                [string] [default: "data"]
 
   -m, --enable-pause-monitor    Enable automatic video pause detection and resume
                                 [boolean] [default: true]
 
   -i, --pause-monitor-interval  Interval in seconds to check for paused video
-                                [number] [default: 10]</div>
+                                [number] [default: 10]
+
+  -b, --browser-health-interval Interval in hours to check browser health
+                                [number] [default: 6]</div>
 
             <div class="info-box" style="margin-top: 24px;">
                 <p><strong>Simple setup with single encoder:</strong></p>
                 <p>Replace <code>CHANNELS_DVR_IP</code> with your Channels DVR server IP and <code>ENCODER_IP_ADDRESS</code> with your encoder's IP address.</p>
             </div>
             <div class="code-block">node main.js -s "http://CHANNELS_DVR_IP" -e "http://ENCODER_IP_ADDRESS/live/stream0"</div>
+
+            <div class="info-box" style="margin-top: 16px;">
+                <p><strong>With HTTPS enabled (for secure Remote Access clipboard):</strong></p>
+                <p>Adds HTTPS on port 2443. Auto-generates SSL certificate with auto-detected local network IPs in <code>data/</code> directory.</p>
+            </div>
+            <div class="code-block">node main.js -s "http://CHANNELS_DVR_IP" -e "http://ENCODER_IP_ADDRESS/live/stream0" -t 2443</div>
+
+            <div class="info-box" style="margin-top: 16px;">
+                <p><strong>With HTTPS and additional hostnames/IPs:</strong></p>
+                <p>Specify additional hostnames or IP addresses to include in the SSL certificate (in addition to auto-detected IPs).</p>
+            </div>
+            <div class="code-block">node main.js -s "http://CHANNELS_DVR_IP" -e "http://ENCODER_IP_ADDRESS/live/stream0" -t 2443 -n "10.0.0.5,myserver.local"</div>
 
             <div class="info-box" style="margin-top: 16px;">
                 <p><strong>Multiple encoders with audio devices and screen positioning:</strong></p>
@@ -599,6 +754,7 @@ const START_PAGE_HTML = `
                 <p><strong>CH4C Server:</strong> <code id="ch4c-ip-display">Detecting...</code>:<code>${CH4C_PORT}</code></p>
                 <p><strong>Encoder:</strong> <code>${ENCODERS[0]?.url || 'Not configured'}</code> (Channel ${ENCODERS[0]?.channel || '24.42'})</p>
                 <p style="margin-top: 8px; font-size: 12px; color: #718096;">The CH4C server address is auto-detected. If incorrect, replace it in the M3U below.</p>
+                <p style="margin-top: 8px;"><strong>💡 Tip:</strong> Use the <a href="/m3u-manager" style="color: #667eea; text-decoration: underline;">M3U Manager</a> to easily create and manage your channel lineup with a visual interface.</p>
                 <p style="margin-top: 8px;"><strong>More examples:</strong> <a href="https://github.com/dravenst/CH4C/blob/main/assets/samples.m3u" target="_blank" style="color: #667eea; text-decoration: underline;">View additional M3U samples on GitHub</a></p>
             </div>
             <div class="code-block" id="m3u-config">#EXTM3U
@@ -620,9 +776,6 @@ http://CH4C_IP_ADDRESS:${CH4C_PORT}/stream?url=https://disneynow.com/watch-live?
 
 #EXTINF:-1 channel-id="CH4C_NBC" channel-number="24.5",NBC Live
 http://CH4C_IP_ADDRESS:${CH4C_PORT}/stream?url=https://www.nbc.com/live
-
-#EXTINF:-1 channel-id="Hallmark",Hallmark
-http://CH4C_IP_ADDRESS:${CH4C_PORT}/stream/?url=https://www.peacocktv.com/deeplink?deeplinkData=%7B%22serviceKey%22%3A%224846937553519166117%22%2C%22type%22%3A%22LINEAR_CHANNEL%22%2C%22action%22%3A%22PLAY%22%7D
 
 #EXTINF:-1 channel-id="BTN" tvc-guide-stationid="403557" channel-number="6199",BTN
 http://CH4C_IP_ADDRESS:${CH4C_PORT}/stream?url=https://watch.sling.com/1/channel/0984387944df47b58a687d60babc2c43/watch
@@ -671,9 +824,10 @@ http://CH4C_IP_ADDRESS:${CH4C_PORT}/stream?url=https://www.spectrum.net/livetv</
 
                         data.activeStreams.forEach(stream => {
                             const uptimeMinutes = Math.floor(stream.uptime / 60000);
+                            const targetUrlDisplay = stream.targetUrl ? \`<br><span style="font-size: 12px; color: #4a5568;">Streaming: \${stream.targetUrl}</span>\` : '';
                             activeSection.innerHTML += \`
                                 <div class="info-box" style="margin-bottom: 8px;">
-                                    <p><strong>\${stream.url}</strong> - Uptime: \${uptimeMinutes} minutes</p>
+                                    <p><strong>Encoder: \${stream.url}</strong> - Uptime: \${uptimeMinutes} minutes\${targetUrlDisplay}</p>
                                 </div>
                             \`;
                         });
@@ -737,6 +891,20 @@ http://CH4C_IP_ADDRESS:${CH4C_PORT}/stream?url=https://www.spectrum.net/livetv</
                 const currentText = m3uBlock.textContent;
                 const updatedText = currentText.replace(/CH4C_IP_ADDRESS/g, ch4cAddress);
                 m3uBlock.textContent = updatedText;
+            }
+        }
+
+        // Dismiss HTTPS notice
+        function dismissHttpsNotice() {
+            document.getElementById('https-notice').style.display = 'none';
+            localStorage.setItem('ch4c-https-notice-dismissed', 'true');
+        }
+
+        // Show HTTPS notice if using HTTPS and not dismissed
+        if (window.location.protocol === 'https:') {
+            const dismissed = localStorage.getItem('ch4c-https-notice-dismissed');
+            if (!dismissed) {
+                document.getElementById('https-notice').style.display = 'block';
             }
         }
 
@@ -822,7 +990,8 @@ const INSTANT_PAGE_HTML = `
         }
 
         .form-group input[type="text"],
-        .form-group input[type="number"] {
+        .form-group input[type="number"],
+        .form-group select {
             width: 100%;
             padding: 12px 16px;
             border: 2px solid #e2e8f0;
@@ -833,7 +1002,8 @@ const INSTANT_PAGE_HTML = `
         }
 
         .form-group input[type="text"]:focus,
-        .form-group input[type="number"]:focus {
+        .form-group input[type="number"]:focus,
+        .form-group select:focus {
             outline: none;
             border-color: #667eea;
             box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
@@ -841,6 +1011,30 @@ const INSTANT_PAGE_HTML = `
 
         .form-group input::placeholder {
             color: #cbd5e0;
+        }
+
+        .form-group select {
+            cursor: pointer;
+            background-color: white;
+        }
+
+        .form-row {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 24px;
+        }
+
+        .form-row .form-group {
+            flex: 1;
+            margin-bottom: 0;
+        }
+
+        .form-row .form-group.narrow {
+            flex: 0.6;
+        }
+
+        .form-row .form-group.wide {
+            flex: 1.4;
         }
 
         .button-group {
@@ -914,6 +1108,14 @@ const INSTANT_PAGE_HTML = `
                 flex-direction: column;
             }
 
+            .form-row {
+                flex-direction: column;
+            }
+
+            .form-row .form-group {
+                margin-bottom: 24px;
+            }
+
             .header h1 {
                 font-size: 24px;
             }
@@ -931,19 +1133,6 @@ const INSTANT_PAGE_HTML = `
         <form method="POST" action="/instant">
             <div class="form-group">
                 <label>
-                    Recording Name
-                    <span class="label-hint">(optional)</span>
-                </label>
-                <input
-                    type="text"
-                    name="recording_name"
-                    id="recording_name"
-                    placeholder="e.g., NFL Game, Concert Stream"
-                />
-            </div>
-
-            <div class="form-group">
-                <label>
                     URL to Stream
                     <span class="label-hint">*</span>
                 </label>
@@ -956,18 +1145,104 @@ const INSTANT_PAGE_HTML = `
                 />
             </div>
 
+            <div class="form-row">
+                <div class="form-group narrow">
+                    <label>
+                        Duration (minutes) *
+                    </label>
+                    <input
+                        type="number"
+                        name="recording_duration"
+                        id="recording_duration"
+                        placeholder="60"
+                        min="1"
+                        step="1"
+                    />
+                </div>
+
+                <div class="form-group wide">
+                    <label>
+                        Encoder
+                        <span class="label-hint">(optional - auto-select if blank)</span>
+                    </label>
+                    <select
+                        name="selected_encoder"
+                        id="selected_encoder"
+                    >
+                        <option value="">Auto-select first available</option>
+                        <<encoder_options>>
+                    </select>
+                </div>
+            </div>
+
             <div class="form-group">
                 <label>
-                    Duration (minutes)
-                    <span class="label-hint">* required for recording, optional for tuning</span>
+                    Recording Name
+                    <span class="label-hint">(optional)</span>
                 </label>
                 <input
-                    type="number"
-                    name="recording_duration"
-                    id="recording_duration"
-                    placeholder="60"
-                    min="1"
-                    step="1"
+                    type="text"
+                    name="recording_name"
+                    id="recording_name"
+                    placeholder="e.g., NFL Game, Concert Stream"
+                />
+            </div>
+
+            <div class="form-row">
+                <div class="form-group">
+                    <label>
+                        Episode Title
+                        <span class="label-hint">(optional)</span>
+                    </label>
+                    <input
+                        type="text"
+                        name="episode_title"
+                        id="episode_title"
+                        placeholder="e.g., Championship Game"
+                    />
+                </div>
+
+                <div class="form-group">
+                    <label>
+                        Season Number
+                        <span class="label-hint">(optional)</span>
+                    </label>
+                    <input
+                        type="number"
+                        name="season_number"
+                        id="season_number"
+                        placeholder="e.g., 1"
+                        min="1"
+                        step="1"
+                    />
+                </div>
+
+                <div class="form-group">
+                    <label>
+                        Episode Number
+                        <span class="label-hint">(optional)</span>
+                    </label>
+                    <input
+                        type="number"
+                        name="episode_number"
+                        id="episode_number"
+                        placeholder="e.g., 5"
+                        min="1"
+                        step="1"
+                    />
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label>
+                    Summary
+                    <span class="label-hint">(optional)</span>
+                </label>
+                <input
+                    type="text"
+                    name="recording_summary"
+                    id="recording_summary"
+                    placeholder="e.g., Description of the recording"
                 />
             </div>
 
@@ -975,8 +1250,8 @@ const INSTANT_PAGE_HTML = `
                 <button type="submit" name="button_record" value="Start Recording" class="btn btn-primary">
                     📹 Start Recording
                 </button>
-                <button type="submit" name="button_tune" value="Tune" class="btn btn-secondary">
-                    📺 Tune to Channel ${ENCODERS[0]?.channel || '24.42'}
+                <button type="submit" name="button_tune" value="Tune" class="btn btn-secondary" id="tune_button">
+                    📺 Tune to Channel
                 </button>
             </div>
 
@@ -996,6 +1271,33 @@ const INSTANT_PAGE_HTML = `
         // Make duration required only when recording
         const form = document.querySelector('form');
         const durationInput = document.getElementById('recording_duration');
+        const encoderSelect = document.getElementById('selected_encoder');
+        const tuneButton = document.getElementById('tune_button');
+
+        // Update tune button text based on selected encoder
+        function updateTuneButtonText() {
+            const selectedOption = encoderSelect.options[encoderSelect.selectedIndex];
+            let channelText = '';
+
+            if (encoderSelect.value === '' && encoderSelect.options.length > 1) {
+                // Auto-select: use first available encoder (second option after "Auto-select")
+                const firstEncoderOption = encoderSelect.options[1];
+                if (firstEncoderOption) {
+                    const match = firstEncoderOption.text.match(/Channel ([0-9.]+)/);
+                    if (match) channelText = match[1];
+                }
+            } else if (encoderSelect.value !== '') {
+                // Specific encoder selected
+                const match = selectedOption.text.match(/Channel ([0-9.]+)/);
+                if (match) channelText = match[1];
+            }
+
+            tuneButton.textContent = channelText ? '📺 Tune to Channel ' + channelText : '📺 Tune to Channel';
+        }
+
+        // Update on page load and when selection changes
+        updateTuneButtonText();
+        encoderSelect.addEventListener('change', updateTuneButtonText);
 
         form.addEventListener('submit', function(e) {
             const submitButton = e.submitter;
@@ -1006,7 +1308,948 @@ const INSTANT_PAGE_HTML = `
                     e.preventDefault();
                     alert('Duration is required when starting a recording.');
                     durationInput.focus();
+                    return;
                 }
+            }
+        });
+    </script>
+</body>
+</html>
+`
+
+const REMOTE_ACCESS_PAGE_HTML = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CH4C - Remote Access</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 1400px;
+            width: 100%;
+            margin: 0 auto;
+            padding: 40px;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 32px;
+        }
+
+        .header h1 {
+            color: #2d3748;
+            font-size: 32px;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+
+        .header p {
+            color: #718096;
+            font-size: 14px;
+        }
+
+        .header .back-link {
+            display: inline-block;
+            margin-top: 12px;
+            color: #667eea;
+            text-decoration: none;
+            font-size: 14px;
+        }
+
+        .header .back-link:hover {
+            text-decoration: underline;
+        }
+
+        .connection-panel {
+            background: #f7fafc;
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 16px;
+            display: flex;
+            gap: 80px;
+            align-items: flex-start;
+        }
+
+        .connection-left {
+            flex-shrink: 0;
+            max-width: 500px;
+        }
+
+        .form-group {
+            margin-bottom: 10px;
+        }
+
+        .form-group label {
+            display: block;
+            color: #2d3748;
+            font-weight: 600;
+            margin-bottom: 6px;
+            font-size: 14px;
+        }
+
+        .form-group input {
+            width: 100%;
+            max-width: 250px;
+            padding: 10px 12px;
+            border: 2px solid #cbd5e0;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+
+        .form-group input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .password-wrapper {
+            position: relative;
+            max-width: 250px;
+        }
+
+        .password-wrapper input {
+            padding-right: 40px;
+        }
+
+        .password-toggle {
+            position: absolute;
+            right: 8px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: none;
+            border: none;
+            cursor: pointer;
+            padding: 4px;
+            color: #718096;
+            font-size: 18px;
+            line-height: 1;
+            transition: color 0.2s;
+        }
+
+        .password-toggle:hover {
+            color: #667eea;
+        }
+
+        .password-toggle:disabled {
+            cursor: not-allowed;
+            opacity: 0.5;
+        }
+
+        .button-group {
+            margin-bottom: 10px;
+        }
+
+        .btn {
+            padding: 10px 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin-right: 12px;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 16px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .btn-disconnect {
+            background: linear-gradient(135deg, #f56565 0%, #e53e3e 100%);
+        }
+
+        .status-display {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .status-label {
+            color: #4a5568;
+            font-weight: 600;
+            font-size: 14px;
+        }
+
+        .status-text {
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .status-text.connected {
+            color: #48bb78;
+        }
+
+        .status-text.disconnected {
+            color: #718096;
+        }
+
+        @keyframes pulse {
+            0%, 100% {
+                transform: scale(1);
+            }
+            50% {
+                transform: scale(1.05);
+            }
+        }
+        }
+
+        .status-text.connecting {
+            color: #ed8936;
+        }
+
+        .vnc-container {
+            background: #2d3748;
+            border-radius: 8px;
+            overflow: auto;
+            position: relative;
+            min-height: 600px;
+            max-height: 800px;
+            width: 100%;
+        }
+
+        #screen {
+            display: inline-block;
+        }
+
+        #screen canvas {
+            display: block;
+        }
+
+        .info-box {
+            background: #edf2f7;
+            border-left: 4px solid #667eea;
+            padding: 16px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+        }
+
+        .info-box p {
+            color: #4a5568;
+            font-size: 13px;
+            line-height: 1.6;
+            margin: 4px 0;
+        }
+
+        .info-box strong {
+            color: #2d3748;
+        }
+
+        .viewport-controls {
+            flex: 1;
+        }
+
+        .controls-layout {
+            display: flex;
+            gap: 60px;
+            align-items: flex-start;
+        }
+
+        .navigation-section {
+            flex-shrink: 0;
+        }
+
+        .navigation-section label {
+            display: block;
+            color: #2d3748;
+            font-weight: 600;
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+
+        .nav-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 48px);
+            grid-template-rows: repeat(3, 48px);
+            gap: 6px;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .arrow-btn {
+            width: 48px;
+            height: 48px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 20px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .arrow-btn:hover {
+            transform: scale(1.05);
+            box-shadow: 0 6px 12px rgba(102, 126, 234, 0.4);
+        }
+
+        .arrow-btn:active {
+            transform: scale(0.95);
+        }
+
+        .nav-center {
+            width: 48px;
+            height: 48px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #e2e8f0;
+            border-radius: 6px;
+        }
+
+        .position-display {
+            font-size: 11px;
+            font-weight: 600;
+            color: #2d3748;
+            text-align: center;
+        }
+
+        .nav-spacer {
+            width: 48px;
+            height: 48px;
+        }
+
+        .zoom-section {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+        }
+
+        .zoom-section label {
+            display: block;
+            color: #2d3748;
+            font-weight: 600;
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+
+        .zoom-buttons {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .zoom-buttons input[type="number"] {
+            width: 70px;
+            padding: 8px;
+            border: 2px solid #cbd5e0;
+            border-radius: 6px;
+            font-size: 14px;
+            text-align: center;
+        }
+
+        .zoom-buttons input[type="number"]:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .control-btn {
+            padding: 8px 12px;
+            background: #e2e8f0;
+            color: #2d3748;
+            border: none;
+            border-radius: 6px;
+            font-weight: 600;
+            font-size: 13px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            min-width: 36px;
+        }
+
+        .control-btn:hover {
+            background: #cbd5e0;
+        }
+
+        .control-btn:active {
+            transform: scale(0.95);
+        }
+
+        .reset-btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .reset-btn:hover {
+            background: linear-gradient(135deg, #5568d3 0%, #653a8b 100%);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header" style="padding: 16px 0; margin-bottom: 12px;">
+            <h1 style="margin: 0; font-size: 24px;">Remote CH4C Server Access</h1>
+            <div style="text-align: center; margin-top: 8px;">
+                <p style="margin: 0 0 6px 0; font-size: 13px; color: #718096;">VNC remote access • <a href="https://github.com/dravenst/CH4C/blob/main/REMOTE_ACCESS_SETUP.md" target="_blank" style="color: #667eea;">Setup Guide</a> (enable TightVNC loopback)</p>
+                <a href="/" class="back-link" style="margin: 0;">← Back to Home</a>
+            </div>
+        </div>
+
+        <div class="connection-panel">
+            <div class="connection-left" style="display: flex; gap: 48px; flex-wrap: wrap;">
+                <div style="flex: 0 0 auto;">
+                    <div style="display: flex; gap: 16px; margin-bottom: 10px;">
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label for="vnc-password">VNC Password:</label>
+                            <div class="password-wrapper" style="max-width: 180px;">
+                                <input type="password" id="vnc-password" placeholder="Enter VNC password" style="max-width: 180px;">
+                                <button type="button" class="password-toggle" id="password-toggle" onclick="togglePasswordVisibility()" title="Show password">
+                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                                        <circle cx="12" cy="12" r="3"></circle>
+                                    </svg>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label for="vnc-port">Port:</label>
+                            <input type="number" id="vnc-port" value="5900" min="1" max="65535" style="max-width: 80px;" placeholder="5900">
+                        </div>
+                    </div>
+
+                    <div class="button-group">
+                        <button id="connect-btn" class="btn" onclick="connect()">Connect</button>
+                        <button id="disconnect-btn" class="btn btn-disconnect" onclick="disconnect()" disabled>Disconnect</button>
+                    </div>
+
+                    <div class="status-display">
+                        <span class="status-label">Status:</span>
+                        <span id="status" class="status-text disconnected">Disconnected</span>
+                    </div>
+
+                    <div id="clipboard-warning" style="display: none; margin-top: 8px; padding: 6px 8px; background: #fff3cd; border: 1px solid #ffc107; border-radius: 6px; font-size: 10px; color: #856404; line-height: 1.3; max-width: 400px; position: relative;">
+                        <button onclick="dismissClipboardWarning()" style="position: absolute; top: 4px; right: 4px; background: none; border: none; color: #856404; font-size: 16px; cursor: pointer; padding: 2px 6px; line-height: 1;" title="Dismiss">×</button>
+                        <span id="clipboard-warning-text"></span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="viewport-controls" id="viewport-controls" style="visibility: hidden;">
+                <div class="controls-layout">
+                    <div class="navigation-section">
+                        <label>Scroll:</label>
+                        <div class="nav-grid">
+                            <div class="nav-spacer"></div>
+                            <button class="arrow-btn" onmousedown="startContinuousAdjust('y', -100)" onmouseup="stopContinuousAdjust()" onmouseleave="stopContinuousAdjust()" ontouchstart="startContinuousAdjust('y', -100)" ontouchend="stopContinuousAdjust()" title="Up">▲</button>
+                            <div class="nav-spacer"></div>
+
+                            <button class="arrow-btn" onmousedown="startContinuousAdjust('x', -100)" onmouseup="stopContinuousAdjust()" onmouseleave="stopContinuousAdjust()" ontouchstart="startContinuousAdjust('x', -100)" ontouchend="stopContinuousAdjust()" title="Left">◀</button>
+                            <div class="nav-center">
+                                <div class="position-display">
+                                    <span id="pos-x">0</span>, <span id="pos-y">0</span>
+                                </div>
+                            </div>
+                            <button class="arrow-btn" onmousedown="startContinuousAdjust('x', 100)" onmouseup="stopContinuousAdjust()" onmouseleave="stopContinuousAdjust()" ontouchstart="startContinuousAdjust('x', 100)" ontouchend="stopContinuousAdjust()" title="Right">▶</button>
+
+                            <div class="nav-spacer"></div>
+                            <button class="arrow-btn" onmousedown="startContinuousAdjust('y', 100)" onmouseup="stopContinuousAdjust()" onmouseleave="stopContinuousAdjust()" ontouchstart="startContinuousAdjust('y', 100)" ontouchend="stopContinuousAdjust()" title="Down">▼</button>
+                            <div class="nav-spacer"></div>
+                        </div>
+                    </div>
+
+                    <div class="zoom-section">
+                        <label>Zoom:</label>
+                        <div class="zoom-buttons">
+                            <button class="control-btn" onclick="adjustZoom(-0.1)">−</button>
+                            <input type="number" id="zoom-scale" value="0.5" min="0.1" max="3.0" step="0.1" onchange="applyViewportSettings()">
+                            <button class="control-btn" onclick="adjustZoom(0.1)">+</button>
+                        </div>
+                        <button class="control-btn reset-btn" onclick="resetViewport()" style="margin-top: 8px; width: 100%;">Reset View</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="clipboard-buttons" style="display: none; margin-bottom: 12px;">
+            <div style="display: flex; gap: 12px; align-items: flex-start;">
+                <label style="font-size: 14px; font-weight: 600; color: #2d3748; margin: 0; padding-top: 8px;">Clipboard:</label>
+                <div style="display: flex; flex-direction: column; gap: 8px;">
+                    <div style="display: flex; gap: 8px;">
+                        <button id="copy-from-vnc-btn" class="btn" onclick="copyFromVNC()" style="padding: 8px 16px; font-size: 12px; white-space: nowrap;">Copy VNC → Local</button>
+                        <button id="paste-to-vnc-btn" class="btn" onclick="togglePasteBox()" style="padding: 8px 16px; font-size: 12px; white-space: nowrap;">Copy Local → VNC</button>
+                    </div>
+                    <div id="paste-box" style="display: none;">
+                        <textarea id="paste-textarea" placeholder="Paste your text here, then click Send to VNC" style="width: 400px; height: 80px; padding: 8px; border: 2px solid #cbd5e0; border-radius: 6px; font-size: 12px; font-family: monospace; resize: vertical;"></textarea>
+                        <div style="margin-top: 4px; display: flex; gap: 8px;">
+                            <button class="btn" onclick="sendPasteToVNC()" style="padding: 6px 12px; font-size: 11px;">Send to VNC</button>
+                            <button class="btn" onclick="togglePasteBox()" style="padding: 6px 12px; font-size: 11px; background: #718096;">Cancel</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="vnc-container">
+            <div id="screen"></div>
+        </div>
+    </div>
+
+    <script type="module">
+        // Use locally installed noVNC
+        import RFB from '/novnc/core/rfb.js';
+
+        let rfb = null;
+        let currentOffsetX = 0;
+        let currentOffsetY = 0;
+        let continuousAdjustInterval = null;
+        let clipboardReadAllowed = null; // null = not tested, true = allowed, false = denied
+        const connectBtn = document.getElementById('connect-btn');
+        const disconnectBtn = document.getElementById('disconnect-btn');
+        const statusEl = document.getElementById('status');
+        const passwordInput = document.getElementById('vnc-password');
+        const passwordToggle = document.getElementById('password-toggle');
+
+        // Dismiss clipboard warning
+        window.dismissClipboardWarning = function() {
+            document.getElementById('clipboard-warning').style.display = 'none';
+            localStorage.setItem('ch4c-clipboard-warning-dismissed', 'true');
+        };
+
+        // Update clipboard warning based on protocol and capabilities
+        function updateClipboardWarning() {
+            const warning = document.getElementById('clipboard-warning');
+            const warningText = document.getElementById('clipboard-warning-text');
+
+            if (!warning || !warningText) return;
+
+            // Check if user has dismissed the warning
+            const dismissed = localStorage.getItem('ch4c-clipboard-warning-dismissed');
+            if (dismissed) {
+                warning.style.display = 'none';
+                return;
+            }
+
+            const isHTTPS = window.location.protocol === 'https:';
+
+            if (!isHTTPS) {
+                // HTTP - manual buttons required
+                warningText.innerHTML = '<strong>⚠️ HTTP Limitation:</strong> Manual clipboard buttons required. Use "Copy VNC → Local" and "Copy Local → VNC" with textarea for clipboard operations.';
+                warning.style.display = 'block';
+            } else if (clipboardReadAllowed === false) {
+                // HTTPS but certificate not trusted
+                warningText.innerHTML = '<strong>⚠️ Certificate Not Trusted:</strong> Install <code>data/cert.pem</code> as trusted certificate for automatic clipboard. Currently using manual paste. <a href="/data/cert.pem" style="color: #856404; text-decoration: underline;">Download cert.pem</a>';
+                warning.style.display = 'block';
+            } else if (clipboardReadAllowed === true) {
+                // HTTPS with trusted certificate - hide warning
+                warning.style.display = 'none';
+            } else {
+                // HTTPS but not tested yet - show neutral message
+                warningText.innerHTML = '<strong>ℹ️ HTTPS Active:</strong> Click "Copy Local → VNC" and allow clipboard access when prompted. To avoid the prompt: <a href="/data/cert.pem" style="color: #856404; text-decoration: underline;">Download cert.pem</a> and <a href="https://github.com/dravenst/CH4C/blob/main/HTTPS_SETUP.md" target="_blank" style="color: #856404; text-decoration: underline;">install as trusted</a>.';
+                warning.style.display = 'block';
+            }
+        }
+
+        // Toggle password visibility
+        window.togglePasswordVisibility = function() {
+            if (passwordInput.type === 'password') {
+                passwordInput.type = 'text';
+                passwordToggle.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>';
+                passwordToggle.title = 'Hide password';
+            } else {
+                passwordInput.type = 'password';
+                passwordToggle.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>';
+                passwordToggle.title = 'Show password';
+            }
+        };
+
+        window.connect = function() {
+            const password = passwordInput.value;
+            const port = document.getElementById('vnc-port').value || '5900';
+
+            if (!password) {
+                alert('Please enter a VNC password');
+                return;
+            }
+
+            // Update UI
+            statusEl.textContent = 'Connecting...';
+            statusEl.className = 'status-text connecting';
+            connectBtn.disabled = true;
+
+            // Construct WebSocket URL with port parameter
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = protocol + '//' + window.location.host + '/vnc-proxy?port=' + encodeURIComponent(port);
+
+            try {
+                // Create RFB connection
+                rfb = new RFB(document.getElementById('screen'), wsUrl, {
+                    credentials: { password: password }
+                });
+
+                // Set viewport options - show full desktop at native resolution
+                rfb.scaleViewport = false;  // Don't scale (we'll handle it manually)
+                rfb.resizeSession = false;  // Don't resize remote desktop
+                rfb.clipViewport = false;   // Show full desktop
+                rfb.showDotCursor = true;   // Always show a local cursor dot
+                rfb.dragViewport = false;   // Disable drag to pan (we use buttons instead)
+
+                // Override _updateScale to prevent noVNC from resetting our manual scale
+                const originalUpdateScale = rfb._updateScale.bind(rfb);
+                rfb._updateScale = function() {
+                    // Skip the default behavior that resets scale to 1.0
+                    // We're managing scale manually
+                    this._fixScrollbars();
+                };
+
+                // Store received clipboard text
+                let receivedClipboardText = '';
+
+                // Clipboard synchronization - receive from VNC server
+                rfb.addEventListener('clipboard', async (e) => {
+                    console.log('Received clipboard from VNC server');
+                    const text = e.detail.text;
+                    receivedClipboardText = text;
+
+                    // Try automatic clipboard write first (works in HTTPS)
+                    try {
+                        if (navigator.clipboard && navigator.clipboard.writeText) {
+                            await navigator.clipboard.writeText(text);
+                            console.log('Clipboard automatically synced');
+                            // Show brief success message
+                            const copyBtn = document.getElementById('manual-copy-btn');
+                            if (copyBtn) {
+                                copyBtn.style.display = 'inline-block';
+                                copyBtn.textContent = '✓ Clipboard Synced';
+                                copyBtn.style.animation = 'pulse 0.5s';
+                                setTimeout(() => {
+                                    copyBtn.style.display = 'none';
+                                }, 2000);
+                            }
+                            return;
+                        }
+                    } catch (err) {
+                        console.log('Automatic clipboard failed (expected in HTTP), showing manual button');
+                    }
+
+                    // Fallback: Show manual copy button with animation
+                    const copyBtn = document.getElementById('copy-from-vnc-btn');
+                    if (copyBtn) {
+                        copyBtn.textContent = 'Copy VNC → Local';
+                        copyBtn.style.animation = 'pulse 0.5s';
+                    }
+
+                    console.log('VNC clipboard received, click button to copy to browser');
+                });
+
+                // Copy from VNC to browser clipboard
+                window.copyFromVNC = function() {
+                    if (!receivedClipboardText) {
+                        alert('No clipboard text available from VNC');
+                        return;
+                    }
+
+                    // Create temporary textarea
+                    const textarea = document.createElement('textarea');
+                    textarea.value = receivedClipboardText;
+                    textarea.style.position = 'fixed';
+                    textarea.style.opacity = '0';
+                    document.body.appendChild(textarea);
+                    textarea.select();
+
+                    try {
+                        document.execCommand('copy');
+                        console.log('Clipboard copied via execCommand');
+                        const copyBtn = document.getElementById('copy-from-vnc-btn');
+                        if (copyBtn) {
+                            copyBtn.textContent = '✓ Copied!';
+                            copyBtn.style.animation = 'none';
+                            setTimeout(() => {
+                                copyBtn.textContent = 'Copy VNC → Local';
+                            }, 2000);
+                        }
+                    } catch (err) {
+                        console.error('Failed to copy:', err);
+                        alert('Failed to copy to clipboard');
+                    } finally {
+                        document.body.removeChild(textarea);
+                    }
+                };
+
+                // Paste from browser clipboard to VNC
+                // Try automatic clipboard first on HTTPS, fall back to textarea
+                window.togglePasteBox = async function() {
+                    if (!rfb) {
+                        alert('Not connected to VNC');
+                        return;
+                    }
+
+                    const isHTTPS = window.location.protocol === 'https:';
+
+                    // Try automatic clipboard read on HTTPS
+                    if (isHTTPS && navigator.clipboard && navigator.clipboard.readText) {
+                        try {
+                            console.log('Attempting automatic clipboard read...');
+                            const text = await navigator.clipboard.readText();
+
+                            if (text) {
+                                // Success! Send directly to VNC
+                                console.log('Automatic clipboard read successful, sending to VNC');
+                                rfb.clipboardPasteFrom(text);
+                                clipboardReadAllowed = true;
+                                updateClipboardWarning();
+
+                                // Show success feedback
+                                const pasteBtn = document.getElementById('paste-to-vnc-btn');
+                                if (pasteBtn) {
+                                    const originalText = pasteBtn.textContent;
+                                    pasteBtn.textContent = '✓ Sent to VNC!';
+                                    pasteBtn.style.background = 'linear-gradient(135deg, #48bb78 0%, #38a169 100%)';
+                                    setTimeout(() => {
+                                        pasteBtn.textContent = originalText;
+                                        pasteBtn.style.background = '';
+                                    }, 2000);
+                                }
+                                return;
+                            }
+                        } catch (err) {
+                            // Clipboard read denied - fall back to textarea
+                            console.log('Automatic clipboard read denied:', err.message);
+                            clipboardReadAllowed = false;
+                            updateClipboardWarning();
+                        }
+                    }
+
+                    // Fall back to manual textarea method
+                    const pasteBox = document.getElementById('paste-box');
+                    const textarea = document.getElementById('paste-textarea');
+
+                    if (pasteBox.style.display === 'none') {
+                        pasteBox.style.display = 'block';
+                        textarea.value = '';
+                        textarea.focus();
+                    } else {
+                        pasteBox.style.display = 'none';
+                        textarea.value = '';
+                    }
+                };
+
+                // Send text from textarea to VNC
+                window.sendPasteToVNC = function() {
+                    if (!rfb) {
+                        alert('Not connected to VNC');
+                        return;
+                    }
+
+                    const textarea = document.getElementById('paste-textarea');
+                    const text = textarea.value;
+
+                    if (!text) {
+                        alert('Please paste some text first');
+                        return;
+                    }
+
+                    console.log('Sending text to VNC server');
+                    rfb.clipboardPasteFrom(text);
+
+                    // Close the paste box and show success
+                    togglePasteBox();
+
+                    const pasteBtn = document.getElementById('paste-to-vnc-btn');
+                    if (pasteBtn) {
+                        const originalText = pasteBtn.textContent;
+                        pasteBtn.textContent = '✓ Sent to VNC!';
+                        pasteBtn.style.background = 'linear-gradient(135deg, #48bb78 0%, #38a169 100%)';
+                        setTimeout(() => {
+                            pasteBtn.textContent = originalText;
+                            pasteBtn.style.background = '';
+                        }, 2000);
+                    }
+                };
+
+                // Connection successful
+                rfb.addEventListener('connect', () => {
+                    console.log('Connected to VNC server');
+                    statusEl.textContent = 'Connected';
+                    statusEl.className = 'status-text connected';
+                    disconnectBtn.disabled = false;
+                    passwordInput.disabled = true;  // Disable password input when connected
+                    passwordToggle.disabled = true;  // Disable password toggle when connected
+
+                    // Show clipboard buttons section
+                    const clipboardSection = document.getElementById('clipboard-buttons');
+                    if (clipboardSection) {
+                        clipboardSection.style.display = 'block';
+                    }
+
+                    // Update clipboard warning based on detected capabilities
+                    updateClipboardWarning();
+
+                    // Show viewport controls
+                    document.getElementById('viewport-controls').style.visibility = 'visible';
+
+                    // Initialize position display
+                    updatePositionDisplay();
+
+                    // Apply initial zoom (0.5) after a short delay to ensure canvas is ready
+                    setTimeout(() => {
+                        applyViewportSettings();
+                    }, 100);
+                });
+
+                // Connection failed
+                rfb.addEventListener('disconnect', (e) => {
+                    console.log('Disconnected from VNC server');
+                    statusEl.textContent = 'Disconnected';
+                    statusEl.className = 'status-text disconnected';
+                    connectBtn.disabled = false;
+                    disconnectBtn.disabled = true;
+                    passwordInput.disabled = false;  // Re-enable password input when disconnected
+                    passwordToggle.disabled = false;  // Re-enable password toggle when disconnected
+
+                    // Hide clipboard buttons section and warning
+                    const clipboardSection = document.getElementById('clipboard-buttons');
+                    if (clipboardSection) {
+                        clipboardSection.style.display = 'none';
+                    }
+                    const clipboardWarning = document.getElementById('clipboard-warning');
+                    if (clipboardWarning) {
+                        clipboardWarning.style.display = 'none';
+                    }
+
+                    // Reset clipboard capability detection on disconnect
+                    clipboardReadAllowed = null;
+
+                    // Hide viewport controls
+                    document.getElementById('viewport-controls').style.visibility = 'hidden';
+
+                    if (e.detail.clean === false) {
+                        alert('Connection failed: ' + e.detail.reason + '\\n\\nMost common cause: TightVNC loopback connections are not enabled.\\nSee Setup Guide for instructions.');
+                    }
+                });
+
+                // Handle credential requirements
+                rfb.addEventListener('credentialsrequired', () => {
+                    console.log('VNC credentials required');
+                    rfb.sendCredentials({ password: password });
+                });
+
+            } catch (error) {
+                console.error('Connection error:', error);
+                alert('Failed to connect: ' + error.message + '\\n\\nMost common cause: TightVNC loopback connections are not enabled.\\nSee Setup Guide for instructions.');
+                statusEl.textContent = 'Disconnected';
+                statusEl.className = 'status-text disconnected';
+                connectBtn.disabled = false;
+            }
+        };
+
+        window.disconnect = function() {
+            if (rfb) {
+                rfb.disconnect();
+                rfb = null;
+            }
+        };
+
+        // Update position display
+        function updatePositionDisplay() {
+            document.getElementById('pos-x').textContent = currentOffsetX;
+            document.getElementById('pos-y').textContent = currentOffsetY;
+        }
+
+        // Viewport control functions
+        window.applyViewportSettings = function(preserveScroll = false) {
+            const container = document.querySelector('.vnc-container');
+            const screen = document.getElementById('screen');
+
+            if (!container || !screen || !rfb) {
+                console.warn('Not ready yet');
+                return;
+            }
+
+            // Save current scroll position if preserving
+            const savedScrollLeft = preserveScroll ? container.scrollLeft : currentOffsetX;
+            const savedScrollTop = preserveScroll ? container.scrollTop : currentOffsetY;
+
+            const scale = parseFloat(document.getElementById('zoom-scale').value) || 0.5;
+
+            // Use noVNC's built-in scaling which properly handles mouse coordinates
+            if (rfb._display) {
+                rfb._display._rescale(scale);
+                console.log(\`Applied noVNC scale: \${scale}\`);
+            } else {
+                console.warn('noVNC display not ready');
+            }
+
+            // Restore or set scroll position
+            setTimeout(() => {
+                container.scrollLeft = savedScrollLeft;
+                container.scrollTop = savedScrollTop;
+                console.log(\`Applied viewport: offset=(\${savedScrollLeft}, \${savedScrollTop}), scale=\${scale}\`);
+            }, 0);
+        };
+
+        window.adjustOffset = function(axis, delta) {
+            if (axis === 'x') {
+                currentOffsetX += delta;
+            } else {
+                currentOffsetY += delta;
+            }
+            updatePositionDisplay();
+            applyViewportSettings();
+        };
+
+        window.adjustZoom = function(delta) {
+            const input = document.getElementById('zoom-scale');
+            const currentValue = parseFloat(input.value) || 0.5;
+            const newValue = Math.max(0.1, Math.min(3.0, currentValue + delta));
+            input.value = newValue.toFixed(1);
+            applyViewportSettings();
+        };
+
+        window.resetViewport = function() {
+            currentOffsetX = 0;
+            currentOffsetY = 0;
+            document.getElementById('zoom-scale').value = 0.5;
+            updatePositionDisplay();
+            applyViewportSettings();
+        };
+
+        // Continuous adjustment for holding down arrow buttons
+        window.startContinuousAdjust = function(axis, delta) {
+            // Immediate first adjustment
+            adjustOffset(axis, delta);
+
+            // Continue adjusting while button is held
+            continuousAdjustInterval = setInterval(() => {
+                adjustOffset(axis, delta);
+            }, 100); // Adjust every 100ms
+        };
+
+        window.stopContinuousAdjust = function() {
+            if (continuousAdjustInterval) {
+                clearInterval(continuousAdjustInterval);
+                continuousAdjustInterval = null;
+            }
+        };
+
+        // Allow Enter key to connect
+        passwordInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter' && !connectBtn.disabled) {
+                connect();
             }
         });
     </script>
@@ -2621,6 +3864,8 @@ module.exports = {
   CHANNELS_PORT: config.CHANNELS_PORT,
   ENCODERS: config.ENCODERS,
   CH4C_PORT: config.CH4C_PORT,
+  CH4C_SSL_PORT: config.CH4C_SSL_PORT,
+  SSL_HOSTNAMES: config.SSL_HOSTNAMES,
   DATA_DIR: config.DATA_DIR,
   FIND_VIDEO_RETRIES,
   FIND_VIDEO_WAIT,
@@ -2629,10 +3874,12 @@ module.exports = {
   FULL_SCREEN_WAIT,
   ENABLE_PAUSE_MONITOR,
   PAUSE_MONITOR_INTERVAL,
+  BROWSER_HEALTH_INTERVAL,
   CHANNELS_POST_URL,
   START_PAGE_HTML,
   INSTANT_PAGE_HTML,
   M3U_MANAGER_PAGE_HTML,
+  REMOTE_ACCESS_PAGE_HTML,
   CHROME_USERDATA_DIRECTORIES,
   CHROME_EXECUTABLE_DIRECTORIES
 };

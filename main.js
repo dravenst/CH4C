@@ -9,10 +9,14 @@ const { URL } = require('url');
 const fs = require('fs');
 const path = require('path');
 const net = require('net');
+const os = require('os');
 const { exec } = require('child_process');
+const https = require('https');
+const selfsigned = require('selfsigned');
 
 const {
   EncoderHealthMonitor,
+  BrowserHealthMonitor,
   BrowserRecoveryManager,
   StreamMonitor,
   validateEncoderConnection,
@@ -86,10 +90,10 @@ async function isPortInUseNetstat(port) {
         return;
       }
       
-      // Check if port is in LISTENING state
+      // Check if port is in LISTENING state (ignore ESTABLISHED outbound connections)
       const lines = stdout.split('\n');
       for (const line of lines) {
-        if (line.includes(`:${port}`) && (line.includes('LISTENING') || line.includes('ESTABLISHED'))) {
+        if (line.includes(`:${port}`) && line.includes('LISTENING')) {
           resolve(true); // Port is in use
           return;
         }
@@ -398,7 +402,7 @@ const createCleanupManager = () => {
       } catch (e) {
         logTS(`Error during cleanup for ${encoderUrl}:`, e);
       } finally {
-        await delay(2000); // Original delay
+        await delay(500); // Reduced from 2000ms for faster recovery
         closingStates.delete(encoderUrl); // Encoder is no longer in a "closing" state
         intentionalClose.delete(encoderUrl); // Clear the intentional close flag
 
@@ -410,8 +414,9 @@ const createCleanupManager = () => {
           // Clear the browser from the map first to ensure launchBrowser doesn't think it exists
           browsers.delete(encoderUrl);
 
-          // Wait a bit longer to ensure cleanup is complete
-          await delay(1000);
+          // Wait for Chrome processes to fully terminate after cleanup
+          // This is especially important if Chrome processes were force-killed
+          await delay(2000); // Increased to 2s to ensure Chrome processes fully terminate
 
           try {
             const repoolSuccess = await launchBrowser("about:blank", encoderConfig, true, false);
@@ -454,9 +459,13 @@ const createCleanupManager = () => {
       }
     },
     canStartBrowser: (encoderUrl) => !closingStates.get(encoderUrl) && !activeBrowsers.has(encoderUrl) && !recoveryInProgress.get(encoderUrl),
-    setBrowserActive: (encoderUrl) => { 
+    setBrowserActive: (encoderUrl) => {
       activeBrowsers.set(encoderUrl, true);
       logTS(`Browser set active for encoder ${encoderUrl}`);
+    },
+    setBrowserAvailable: (encoderUrl) => {
+      activeBrowsers.delete(encoderUrl);
+      logTS(`Browser set available (inactive) for encoder ${encoderUrl}`);
     },
     isRecoveryInProgress: (encoderUrl) => recoveryInProgress.get(encoderUrl),
     setRecoveryInProgress: (encoderUrl, value) => {
@@ -583,6 +592,68 @@ async function navigateSlingWithModalHandling(page, url, maxAttempts = 10, expec
 }
 
 /**
+ * Navigate to Peacock stream like a human would - start from homepage, then go to streaming URL
+ * @param {Page} page - Puppeteer page object
+ * @param {string} streamUrl - The final streaming URL to navigate to
+ * @param {string} encoderUrl - Encoder URL for logging purposes
+ * @returns {Promise<boolean>} - True if successfully navigated to stream
+ */
+async function navigatePeacockLikeHuman(page, streamUrl, encoderUrl = 'unknown') {
+  logTS(`[${encoderUrl}] Starting Peacock navigation (direct to stream URL)`);
+
+  try {
+    // Navigate directly to the stream URL (manual paste behavior)
+    // Use 'load' instead of 'networkidle2' to match browser behavior more closely
+    logTS(`[${encoderUrl}] Navigating to streaming URL: ${streamUrl}`);
+
+    await page.goto(streamUrl, {
+      waitUntil: 'load',
+      timeout: 30000
+    });
+
+    // Check if we were redirected to profile selection
+    const currentUrl = page.url();
+    if (currentUrl.includes('/watch/profiles')) {
+      logTS(`[${encoderUrl}] Redirected to profile selection page, selecting default profile...`);
+
+      // Simulate pressing Tab 3 times to focus on the first profile, then Enter to select it
+      await delay(1000); // Wait a moment for the page to fully render
+      await page.keyboard.press('Tab');
+      await delay(300);
+      await page.keyboard.press('Tab');
+      await delay(300);
+      await page.keyboard.press('Tab');
+      await delay(300);
+      await page.keyboard.press('Enter');
+
+      logTS(`[${encoderUrl}] Sent profile selection keystrokes (3x Tab + Enter)`);
+
+      // Wait for navigation to complete after profile selection
+      await delay(2000);
+
+      // Try to navigate back to the stream URL after profile selection
+      logTS(`[${encoderUrl}] Profile selected, navigating to stream URL again: ${streamUrl}`);
+      await page.goto(streamUrl, {
+        waitUntil: 'load',
+        timeout: 30000
+      });
+    }
+
+    logTS(`[${encoderUrl}] Successfully navigated to Peacock stream`);
+    logTS(`[${encoderUrl}] Final URL: ${page.url()}`);
+
+    // Add slight delay to let page settle
+    await delay(1000);
+
+    return true;
+
+  } catch (error) {
+    logTS(`[${encoderUrl}] Peacock navigation error: ${error.message}`);
+    return false;
+  }
+}
+
+/**
  * Navigate to Sling channel with fallback strategy
  * Strategy: Try direct navigation first (fast). If that fails, go to dashboard then retry direct navigation.
  * @param {Page} page - Puppeteer page object
@@ -700,9 +771,20 @@ async function setupBrowserAudio(page, encoderConfig, targetUrl = null) {
     let tryCount = 0;
     const maxTries = 2; // Try 10 attempts, then detour to root sling.com, then 10 more attempts
 
-    while (!videoFound && tryCount < maxTries) {
-      tryCount++;
-      logTS(`Starting attempt set ${tryCount}/${maxTries} for video detection`);
+    // Set up periodic activity updates during Sling video detection to prevent false "inactive" warnings
+    const activityUpdateInterval = setInterval(() => {
+      if (global.streamMonitor && encoderConfig && encoderConfig.url) {
+        const stream = global.streamMonitor.activeStreams.get(encoderConfig.url);
+        if (stream) {
+          global.streamMonitor.updateActivity(encoderConfig.url);
+        }
+      }
+    }, 10000); // Update every 10 seconds during Sling video detection
+
+    try {
+      while (!videoFound && tryCount < maxTries) {
+        tryCount++;
+        logTS(`Starting attempt set ${tryCount}/${maxTries} for video detection`);
 
       for (let attempt = 1; attempt <= maxVideoWaitAttempts && !videoFound; attempt++) {
         // Check if we're on the wrong page (modal or dashboard) before waiting for video
@@ -776,13 +858,30 @@ async function setupBrowserAudio(page, encoderConfig, targetUrl = null) {
         // Exhausted all tries
         throw new Error(`Failed to find video after ${maxTries * maxVideoWaitAttempts} total attempts across ${maxTries} attempt sets`);
       }
+      }
+    } finally {
+      clearInterval(activityUpdateInterval);
     }
   } else {
     // Non-Sling sites use original logic
-    await page.waitForFunction(() => {
-      const videos = window.checkForVideos();
-      return videos.length > 0 && videos.some(v => v.readyState >= 2);
-    }, { timeout: 60000 });
+    // Set up periodic activity updates during the long video wait to prevent false "inactive" warnings
+    const activityUpdateInterval = setInterval(() => {
+      if (global.streamMonitor && encoderConfig && encoderConfig.url) {
+        const stream = global.streamMonitor.activeStreams.get(encoderConfig.url);
+        if (stream) {
+          global.streamMonitor.updateActivity(encoderConfig.url);
+        }
+      }
+    }, 10000); // Update every 10 seconds during video wait
+
+    try {
+      await page.waitForFunction(() => {
+        const videos = window.checkForVideos();
+        return videos.length > 0 && videos.some(v => v.readyState >= 2);
+      }, { timeout: 60000 });
+    } finally {
+      clearInterval(activityUpdateInterval);
+    }
   }
  
   let videoLength = await page.evaluate(() => window.checkForVideos().length);
@@ -1092,39 +1191,47 @@ async function launchBrowser(targetUrl, encoderConfig, startMinimized, applyStar
     });
 
     // Block requests to local network addresses to prevent permission popup
-    await page.setRequestInterception(true);
+    // Skip request interception for Peacock to avoid bot detection
+    const skipRequestInterception = targetUrl && targetUrl.includes("peacocktv.com");
 
-    page.on('request', (request) => {
-      try {
-        // Skip if request is already handled
-        if (request.isInterceptResolutionHandled()) {
-          return;
+    if (!skipRequestInterception) {
+      await page.setRequestInterception(true);
+
+      page.on('request', (request) => {
+        try {
+          // Skip if request is already handled
+          if (request.isInterceptResolutionHandled()) {
+            return;
+          }
+
+          const url = request.url();
+
+          // Check if URL is trying to access local network
+          const isLocalNetwork =
+            // Private IP ranges (192.168.x.x, 10.x.x.x, 172.16-31.x.x)
+            /^https?:\/\/(192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})/.test(url) ||
+            // Localhost
+            /^https?:\/\/(localhost|127\.0\.0\.1)/.test(url) ||
+            // .local domains
+            /^https?:\/\/[^\/]+\.local/.test(url) ||
+            // Dish set-top box communication (dishboxes.com)
+            /dishboxes\.com/.test(url);
+
+          if (isLocalNetwork) {
+            // logTS(`Blocked local network request: ${url}`); // Suppressed to reduce log noise
+            request.abort('blockedbyclient');
+          } else {
+            request.continue();
+          }
+        } catch (error) {
+          // Request might already be handled or page might be closing
+          // Don't log errors as this is expected during navigation/cleanup
         }
-
-        const url = request.url();
-
-        // Check if URL is trying to access local network
-        const isLocalNetwork =
-          // Private IP ranges (192.168.x.x, 10.x.x.x, 172.16-31.x.x)
-          /^https?:\/\/(192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})/.test(url) ||
-          // Localhost
-          /^https?:\/\/(localhost|127\.0\.0\.1)/.test(url) ||
-          // .local domains
-          /^https?:\/\/[^\/]+\.local/.test(url) ||
-          // Dish set-top box communication (dishboxes.com)
-          /dishboxes\.com/.test(url);
-
-        if (isLocalNetwork) {
-          // logTS(`Blocked local network request: ${url}`); // Suppressed to reduce log noise
-          request.abort('blockedbyclient');
-        } else {
-          request.continue();
-        }
-      } catch (error) {
-        // Request might already be handled or page might be closing
-        // Don't log errors as this is expected during navigation/cleanup
-      }
-    });
+      });
+      logTS(`[${encoderConfig.url}] Request interception enabled for local network blocking`);
+    } else {
+      logTS(`[${encoderConfig.url}] Request interception skipped for Peacock to reduce bot detection signals`);
+    }
 
     // Hide the Chrome warning banner about unsupported flags
     await page.evaluateOnNewDocument(() => {
@@ -1479,12 +1586,23 @@ async function fullScreenVideoSling(page) {
 async function fullScreenVideoPeacock(page) {
   logTS("URL contains peacocktv.com, going fullscreen");
 
-  // look for the mute button no the first screen
-  await page.waitForSelector('[data-testid="playback-volume-muted-icon"]', { visible: true });
-  await delay(200);
-  await page.keyboard.press('m'); // Press 'm' to unmute
+  // Add minimal mouse movement to simulate human presence
+  logTS("Adding mouse movement to simulate human presence");
+  await page.mouse.move(500, 400);
+  await delay(1000 + Math.random() * 1000); // 1-2 second delay (human observation time)
 
-  logTS("finished unmuting volume");
+  // Move mouse again to create more behavioral signals
+  await page.mouse.move(600 + Math.random() * 200, 450 + Math.random() * 100);
+  await delay(500 + Math.random() * 500); // 0.5-1 second delay
+
+  // Use standard fullscreen approach - browser window is already fullscreen via CDP
+  // Just need to make the video player fullscreen within the page
+  await delay(1000); // Wait for player to load
+
+  // Press 'f' key to toggle fullscreen on the video player
+  await page.keyboard.press('f');
+
+  logTS("finished fullscreen setup");
 }
 
 async function fullScreenVideoSpectrum(page) {
@@ -1752,8 +1870,9 @@ function getExecutablePath() {
   }
 }
 
-function buildRecordingJson(name, duration, encoderChannel) {
-  const startTime = Math.round(Date.now() / 1000)
+function buildRecordingJson(name, duration, encoderChannel, episodeTitle, summary, seasonNumber, episodeNumber) {
+  const startTime = Math.round(Date.now() / 1000);
+
   const data = {
     "Name": name,
     "Time": startTime,
@@ -1764,17 +1883,32 @@ function buildRecordingJson(name, duration, encoderChannel) {
       "Channel": encoderChannel,  // Use the specific encoder's channel
       "Time": startTime,
       "Duration": duration * 60,
-      "Title": `Title: ${name}`,
-      "EpisodeTitle": name,
-      "Summary": `Manual recording: ${name}`,
+      "Title": name,
+      "EpisodeTitle": episodeTitle || name,
+      "Summary": summary || `Manual recording: ${name}`,
+      "Image": "https://tmsimg.fancybits.co/assets/p9467679_st_h6_aa.jpg",
       "SeriesID": "MANUAL",
-      "ProgramID": `MAN${startTime}`,
     }
   }
+
+  // Add SeasonNumber and EpisodeNumber only if provided (must be integers)
+  if (seasonNumber && seasonNumber.trim() !== '') {
+    const seasonNum = parseInt(seasonNumber.trim());
+    if (!isNaN(seasonNum) && seasonNum > 0) {
+      data.Airing.SeasonNumber = seasonNum;
+    }
+  }
+  if (episodeNumber && episodeNumber.trim() !== '') {
+    const episodeNum = parseInt(episodeNumber.trim());
+    if (!isNaN(episodeNum) && episodeNum > 0) {
+      data.Airing.EpisodeNumber = episodeNum;
+    }
+  }
+
   return JSON.stringify(data)
 }
 
-async function startRecording(name, duration, encoderChannel) {
+async function startRecording(name, duration, encoderChannel, episodeTitle, summary, seasonNumber, episodeNumber) {
   let response
   try {
     response = await fetch(Constants.CHANNELS_POST_URL, {
@@ -1782,7 +1916,7 @@ async function startRecording(name, duration, encoderChannel) {
       headers: {
         'Content-type': 'application/json',
       },
-      body: buildRecordingJson(name, duration, encoderChannel),
+      body: buildRecordingJson(name, duration, encoderChannel, episodeTitle, summary, seasonNumber, episodeNumber),
     })
   } catch (error) {
     console.log('Unable to schedule recording', error)
@@ -1829,6 +1963,145 @@ async function fetchWithRetry(url, options = {}, maxRetries = 3) {
   }
 }
 
+/**
+ * Get all local network IP addresses
+ */
+function getLocalNetworkIPs() {
+  const ips = [];
+  const interfaces = os.networkInterfaces();
+
+  for (const name of Object.keys(interfaces)) {
+    for (const iface of interfaces[name]) {
+      // Skip internal (loopback) and non-IPv4 addresses
+      if (!iface.internal && iface.family === 'IPv4') {
+        ips.push(iface.address);
+      }
+    }
+  }
+
+  return ips;
+}
+
+/**
+ * Generate self-signed SSL certificate for HTTPS support
+ */
+async function generateSelfSignedCert(certPath, keyPath, additionalHostnames = []) {
+  try {
+    logTS('Generating self-signed SSL certificate...');
+
+    // Build list of hostnames/IPs for Subject Alternative Names
+    const altNames = [
+      { type: 2, value: 'localhost' },  // DNS name
+      { type: 7, ip: '127.0.0.1' },     // Loopback IPv4
+      { type: 7, ip: '0.0.0.0' }        // All interfaces
+    ];
+
+    // Log default entries
+    logTS('  Including default hostname: localhost');
+    logTS('  Including default IP: 127.0.0.1');
+    logTS('  Including default IP: 0.0.0.0');
+
+    // Add auto-detected local network IPs
+    const localIPs = getLocalNetworkIPs();
+    for (const ip of localIPs) {
+      altNames.push({ type: 7, ip: ip });
+      logTS(`  Including auto-detected IP: ${ip}`);
+    }
+
+    // Add user-specified hostnames/IPs
+    for (const hostname of additionalHostnames) {
+      // Check if it's an IP address or hostname
+      const isIP = /^(\d{1,3}\.){3}\d{1,3}$/.test(hostname);
+      if (isIP) {
+        altNames.push({ type: 7, ip: hostname });
+        logTS(`  Including additional IP: ${hostname}`);
+      } else {
+        altNames.push({ type: 2, value: hostname });
+        logTS(`  Including additional hostname: ${hostname}`);
+      }
+    }
+
+    // Generate self-signed certificate (valid for 10 years)
+    const attrs = [
+      { name: 'commonName', value: 'CH4C Local Server' },
+      { name: 'countryName', value: 'US' },
+      { name: 'organizationName', value: 'CH4C' }
+    ];
+
+    const pems = await selfsigned.generate(attrs, {
+      keySize: 2048,
+      days: 3650, // 10 years
+      algorithm: 'sha256',
+      extensions: [
+        {
+          name: 'basicConstraints',
+          cA: true
+        },
+        {
+          name: 'keyUsage',
+          keyCertSign: true,
+          digitalSignature: true,
+          nonRepudiation: true,
+          keyEncipherment: true,
+          dataEncipherment: true
+        },
+        {
+          name: 'subjectAltName',
+          altNames: altNames
+        }
+      ]
+    });
+
+    // Write files
+    if (!pems.private || !pems.cert) {
+      logTS('ERROR: Failed to generate SSL certificate: selfsigned library returned invalid data');
+      return false;
+    }
+
+    fs.writeFileSync(keyPath, pems.private);
+    fs.writeFileSync(certPath, pems.cert);
+
+    logTS(`✓ SSL certificate generated successfully`);
+    logTS('');
+
+    return true;
+  } catch (error) {
+    logTS(`ERROR: Failed to generate SSL certificate: ${error.message}`);
+    return false;
+  }
+}
+
+/**
+ * Check for and load SSL certificates if they exist
+ */
+async function loadSSLCertificates(dataDir, additionalHostnames = []) {
+  const certPath = path.join(dataDir, 'cert.pem');
+  const keyPath = path.join(dataDir, 'key.pem');
+
+  // Check if both files exist
+  if (!fs.existsSync(certPath) || !fs.existsSync(keyPath)) {
+    // Auto-generate if missing
+    logTS('SSL certificates not found, generating...');
+    if (!fs.existsSync(dataDir)) {
+      fs.mkdirSync(dataDir, { recursive: true });
+    }
+    const success = await generateSelfSignedCert(certPath, keyPath, additionalHostnames);
+    if (!success) {
+      return null;
+    }
+  }
+
+  // Load certificates
+  try {
+    const cert = fs.readFileSync(certPath);
+    const key = fs.readFileSync(keyPath);
+    return { cert, key, certPath, keyPath };
+  } catch (error) {
+    logTS(`Warning: Could not load SSL certificates: ${error.message}`);
+    return null;
+  }
+}
+
 // Modified main() function with enhanced error handling
 async function main() {
   // Check if Constants was properly initialized (will be empty if --help or missing args)
@@ -1840,6 +2113,9 @@ async function main() {
   const app = express();
   app.use(express.json());
   app.use(express.urlencoded({ extended: false }));
+
+  // Serve noVNC static files for remote access feature
+  app.use('/novnc', express.static(path.join(__dirname, 'novnc')));
 
   // Check for admin mode FIRST, before any other initialization
   if (isRunningAsAdmin()) {
@@ -1860,12 +2136,14 @@ async function main() {
 
   // Initialize error handling systems
   const healthMonitor = new EncoderHealthMonitor();
+  const browserHealthMonitor = new BrowserHealthMonitor(Constants.BROWSER_HEALTH_INTERVAL);
   const recoveryManager = new BrowserRecoveryManager();
   const streamMonitor = new StreamMonitor();
 
   // Store in app locals for access in routes
   app.locals.config = Constants;
   app.locals.healthMonitor = healthMonitor;
+  app.locals.browserHealthMonitor = browserHealthMonitor;
   app.locals.recoveryManager = recoveryManager;
   app.locals.streamMonitor = streamMonitor;
 
@@ -2023,6 +2301,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
 
   global.cleanupManager = cleanupManager;
   global.recoveryManager = recoveryManager;
+  global.browserHealthMonitor = browserHealthMonitor;
   global.setupBrowserCrashHandlers = setupBrowserCrashHandlers;
   global.streamMonitor = streamMonitor;
   global.Constants = Constants;
@@ -2034,7 +2313,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
   // Initialize browser pool with validation
   const initResults = await initializeBrowserPoolWithValidation(
   Constants,        // Add Constants parameter
-  healthMonitor, 
+  healthMonitor,
   recoveryManager,
   launchBrowser,    // Add launchBrowser function parameter
   browsers          // Add browsers Map parameter
@@ -2046,6 +2325,14 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
     logTS('FATAL: No encoders could be initialized. Exiting.');
     process.exit(1);
   }
+
+  // Start browser health monitoring after browsers are initialized
+  await browserHealthMonitor.startMonitoring(browsers, {
+    recoveryManager: recoveryManager,
+    launchBrowserFunc: launchBrowser,
+    Constants: Constants,
+    encoders: Constants.ENCODERS
+  });
 
   // Initialize M3U Manager
   const { StreamingM3UManager } = require('./streaming-m3u-manager');
@@ -2092,7 +2379,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
             stationId: null,
             duration: 60, // Default 60 minutes placeholder
             category: 'Other',
-            logo: '',
+            logo: 'https://tmsimg.fancybits.co/assets/s73245_ll_h15_ac.png?w=360&h=270',
             callSign: encoderCallSign
           };
 
@@ -2144,46 +2431,94 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
     
     const cleanupManager = req.app.locals.cleanupManager;
     const healthMonitor = req.app.locals.healthMonitor;
+    const browserHealthMonitor = req.app.locals.browserHealthMonitor;
     const streamMonitor = req.app.locals.streamMonitor;
     const recoveryManager = req.app.locals.recoveryManager;
 
-    // Get the first available AND healthy encoder
-    const availableEncoder = Constants.ENCODERS.find(encoder =>
+    // Get the first available AND healthy encoder with healthy browser
+    let availableEncoder = Constants.ENCODERS.find(encoder =>
       browsers.has(encoder.url) &&
       cleanupManager.canStartBrowser(encoder.url) &&
-      healthMonitor.isEncoderHealthy(encoder.url) // Added health check
+      healthMonitor.isEncoderHealthy(encoder.url) &&
+      browserHealthMonitor.isBrowserHealthy(encoder.url) // Added browser health check
     );
 
     if (!availableEncoder) {
-      // Try to find any encoder that might be recoverable
-      const recoverableEncoder = Constants.ENCODERS.find(encoder =>
-        !healthMonitor.isEncoderHealthy(encoder.url) &&
-        cleanupManager.canStartBrowser(encoder.url)
+      // Check if any encoders are currently recovering
+      const recoveringEncoders = Constants.ENCODERS.filter(encoder =>
+        cleanupManager.isRecoveryInProgress(encoder.url)
       );
 
-      if (recoverableEncoder) {
-        logTS(`Attempting to recover encoder ${recoverableEncoder.url} for use`);
-        const recovered = await recoveryManager.attemptBrowserRecovery(
-          recoverableEncoder.url,
-          recoverableEncoder,
-          browsers,
-          launchBrowser,
-          Constants
-        );
-        
-        if (recovered) {
-          logTS(`Successfully recovered encoder ${recoverableEncoder.url}`);
-          // Retry with recovered encoder
-          return app._router.handle(req, res);
+      if (recoveringEncoders.length > 0) {
+        logTS(`Found ${recoveringEncoders.length} encoder(s) recovering: ${recoveringEncoders.map(e => e.url).join(', ')}`);
+        logTS('Waiting up to 15 seconds for recovery to complete...');
+
+        // Wait and check periodically for encoder availability
+        const maxWaitTime = 15000; // 15 seconds
+        const checkInterval = 500; // Check every 500ms
+        const startTime = Date.now();
+
+        while (Date.now() - startTime < maxWaitTime) {
+          await delay(checkInterval);
+
+          // Check if any encoder became available
+          availableEncoder = Constants.ENCODERS.find(encoder =>
+            browsers.has(encoder.url) &&
+            cleanupManager.canStartBrowser(encoder.url) &&
+            healthMonitor.isEncoderHealthy(encoder.url) &&
+            browserHealthMonitor.isBrowserHealthy(encoder.url)
+          );
+
+          if (availableEncoder) {
+            const waitedMs = Date.now() - startTime;
+            logTS(`Encoder ${availableEncoder.url} became available after ${waitedMs}ms, proceeding with stream`);
+            break; // Exit the wait loop and continue with the request
+          }
+        }
+
+        if (!availableEncoder) {
+          logTS('Recovery wait timeout - no encoders became available within 15 seconds');
         }
       }
 
-      logTS('No available or recoverable encoders, rejecting request');
-      res.status(503).send('All encoders are currently unavailable');
-      return;
+      // If we found an encoder during the wait, skip the rest of this block
+      if (!availableEncoder) {
+        // Try to find any encoder that might be recoverable (unhealthy but not in recovery)
+        const recoverableEncoder = Constants.ENCODERS.find(encoder =>
+          !healthMonitor.isEncoderHealthy(encoder.url) &&
+          cleanupManager.canStartBrowser(encoder.url)
+        );
+
+        if (recoverableEncoder) {
+          logTS(`Attempting to recover encoder ${recoverableEncoder.url} for use`);
+          const recovered = await recoveryManager.attemptBrowserRecovery(
+            recoverableEncoder.url,
+            recoverableEncoder,
+            browsers,
+            launchBrowser,
+            Constants
+          );
+
+          if (recovered) {
+            logTS(`Successfully recovered encoder ${recoverableEncoder.url}`);
+            // Set as available and continue
+            availableEncoder = recoverableEncoder;
+          }
+        }
+      }
+
+      // Final check - if still no encoder available, reject
+      if (!availableEncoder) {
+        logTS('No available or recoverable encoders, rejecting request');
+        res.status(503).send('All encoders are currently unavailable. Please try again in a moment.');
+        return;
+      }
     }
 
     targetUrl = getFullUrl(req);
+    logTS(`[DEBUG] /stream endpoint - req.query.url: ${req.query.url}`);
+    logTS(`[DEBUG] /stream endpoint - getFullUrl result: ${targetUrl}`);
+
     if (!targetUrl) {
       if (!res.headersSent) {
         res.status(400).send('must specify a target URL');
@@ -2199,14 +2534,26 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
     res.on('close', async err => {
       logTS('response stream closed for', availableEncoder.url);
       streamMonitor.stopMonitoring(availableEncoder.url);
-      await cleanupManager.cleanup(availableEncoder.url, res);
+      try {
+        await cleanupManager.cleanup(availableEncoder.url, res);
+      } catch (cleanupError) {
+        logTS(`Cleanup error on stream close (non-fatal): ${cleanupError.message}`);
+        logTS(`Cleanup error stack: ${cleanupError.stack}`);
+      }
+    }).on('error', (handlerError) => {
+      // Catch any errors in the close handler itself to prevent uncaught promise rejections
+      logTS(`Error in stream close handler (non-fatal): ${handlerError.message}`);
     });
 
     res.on('error', async err => {
       logTS('response stream error for', availableEncoder.url, err);
       streamMonitor.recordError(availableEncoder.url);
       streamMonitor.stopMonitoring(availableEncoder.url);
-      await cleanupManager.cleanup(availableEncoder.url, res);
+      try {
+        await cleanupManager.cleanup(availableEncoder.url, res);
+      } catch (cleanupError) {
+        logTS(`Cleanup error on stream error (non-fatal): ${cleanupError.message}`);
+      }
     });
 
     try {
@@ -2227,15 +2574,20 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
           throw new Error('Failed to get browser page');
         }
 
-        logTS(`[${availableEncoder.url}] Bringing page to front`);
-        await page.bringToFront();
-
-        // Set fullscreen with error handling
+        // Set browser window fullscreen with error handling
+        // First restore from minimized, then set to fullscreen
         try {
           const session = await page.createCDPSession();
           const {windowId} = await session.send('Browser.getWindowForTarget');
+
+          // First restore to normal state (from minimized)
+          await session.send('Browser.setWindowBounds', {windowId, bounds: {windowState: 'normal'}});
+          await delay(100); // Brief delay to let window restore
+
+          // Then set to fullscreen
           await session.send('Browser.setWindowBounds', {windowId, bounds: {windowState: 'fullscreen'}});
           await session.detach();
+          logTS(`[${availableEncoder.url}] Browser window restored and set to fullscreen via CDP`);
         } catch (cdpError) {
           logTS(`CDP fullscreen error (non-fatal): ${cdpError.message}`);
         }
@@ -2261,6 +2613,22 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
           } catch (slingError) {
             logTS(`[${availableEncoder.url}] Sling navigation error: ${slingError.message}`);
             throw slingError;
+          }
+        } else if (targetUrl.includes("peacocktv.com")) {
+          logTS(`[${availableEncoder.url}] Peacock URL detected - using bot mitigation navigation flow`);
+
+          try {
+            // Use the navigation sequence with encoder context for logging
+            navSuccess = await navigatePeacockLikeHuman(page, targetUrl, availableEncoder.url);
+
+            if (!navSuccess) {
+              throw new Error("Failed to navigate to Peacock stream using navigation flow");
+            }
+
+            logTS(`[${availableEncoder.url}] Successfully navigated to Peacock stream: ${targetUrl}`);
+          } catch (peacockError) {
+            logTS(`[${availableEncoder.url}] Peacock navigation error: ${peacockError.message}`);
+            throw peacockError;
           }
         } else {
           // Non-Sling navigation (existing logic)
@@ -2314,7 +2682,11 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
             const isRealConsumer = req.headers['user-agent'] && !req.headers['user-agent'].includes('node-fetch');
             if (isRealConsumer) {
               // Start monitoring now that encoder stream is established
-              streamMonitor.startMonitoring(availableEncoder.url);
+              streamMonitor.startMonitoring(availableEncoder.url, targetUrl);
+
+              // Update activity immediately when encoder connection is established
+              // This prevents false "inactive" warnings during setupBrowserAudio which can take up to 60s
+              streamMonitor.updateActivity(availableEncoder.url);
 
               // Monitor stream for activity
               stream.on('data', () => {
@@ -2356,18 +2728,24 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
     } catch (error) {
       logTS(`Stream setup failed for ${availableEncoder.url}: ${error.message}`);
       streamMonitor.stopMonitoring(availableEncoder.url);
-      
+
       if (!res.headersSent) {
         res.status(500).send(`Streaming error: ${error.message}`);
       }
-      
-      await cleanupManager.cleanup(availableEncoder.url, res);
+
+      try {
+        await cleanupManager.cleanup(availableEncoder.url, res);
+      } catch (cleanupError) {
+        logTS(`Cleanup error (non-fatal): ${cleanupError.message}`);
+        // Don't crash the app if cleanup fails - log and continue
+      }
     }
   });
 
   // Add health status endpoint
   app.get('/health', (req, res) => {
     const healthMonitor = req.app.locals.healthMonitor;
+    const browserHealthMonitor = req.app.locals.browserHealthMonitor;
     const cleanupManager = req.app.locals.cleanupManager;
     const streamMonitor = req.app.locals.streamMonitor;
 
@@ -2376,10 +2754,14 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
         url: encoder.url,
         channel: encoder.channel,
         audioDevice: encoder.audioDevice,
+        widthPos: encoder.width || 0,
+        heightPos: encoder.height || 0,
         isHealthy: healthMonitor.isEncoderHealthy(encoder.url),
+        isBrowserHealthy: browserHealthMonitor.isBrowserHealthy(encoder.url),
         hasBrowser: browsers.has(encoder.url),
         isAvailable: cleanupManager.canStartBrowser(encoder.url),
-        healthStatus: healthMonitor.healthStatus.get(encoder.url)
+        healthStatus: healthMonitor.healthStatus.get(encoder.url),
+        browserHealthStatus: browserHealthMonitor.getHealthStatus(encoder.url)
       })),
       activeStreams: Array.from(streamMonitor.activeStreams.entries()).map(([url, data]) => ({
         url,
@@ -2400,12 +2782,34 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
 
   // GET /instant - Serve the instant recording form
   app.get('/instant', (req, res) => {
-    res.send(Constants.INSTANT_PAGE_HTML.replaceAll('<<host>>', req.get('host')));
+    const cleanupManager = req.app.locals.cleanupManager;
+    const healthMonitor = req.app.locals.healthMonitor;
+    const browserHealthMonitor = req.app.locals.browserHealthMonitor;
+
+    // Get available encoders
+    const availableEncoders = Constants.ENCODERS.filter(encoder =>
+      browsers.has(encoder.url) &&
+      cleanupManager.canStartBrowser(encoder.url) &&
+      healthMonitor.isEncoderHealthy(encoder.url) &&
+      browserHealthMonitor.isBrowserHealthy(encoder.url)
+    );
+
+    // Generate encoder options HTML
+    let encoderOptions = '';
+    availableEncoders.forEach(encoder => {
+      encoderOptions += `<option value="${encoder.url}">Channel ${encoder.channel} - ${encoder.url}</option>\n`;
+    });
+
+    const html = Constants.INSTANT_PAGE_HTML
+      .replaceAll('<<host>>', req.get('host'))
+      .replaceAll('<<encoder_options>>', encoderOptions);
+
+    res.send(html);
   });
 
   // POST /instant - Handle instant recording or tuning
   app.post('/instant', async (req, res) => {
-    const { recording_name, recording_url, recording_duration, button_record, button_tune } = req.body;
+    const { recording_name, recording_url, recording_duration, button_record, button_tune, episode_title, recording_summary, season_number, episode_number, selected_encoder } = req.body;
 
     // Validate URL
     if (!recording_url) {
@@ -2423,17 +2827,69 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
 
     const cleanupManager = req.app.locals.cleanupManager;
     const healthMonitor = req.app.locals.healthMonitor;
+    const browserHealthMonitor = req.app.locals.browserHealthMonitor;
 
-    // Get the first available AND healthy encoder
-    const availableEncoder = Constants.ENCODERS.find(encoder =>
-      browsers.has(encoder.url) &&
-      cleanupManager.canStartBrowser(encoder.url) &&
-      healthMonitor.isEncoderHealthy(encoder.url)
-    );
+    // If user selected a specific encoder, use it; otherwise auto-select
+    let availableEncoder;
+    if (selected_encoder) {
+      // User selected a specific encoder - validate it's available
+      availableEncoder = Constants.ENCODERS.find(encoder =>
+        encoder.url === selected_encoder &&
+        browsers.has(encoder.url) &&
+        cleanupManager.canStartBrowser(encoder.url) &&
+        healthMonitor.isEncoderHealthy(encoder.url) &&
+        browserHealthMonitor.isBrowserHealthy(encoder.url)
+      );
+
+      if (!availableEncoder) {
+        res.status(503).send(`Selected encoder is no longer available. Please refresh and try again.`);
+        return;
+      }
+    } else {
+      // Auto-select the first available AND healthy encoder with healthy browser
+      availableEncoder = Constants.ENCODERS.find(encoder =>
+        browsers.has(encoder.url) &&
+        cleanupManager.canStartBrowser(encoder.url) &&
+        healthMonitor.isEncoderHealthy(encoder.url) &&
+        browserHealthMonitor.isBrowserHealthy(encoder.url)
+      );
+    }
 
     if (!availableEncoder) {
-      res.status(503).send('No encoders are currently available. Please try again later.');
-      return;
+      // Check if any encoders are recovering and wait briefly
+      const recoveringEncoders = Constants.ENCODERS.filter(encoder =>
+        cleanupManager.isRecoveryInProgress(encoder.url)
+      );
+
+      if (recoveringEncoders.length > 0) {
+        logTS(`Instant: Found ${recoveringEncoders.length} encoder(s) recovering, waiting up to 15 seconds...`);
+
+        const maxWaitTime = 15000;
+        const checkInterval = 500;
+        const startTime = Date.now();
+
+        while (Date.now() - startTime < maxWaitTime) {
+          await delay(checkInterval);
+
+          availableEncoder = Constants.ENCODERS.find(encoder =>
+            browsers.has(encoder.url) &&
+            cleanupManager.canStartBrowser(encoder.url) &&
+            healthMonitor.isEncoderHealthy(encoder.url) &&
+            browserHealthMonitor.isBrowserHealthy(encoder.url)
+          );
+
+          if (availableEncoder) {
+            const waitedMs = Date.now() - startTime;
+            logTS(`Instant: Encoder became available after ${waitedMs}ms`);
+            break;
+          }
+        }
+      }
+
+      if (!availableEncoder) {
+        res.status(503).send('No encoders are currently available. Please try again later.');
+        return;
+      }
     }
 
     if (button_record) {
@@ -2449,12 +2905,14 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
       logTS(`Starting instant recording: ${recordingName} for ${duration} minutes`);
 
       // Start the recording in Channels DVR
-      const recordingStarted = await startRecording(recordingName, duration, availableEncoder.channel);
+      const recordingStarted = await startRecording(recordingName, duration, availableEncoder.channel, episode_title, recording_summary, season_number, episode_number);
 
       if (recordingStarted) {
-        // Start monitoring this stream
+        // Start monitoring for display purposes, but skip health checks since Channels DVR
+        // handles the stream directly and our monitoring would show false inactivity
         const streamMonitor = req.app.locals.streamMonitor;
-        streamMonitor.startMonitoring(availableEncoder.url);
+        streamMonitor.startMonitoring(availableEncoder.url, targetUrl, { skipHealthCheck: true });
+        logTS(`Started stream monitoring for instant recording (health checks disabled)`);
 
         // Set a timer to stop the stream after the recording duration
         // Add 15 second buffer to ensure recording completes before stream stops
@@ -2463,7 +2921,11 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
         logTS(`Setting timer to stop stream after ${duration} minutes (+ ${bufferSeconds}s buffer)`);
         setTimeout(async () => {
           logTS(`Recording duration expired for ${recordingName}, stopping stream on ${availableEncoder.channel}...`);
-          await cleanupManager.cleanup(availableEncoder.url, null);
+          try {
+            await cleanupManager.cleanup(availableEncoder.url, null);
+          } catch (cleanupError) {
+            logTS(`Cleanup error on recording timeout (non-fatal): ${cleanupError.message}`);
+          }
         }, totalDurationMs);
 
         // Show success page instead of redirecting to stream
@@ -2499,7 +2961,10 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
         `);
 
         // Start the stream in the background (don't wait for response)
-        fetch(`http://localhost:${Constants.CH4C_PORT}/stream?url=${encodeURIComponent(targetUrl)}`)
+        const streamUrl = `http://localhost:${Constants.CH4C_PORT}/stream?url=${encodeURIComponent(targetUrl)}`;
+        logTS(`[DEBUG] Initiating stream fetch to: ${streamUrl}`);
+        logTS(`[DEBUG] Target URL being streamed: ${targetUrl}`);
+        fetch(streamUrl)
           .catch(err => logTS(`Stream fetch error (expected): ${err.message}`));
       } else {
         res.status(500).send('Failed to start recording in Channels DVR');
@@ -2510,7 +2975,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
 
       // Start monitoring this stream
       const streamMonitor = req.app.locals.streamMonitor;
-      streamMonitor.startMonitoring(availableEncoder.url);
+      streamMonitor.startMonitoring(availableEncoder.url, targetUrl);
 
       // If duration is provided and valid, use it for auto-stop
       if (!isNaN(duration) && duration > 0) {
@@ -2519,7 +2984,11 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
         // Set a timer to stop the stream after the specified duration
         setTimeout(async () => {
           logTS(`Duration expired for tuned stream on ${availableEncoder.channel}, stopping...`);
-          await cleanupManager.cleanup(availableEncoder.url, null);
+          try {
+            await cleanupManager.cleanup(availableEncoder.url, null);
+          } catch (cleanupError) {
+            logTS(`Cleanup error on tune timeout (non-fatal): ${cleanupError.message}`);
+          }
         }, duration * 60 * 1000);
 
         // Show success page with duration
@@ -2763,22 +3232,224 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
     `);
   });
 
-  const server = app.listen(Constants.CH4C_PORT, () => {
-    logTS('CH4C listening on port', Constants.CH4C_PORT);
-    logTS(`See status at http://localhost:${Constants.CH4C_PORT}/`);
-    logTS(`Instant recording/tuning available at http://localhost:${Constants.CH4C_PORT}/instant`);
+  // VNC Remote Access page
+  app.get('/remote-access', (req, res) => {
+    res.send(Constants.REMOTE_ACCESS_PAGE_HTML);
   });
 
-  // Handle server startup errors
+  // Serve SSL certificate for download
+  app.get('/data/cert.pem', (req, res) => {
+    const certPath = path.join(Constants.DATA_DIR, 'cert.pem');
+    if (fs.existsSync(certPath)) {
+      res.download(certPath, 'ch4c-certificate.pem');
+    } else {
+      res.status(404).send('Certificate not found. HTTPS must be enabled with --ch4c-ssl-port parameter.');
+    }
+  });
+
+  // Load SSL certificates first if HTTPS is enabled (before starting servers)
+  let httpsServer = null;
+  let sslCerts = null;
+  if (Constants.CH4C_SSL_PORT) {
+    const dataDir = Constants.DATA_DIR;
+    sslCerts = await loadSSLCertificates(dataDir, Constants.SSL_HOSTNAMES);
+
+    if (!sslCerts) {
+      logTS('Warning: HTTPS requested but certificate generation failed');
+    }
+  }
+
+  // Create HTTP server (always)
+  const server = app.listen(Constants.CH4C_PORT, () => {
+    logTS('CH4C HTTP server listening on port', Constants.CH4C_PORT);
+    // Only show URLs if HTTPS is not enabled (HTTPS server will show them)
+    if (!Constants.CH4C_SSL_PORT) {
+      logTS(`See status at http://localhost:${Constants.CH4C_PORT}/`);
+      logTS(`Instant recording/tuning available at http://localhost:${Constants.CH4C_PORT}/instant`);
+    }
+  });
+
+  // Handle HTTP server startup errors
   server.on('error', (error) => {
     if (error.code === 'EADDRINUSE') {
       console.error(`\n❌ ERROR: Port ${Constants.CH4C_PORT} is already in use.`);
       console.error('Another instance of CH4C may already be running.\n');
     } else {
-      console.error(`\n❌ ERROR: Failed to start server: ${error.message}\n`);
+      console.error(`\n❌ ERROR: Failed to start HTTP server: ${error.message}\n`);
     }
     process.exit(1);
   });
+
+  // Create HTTPS server if certificates were loaded successfully
+  if (Constants.CH4C_SSL_PORT && sslCerts) {
+    try {
+      httpsServer = https.createServer({ key: sslCerts.key, cert: sslCerts.cert }, app);
+      httpsServer.listen(Constants.CH4C_SSL_PORT, () => {
+        logTS(`CH4C HTTPS server listening on port ${Constants.CH4C_SSL_PORT}`);
+        logTS(`See status at https://localhost:${Constants.CH4C_SSL_PORT}/`);
+        logTS(`Instant recording/tuning available at https://localhost:${Constants.CH4C_SSL_PORT}/instant`);
+      });
+
+      httpsServer.on('error', (error) => {
+        if (error.code === 'EADDRINUSE') {
+          logTS(`Warning: HTTPS port ${Constants.CH4C_SSL_PORT} already in use (HTTP still available on ${Constants.CH4C_PORT})`);
+        } else {
+          logTS(`Warning: Failed to start HTTPS server: ${error.message}`);
+        }
+      });
+    } catch (error) {
+      logTS(`Warning: Could not start HTTPS server: ${error.message}`);
+    }
+  }
+
+  // WebSocket upgrade handler for VNC proxy
+  const WebSocket = require('ws');
+  const wss = new WebSocket.Server({ noServer: true });
+
+  server.on('upgrade', (request, socket, head) => {
+    const url = require('url');
+    const pathname = url.parse(request.url).pathname;
+
+    if (pathname.startsWith('/vnc-proxy')) {
+      logTS('VNC WebSocket connection requested');
+
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        // Default VNC server is 127.0.0.1:5900 (TightVNC default)
+        // Using 127.0.0.1 instead of localhost for better TightVNC compatibility
+        const vncHost = '127.0.0.1';
+
+        // Get port from query parameter, default to 5900
+        const urlParams = new URLSearchParams(request.url.split('?')[1]);
+        const vncPort = parseInt(urlParams.get('port') || '5900', 10);
+
+        logTS(`Connecting to VNC server at ${vncHost}:${vncPort}`);
+
+        // Create TCP connection to VNC server
+        const vncSocket = net.connect(vncPort, vncHost);
+        let vncConnected = false;
+
+        vncSocket.on('connect', () => {
+          logTS('Connected to VNC server');
+          vncConnected = true;
+        });
+
+        vncSocket.on('error', (error) => {
+          logTS(`VNC connection error: ${error.message}`);
+          if (!vncConnected) {
+            // Send error to client before closing
+            ws.send(JSON.stringify({
+              error: `Cannot connect to VNC server: ${error.message}. Is TightVNC running?`
+            }));
+          }
+          ws.close(1011, error.message);
+        });
+
+        // Proxy data from WebSocket to VNC server
+        ws.on('message', (data) => {
+          if (vncSocket.writable) {
+            vncSocket.write(Buffer.from(data));
+          }
+        });
+
+        // Proxy data from VNC server to WebSocket
+        vncSocket.on('data', (data) => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(data, { binary: true });
+          }
+        });
+
+        // Handle cleanup
+        ws.on('close', () => {
+          logTS('VNC WebSocket closed');
+          if (!vncSocket.destroyed) {
+            vncSocket.end();
+          }
+        });
+
+        vncSocket.on('close', () => {
+          logTS('VNC server connection closed');
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.close(1000, 'VNC connection closed');
+          }
+        });
+
+        // Handle WebSocket errors
+        ws.on('error', (error) => {
+          logTS(`WebSocket error: ${error.message}`);
+        });
+      });
+    } else {
+      socket.destroy();
+    }
+  });
+
+  // Add the same WebSocket upgrade handler for HTTPS server
+  if (httpsServer) {
+    httpsServer.on('upgrade', (request, socket, head) => {
+      const url = require('url');
+      const pathname = url.parse(request.url).pathname;
+
+      if (pathname.startsWith('/vnc-proxy')) {
+        wss.handleUpgrade(request, socket, head, (ws) => {
+          const vncHost = '127.0.0.1';
+          const urlParams = new URLSearchParams(request.url.split('?')[1]);
+          const vncPort = parseInt(urlParams.get('port') || '5900', 10);
+
+          logTS(`Connecting to VNC server at ${vncHost}:${vncPort} (HTTPS)`);
+
+          const vncSocket = net.connect(vncPort, vncHost);
+          let vncConnected = false;
+
+          vncSocket.on('connect', () => {
+            logTS('Connected to VNC server');
+            vncConnected = true;
+          });
+
+          vncSocket.on('error', (error) => {
+            logTS(`VNC connection error: ${error.message}`);
+            if (!vncConnected) {
+              ws.send(JSON.stringify({
+                error: `Cannot connect to VNC server: ${error.message}. Is TightVNC running?`
+              }));
+            }
+            ws.close(1011, error.message);
+          });
+
+          ws.on('message', (data) => {
+            if (vncSocket.writable) {
+              vncSocket.write(Buffer.from(data));
+            }
+          });
+
+          vncSocket.on('data', (data) => {
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(data, { binary: true });
+            }
+          });
+
+          ws.on('close', () => {
+            logTS('VNC WebSocket closed');
+            if (!vncSocket.destroyed) {
+              vncSocket.end();
+            }
+          });
+
+          vncSocket.on('close', () => {
+            logTS('VNC server connection closed');
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.close(1000, 'VNC connection closed');
+            }
+          });
+
+          ws.on('error', (error) => {
+            logTS(`WebSocket error: ${error.message}`);
+          });
+        });
+      } else {
+        socket.destroy();
+      }
+    });
+  }
 
   // Graceful shutdown with cleanup
   process.on('SIGINT', async () => {
