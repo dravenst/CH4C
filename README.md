@@ -57,9 +57,9 @@ Examples:
   Simple example with channels server at 192.168.50.50 and single encoder at 192.168.50.71.
   
 
-  > main.js -s "http://192.168.50.50" -e "http://192.168.50.71/live/stream0:24.42:0:0:Encoder" -e "http://192.168.50.71/live/stream1:24.43:1921:0:MACROSILICON"
+  > main.js -s "http://192.168.50.50" -e "http://192.168.50.71/live/stream0:24.42:0:0:Encoder" -e "http://192.168.50.71/live/stream1:24.43:1920:0:MACROSILICON"
 
-  This sets the channels server to 192.168.50.50 and encoder to 192.168.50.71/live/stream0 and a second encoder at stream1. The 1921 position of stream1 moves it to the right on startup on screen 2 in a dual monitor setup.
+  This sets the channels server to 192.168.50.50 and encoder to 192.168.50.71/live/stream0 and a second encoder at stream1. The 1920 position of stream1 moves it to the right on startup on screen 2 in a dual monitor setup.
 
   When specifying more than one encoder, you will need to find the audio device Name and specify the first portion of it at the end of the encoder param.  In Windows, to see encoder audio device names, look in Windows Sound Settings or use the powershell command: Get-AudioDevice -List
 
@@ -69,7 +69,11 @@ Examples:
   Enable HTTPS on port 2443 in addition to HTTP on port 2442. A self-signed SSL certificate is auto-generated on first run. Local network IPs are automatically included in the certificate. See HTTPS_SETUP.md for certificate installation instructions.
 ```
 
-* **Encoder Width and Height Position**: The position values are dependent on your display setup. In Windows, I configured my two encoder HDMI displays to align at the bottom and both are setup as 1920x1080.  Therefore, one display will be setup with width and height position as 0:0 and the other that is offset to the right by the width of the first display will be 1921:0.
+* **Encoder Width and Height Position**: The position values are dependent on your display setup. In Windows, I configured my two encoder HDMI displays to align at the bottom and both are setup as 1920x1080.  Therefore, one display will be setup with width and height position as 0:0 and the other that is offset to the right by the width of the first display will be 1920:0.
+
+There is a powershell command to get more specifics on offsets of your available displays (Please note that the Scale for your display settings needs to be set at 100%):
+
+`powershell -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Screen]::AllScreens | Select-Object DeviceName, Primary, Bounds"`
 
 ![Windows Display Settings](./assets/displaysetup.jpg)
 
@@ -118,7 +122,7 @@ Create a new text file called `ch4c.ps1` and add the following line to it (repla
 
   * **Windows Startup Configuration #2**:
 Or a more complex example for the `ch4c.ps1` file using both encoder ports of the ENC1-V3:
-`Start-Process -WindowStyle hidden -FilePath "(YOUR-PATH)\ch4c.exe" -ArgumentList "-t", "2443", "--channels-url", "http://192.168.50.50", "--encoder", "http://192.168.50.71/live/stream0:24.42:0:0:Encoder" "--encoder", "http://192.168.50.72/live/stream1:24.43:1921:0:MACROSILICON"`
+`Start-Process -WindowStyle hidden -FilePath "(YOUR-PATH)\ch4c.exe" -ArgumentList "-t", "2443", "--channels-url", "http://192.168.50.50", "--encoder", "http://192.168.50.71/live/stream0:24.42:0:0:Encoder" "--encoder", "http://192.168.50.72/live/stream1:24.43:1920:0:MACROSILICON"`
 
   * **Create Windows Task Scheduler Task**:
 Create a new task to run the `ch4c.ps1` file in Windows Task Scheduler, leave "Run with highest privileges" UNCHECKED (the latest Chrome browser security settings don't like this), and set it to trigger it when the user logs on (it's critical to run after user login to enable the GPU). Run the new Windows task you created manually to test it and be sure to visit all of the streaming sites within the browser that pops up after you try to stream your first channel.  This will allow you to login to the sites and retain the credentials for later runs. 

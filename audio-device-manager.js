@@ -4,12 +4,7 @@ const { exec } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-
-// log function with timestamp
-function logTS(message , ...args) {
-  const timestamp = new Date().toLocaleString();
-  console.log(`[${timestamp}]`, message, ...args);
-}
+const { logTS } = require('./logger');
 
 /**
  * Get all Windows audio devices using Core Audio API
@@ -318,8 +313,6 @@ try {
             });
             
             if (devices.length > 0) {
-              logTS(`Found ${devices.length} audio devices via WaveOut`);
-              devices.forEach(d => logTS(`  - ${d}`));
               resolve(devices);
             } else {
               reject(new Error('No audio devices found'));
@@ -501,24 +494,24 @@ try {
 // Test function
 async function testAudioDevices() {
   const manager = new AudioDeviceManager();
-  
+
   console.log('Testing audio device detection...\n');
   console.log('System:', os.platform(), os.release());
   console.log('Node version:', process.version);
-  
+
   try {
     const devices = await manager.getAudioDevices();
-    
+
     if (devices && devices.length > 0) {
       console.log(`\nSuccessfully detected ${devices.length} audio devices:`);
       devices.forEach((d, i) => {
         console.log(`  ${i + 1}. ${d}`);
       });
-      
+
       // Test matching including typos
       console.log('\nTesting device matching:');
       const tests = ['Encoder', 'Endoder', 'HDMI', 'Speakers', 'USB'];
-      
+
       for (const test of tests) {
         const result = await manager.validateDevice(test);
         if (result.valid) {
@@ -538,9 +531,181 @@ async function testAudioDevices() {
   }
 }
 
+/**
+ * Display/Monitor detection and management
+ */
+class DisplayManager {
+  constructor() {
+    this.platform = os.platform();
+  }
+
+  /**
+   * Get all connected displays with their properties
+   * @returns {Promise<Array>} Array of display objects
+   */
+  async getDisplays() {
+    if (this.platform === 'win32') {
+      return this.getWindowsDisplays();
+    } else if (this.platform === 'linux') {
+      return this.getLinuxDisplays();
+    } else {
+      return this.getDefaultDisplays();
+    }
+  }
+
+  /**
+   * Get Windows display information using PowerShell
+   * Returns scaled coordinates which match what Chrome/browsers use for window positioning
+   */
+  async getWindowsDisplays() {
+    return new Promise((resolve) => {
+      // Use .NET Screen class - returns scaled coordinates that Chrome uses
+      const psScript = `Add-Type -AssemblyName System.Windows.Forms; $screens = [System.Windows.Forms.Screen]::AllScreens; $result = @(); foreach ($screen in $screens) { $result += [PSCustomObject]@{ DeviceName = $screen.DeviceName; Primary = $screen.Primary; X = $screen.Bounds.X; Y = $screen.Bounds.Y; Width = $screen.Bounds.Width; Height = $screen.Bounds.Height } }; $result | ConvertTo-Json -Compress`;
+
+      exec(`powershell -NoProfile -Command "${psScript}"`,
+        { timeout: 10000 },
+        (error, stdout, stderr) => {
+          if (error) {
+            logTS('PowerShell display detection failed:', error.message);
+            resolve(this.getDefaultDisplays());
+            return;
+          }
+
+          try {
+            const output = stdout.trim();
+            if (!output) {
+              resolve(this.getDefaultDisplays());
+              return;
+            }
+
+            let displays = JSON.parse(output);
+            // Ensure it's an array (single display returns object)
+            if (!Array.isArray(displays)) {
+              displays = [displays];
+            }
+
+            const result = displays.map((d, index) => {
+              // Clean up Windows device name (e.g., "\\.\DISPLAY1" -> "Display 1")
+              let displayName = d.DeviceName || `Display ${index + 1}`;
+              const displayMatch = displayName.match(/DISPLAY(\d+)/i);
+              if (displayMatch) {
+                displayName = `Display ${displayMatch[1]}`;
+              }
+
+              // Handle both old format (BoundsX) and new format (X) from EnumDisplayMonitors
+              const x = d.X !== undefined ? d.X : (d.BoundsX || 0);
+              const y = d.Y !== undefined ? d.Y : (d.BoundsY || 0);
+              const width = d.Width !== undefined ? d.Width : (d.BoundsWidth || 1920);
+              const height = d.Height !== undefined ? d.Height : (d.BoundsHeight || 1080);
+
+              return {
+              id: index + 1,
+              name: displayName,
+              primary: d.Primary || false,
+              x: x,
+              y: y,
+              width: width,
+              height: height,
+              workArea: {
+                x: d.WorkingAreaX || x,
+                y: d.WorkingAreaY || y,
+                width: d.WorkingAreaWidth || width,
+                height: d.WorkingAreaHeight || (height - 40)
+              }
+            };
+            });
+
+            resolve(result);
+          } catch (parseError) {
+            logTS('Failed to parse display info:', parseError.message);
+            resolve(this.getDefaultDisplays());
+          }
+        }
+      );
+    });
+  }
+
+  /**
+   * Get Linux display information using xrandr
+   */
+  async getLinuxDisplays() {
+    return new Promise((resolve) => {
+      exec('xrandr --query', { timeout: 5000 }, (error, stdout) => {
+        if (error) {
+          logTS('xrandr display detection failed:', error.message);
+          resolve(this.getDefaultDisplays());
+          return;
+        }
+
+        try {
+          const displays = [];
+          const lines = stdout.split('\n');
+          let displayIndex = 0;
+
+          for (const line of lines) {
+            // Match connected displays with resolution and position
+            // Example: "HDMI-1 connected primary 1920x1080+0+0"
+            // Example: "DP-1 connected 1920x1080+1920+0"
+            const match = line.match(/^(\S+)\s+connected\s+(primary\s+)?(\d+)x(\d+)\+(\d+)\+(\d+)/);
+            if (match) {
+              displayIndex++;
+              displays.push({
+                id: displayIndex,
+                name: match[1],
+                primary: !!match[2],
+                x: parseInt(match[5], 10),
+                y: parseInt(match[6], 10),
+                width: parseInt(match[3], 10),
+                height: parseInt(match[4], 10),
+                workArea: {
+                  x: parseInt(match[5], 10),
+                  y: parseInt(match[6], 10),
+                  width: parseInt(match[3], 10),
+                  height: parseInt(match[4], 10) - 40 // Approximate taskbar
+                }
+              });
+            }
+          }
+
+          if (displays.length > 0) {
+            resolve(displays);
+          } else {
+            resolve(this.getDefaultDisplays());
+          }
+        } catch (parseError) {
+          logTS('Failed to parse xrandr output:', parseError.message);
+          resolve(this.getDefaultDisplays());
+        }
+      });
+    });
+  }
+
+  /**
+   * Default display configuration as fallback
+   */
+  getDefaultDisplays() {
+    return [{
+      id: 1,
+      name: 'Display 1',
+      primary: true,
+      x: 0,
+      y: 0,
+      width: 1920,
+      height: 1080,
+      workArea: {
+        x: 0,
+        y: 0,
+        width: 1920,
+        height: 1040
+      }
+    }];
+  }
+}
+
 // Export
 module.exports = {
   AudioDeviceManager,
+  DisplayManager,
   testAudioDevices
 };
 

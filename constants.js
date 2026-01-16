@@ -399,15 +399,15 @@ const START_PAGE_HTML = `
 
         .quick-links {
             display: flex;
-            gap: 12px;
+            gap: 16px;
             margin-bottom: 32px;
             flex-wrap: wrap;
+            justify-content: center;
         }
 
         .quick-link {
-            flex: 1;
-            min-width: 150px;
-            padding: 16px 20px;
+            min-width: 140px;
+            padding: 16px 24px;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
             text-decoration: none;
@@ -570,7 +570,8 @@ const START_PAGE_HTML = `
             <a href="/instant" class="quick-link">📺 Instant Recording</a>
             <a href="/m3u-manager" class="quick-link">📋 M3U Manager</a>
             <a href="/remote-access" class="quick-link">🖥️ Remote Access</a>
-            <a href="https://github.com/dravenst/CH4C#readme" target="_blank" class="quick-link">📖 Documentation</a>
+            <a href="/logs" class="quick-link">📜 Logs</a>
+            <a href="https://github.com/dravenst/CH4C#readme" target="_blank" class="quick-link">📖 Docs</a>
         </div>
 
         <div id="https-notice" style="display: none; margin: 24px 0; padding: 12px 16px; background: #fff3cd; border: 1px solid #ffc107; border-radius: 8px; color: #856404; position: relative;">
@@ -586,6 +587,14 @@ const START_PAGE_HTML = `
                 <div class="status-card">
                     <p style="color: #718096;">Loading encoder status...</p>
                 </div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2 class="section-title">Display Configuration</h2>
+            <p style="color: #718096; font-size: 13px; margin-bottom: 16px;">Use these positions when configuring encoder screen offsets (width_pos:height_pos). <strong>Note:</strong> If using DPI scaling above 100%, the reported offsets may be incorrect. Set displays to 100% scaling for accurate values.</p>
+            <div id="display-layout">
+                <p style="color: #718096;">Loading display configuration...</p>
             </div>
         </div>
 
@@ -809,6 +818,7 @@ http://CH4C_IP_ADDRESS:${CH4C_PORT}/stream?url=https://www.spectrum.net/livetv</
                         card.innerHTML = \`
                             <h3>Channel \${encoder.channel}</h3>
                             <p><strong>URL:</strong> \${encoder.url}</p>
+                            <p><strong>Position:</strong> \${encoder.widthPos || 0}, \${encoder.heightPos || 0}</p>
                             <p><strong>Audio Device:</strong> \${encoder.audioDevice || 'Not configured'}</p>
                             <span class="status-badge \${isHealthy ? 'healthy' : 'unhealthy'}">\${statusText}</span>
                         \`;
@@ -869,6 +879,65 @@ http://CH4C_IP_ADDRESS:${CH4C_PORT}/stream?url=https://www.spectrum.net/livetv</
             }
         }
 
+        // Fetch and display display configuration
+        async function loadDisplays() {
+            try {
+                const response = await fetch('/displays');
+                const displays = await response.json();
+
+                const layoutContainer = document.getElementById('display-layout');
+
+                if (displays && displays.length > 0) {
+                    // Calculate bounds for visual layout
+                    let minX = Math.min(...displays.map(d => d.x));
+                    let minY = Math.min(...displays.map(d => d.y));
+                    let maxX = Math.max(...displays.map(d => d.x + d.width));
+                    let maxY = Math.max(...displays.map(d => d.y + d.height));
+
+                    const totalWidth = maxX - minX;
+                    const totalHeight = maxY - minY;
+
+                    // Create visual layout with scaled displays
+                    const scale = Math.min(600 / totalWidth, 200 / totalHeight, 0.15);
+                    const layoutWidth = totalWidth * scale;
+                    const layoutHeight = totalHeight * scale;
+
+                    let layoutHtml = \`<div style="position: relative; width: \${layoutWidth}px; height: \${layoutHeight}px; background: #e2e8f0; border-radius: 8px; margin: 0 auto;">\`;
+
+                    displays.forEach((display, index) => {
+                        const left = (display.x - minX) * scale;
+                        const top = (display.y - minY) * scale;
+                        const width = display.width * scale;
+                        const height = display.height * scale;
+
+                        const colors = ['#667eea', '#48bb78', '#ed8936', '#e53e3e', '#9f7aea'];
+                        const color = colors[index % colors.length];
+
+                        layoutHtml += \`
+                            <div style="position: absolute; left: \${left}px; top: \${top}px; width: \${width}px; height: \${height}px;
+                                        background: \${color}; border-radius: 4px; display: flex; flex-direction: column;
+                                        align-items: center; justify-content: center; color: white; font-size: 11px;
+                                        box-shadow: 0 2px 4px rgba(0,0,0,0.2); border: 2px solid \${display.primary ? '#fff' : 'transparent'};">
+                                <div style="font-weight: 700;">\${display.name}</div>
+                                <div style="opacity: 0.9;">\${display.width}x\${display.height}</div>
+                                <div style="opacity: 0.8; font-size: 10px;">Offset: \${display.x}:\${display.y}</div>
+                                \${display.primary ? '<div style="font-size: 9px; margin-top: 2px; background: rgba(255,255,255,0.3); padding: 1px 4px; border-radius: 2px;">Primary</div>' : ''}
+                            </div>
+                        \`;
+                    });
+
+                    layoutHtml += '</div>';
+                    layoutContainer.innerHTML = layoutHtml;
+                } else {
+                    layoutContainer.innerHTML = '<p style="color: #718096;">No displays detected.</p>';
+                }
+            } catch (error) {
+                console.error('Error loading displays:', error);
+                document.getElementById('display-layout').innerHTML =
+                    '<p style="color: #f56565;">Error loading display configuration.</p>';
+            }
+        }
+
         // Replace CH4C_IP_ADDRESS placeholder with actual hostname
         function updateM3UConfig() {
             const ch4cAddress = window.location.hostname;
@@ -911,6 +980,7 @@ http://CH4C_IP_ADDRESS:${CH4C_PORT}/stream?url=https://www.spectrum.net/livetv</
         // Load data on page load
         loadEncoderStatus();
         loadAudioDevices();
+        loadDisplays();
         updateM3UConfig();
 
         // Refresh status every 30 seconds
@@ -3859,6 +3929,284 @@ const M3U_MANAGER_PAGE_HTML = `
 </html>
 `;
 
+const LOGS_PAGE_HTML = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CH4C - Logs</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 1200px;
+            width: 100%;
+            margin: 0 auto;
+            padding: 40px;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 24px;
+        }
+
+        .header h1 {
+            color: #2d3748;
+            font-size: 32px;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+
+        .header p {
+            color: #718096;
+            font-size: 14px;
+        }
+
+        .controls {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 16px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        .controls button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-secondary {
+            background: #e2e8f0;
+            color: #4a5568;
+        }
+
+        .btn-secondary:hover {
+            background: #cbd5e0;
+        }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-left: auto;
+            font-size: 14px;
+            color: #718096;
+        }
+
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #48bb78;
+        }
+
+        .status-dot.paused {
+            background: #ed8936;
+        }
+
+        .log-container {
+            background: #1a202c;
+            border-radius: 8px;
+            padding: 16px;
+            height: 60vh;
+            overflow-y: auto;
+            font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+            font-size: 13px;
+            line-height: 1.5;
+        }
+
+        .log-entry {
+            color: #e2e8f0;
+            padding: 2px 0;
+            border-bottom: 1px solid #2d3748;
+        }
+
+        .log-entry:last-child {
+            border-bottom: none;
+        }
+
+        .log-timestamp {
+            color: #a0aec0;
+            margin-right: 8px;
+        }
+
+        .log-message {
+            color: #e2e8f0;
+        }
+
+        .log-count {
+            color: #718096;
+            font-size: 13px;
+            margin-top: 12px;
+            text-align: right;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                padding: 24px;
+            }
+
+            .header h1 {
+                font-size: 24px;
+            }
+
+            .controls {
+                flex-direction: column;
+                align-items: stretch;
+            }
+
+            .status-indicator {
+                margin-left: 0;
+                justify-content: center;
+            }
+
+            .log-container {
+                height: 50vh;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>CH4C Logs</h1>
+            <p>Chrome HDMI for Channels</p>
+            <p style="margin-top: 12px;"><a href="/" style="color: #667eea; text-decoration: none; font-size: 14px;">← Back to Home</a></p>
+        </div>
+
+        <div class="controls">
+            <button id="pauseBtn" class="btn-primary" onclick="togglePause()">Pause</button>
+            <button class="btn-secondary" onclick="clearDisplay()">Clear Display</button>
+            <button class="btn-secondary" onclick="downloadLogs()">Download Logs</button>
+            <div class="status-indicator">
+                <div id="statusDot" class="status-dot"></div>
+                <span id="statusText">Live</span>
+            </div>
+        </div>
+
+        <div id="logContainer" class="log-container"></div>
+        <div id="logCount" class="log-count"></div>
+    </div>
+
+    <script>
+        let isPaused = false;
+        let lastLogCount = 0;
+        let pollInterval = null;
+
+        async function fetchLogs() {
+            if (isPaused) return;
+
+            try {
+                const response = await fetch('/api/logs');
+                const data = await response.json();
+                renderLogs(data.logs);
+                lastLogCount = data.logs.length;
+            } catch (error) {
+                console.error('Error fetching logs:', error);
+            }
+        }
+
+        function renderLogs(logs) {
+            const container = document.getElementById('logContainer');
+            const wasAtBottom = container.scrollHeight - container.scrollTop <= container.clientHeight + 50;
+
+            container.innerHTML = logs.map(log =>
+                \`<div class="log-entry"><span class="log-timestamp">[\${log.timestamp}]</span><span class="log-message">\${escapeHtml(log.message)}</span></div>\`
+            ).join('');
+
+            document.getElementById('logCount').textContent = \`Showing \${logs.length} log entries\`;
+
+            // Auto-scroll to bottom if user was already at bottom
+            if (wasAtBottom) {
+                container.scrollTop = container.scrollHeight;
+            }
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function togglePause() {
+            isPaused = !isPaused;
+            const btn = document.getElementById('pauseBtn');
+            const dot = document.getElementById('statusDot');
+            const text = document.getElementById('statusText');
+
+            if (isPaused) {
+                btn.textContent = 'Resume';
+                dot.classList.add('paused');
+                text.textContent = 'Paused';
+            } else {
+                btn.textContent = 'Pause';
+                dot.classList.remove('paused');
+                text.textContent = 'Live';
+                fetchLogs(); // Immediately fetch when resuming
+            }
+        }
+
+        function clearDisplay() {
+            document.getElementById('logContainer').innerHTML = '';
+            document.getElementById('logCount').textContent = 'Display cleared';
+        }
+
+        function downloadLogs() {
+            fetch('/api/logs')
+                .then(response => response.json())
+                .then(data => {
+                    const logText = data.logs.map(log => \`[\${log.timestamp}] \${log.message}\`).join('\\n');
+                    const blob = new Blob([logText], { type: 'text/plain' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = \`ch4c-logs-\${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.txt\`;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                })
+                .catch(error => console.error('Error downloading logs:', error));
+        }
+
+        // Initial fetch and start polling
+        fetchLogs();
+        pollInterval = setInterval(fetchLogs, 2000);
+    </script>
+</body>
+</html>
+`;
+
 module.exports = {
   CHANNELS_URL: config.CHANNELS_URL,
   CHANNELS_PORT: config.CHANNELS_PORT,
@@ -3880,6 +4228,7 @@ module.exports = {
   INSTANT_PAGE_HTML,
   M3U_MANAGER_PAGE_HTML,
   REMOTE_ACCESS_PAGE_HTML,
+  LOGS_PAGE_HTML,
   CHROME_USERDATA_DIRECTORIES,
   CHROME_EXECUTABLE_DIRECTORIES
 };

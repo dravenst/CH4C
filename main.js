@@ -13,6 +13,7 @@ const os = require('os');
 const { exec } = require('child_process');
 const https = require('https');
 const selfsigned = require('selfsigned');
+const { logTS, getLogBuffer } = require('./logger');
 
 const {
   EncoderHealthMonitor,
@@ -25,21 +26,14 @@ const {
   initializeBrowserPoolWithValidation
 } = require('./error-handling');
 
-const { AudioDeviceManager } = require('./audio-device-manager');
+const { AudioDeviceManager, DisplayManager } = require('./audio-device-manager');
 
 let chromeDataDir, chromePath;
 let browsers = new Map(); // key: encoderUrl, value: {browser, page}
 let launchMutex = new Map(); // key: encoderUrl, value: promise to prevent concurrent launches
 
-
 function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-// log function with timestamp
-function logTS(message , ...args) {
-  const timestamp = new Date().toLocaleString();
-  console.log(`[${timestamp}]`, message, ...args);
 }
 
 /**
@@ -2780,6 +2774,13 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
     res.json(devices);
   });
 
+  // GET /displays - Get display/monitor configuration
+  app.get('/displays', async (req, res) => {
+    const displayManager = new DisplayManager();
+    const displays = await displayManager.getDisplays();
+    res.json(displays);
+  });
+
   // GET /instant - Serve the instant recording form
   app.get('/instant', (req, res) => {
     const cleanupManager = req.app.locals.cleanupManager;
@@ -3235,6 +3236,16 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
   // VNC Remote Access page
   app.get('/remote-access', (req, res) => {
     res.send(Constants.REMOTE_ACCESS_PAGE_HTML);
+  });
+
+  // Logs page
+  app.get('/logs', (req, res) => {
+    res.send(Constants.LOGS_PAGE_HTML);
+  });
+
+  // Logs API endpoint
+  app.get('/api/logs', (req, res) => {
+    res.json({ logs: getLogBuffer() });
   });
 
   // Serve SSL certificate for download

@@ -2,16 +2,11 @@
 const fetch = require('node-fetch');
 const { execSync } = require('child_process');
 const os = require('os');
+const { logTS } = require('./logger');
 
 // Helper function - add this since it's used by the error handling code
 function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-// log function with timestamp
-function logTS(message , ...args) {
-  const timestamp = new Date().toLocaleString();
-  console.log(`[${timestamp}]`, message, ...args);
 }
 
 /**
@@ -368,29 +363,36 @@ class BrowserHealthMonitor {
 
     // Set up periodic monitoring
     this.monitoringInterval = setInterval(async () => {
-      for (const [encoderUrl, browser] of this.browsersRef.entries()) {
-        if (!browser || !browser.isConnected()) {
-          // Browser is disconnected, mark as unhealthy
-          this.updateBrowserHealth(encoderUrl, false);
+      // Reset recovery attempts at the start of each health check cycle
+      // This gives each cycle a fresh set of attempts
+      if (this.recoveryManager) {
+        this.recoveryManager.resetAllAttempts();
+      }
 
-          // Attempt recovery if we have recovery manager
-          if (this.recoveryManager && this.launchBrowserFunc && this.encoders) {
-            const encoderConfig = this.encoders.find(e => e.url === encoderUrl);
-            if (encoderConfig) {
-              logTS(`[${encoderUrl}] Browser disconnected, attempting automatic recovery...`);
+      // Check all configured encoders, not just ones with existing browsers
+      // This ensures we recover browsers that were removed from the map after failed recovery
+      if (this.encoders) {
+        for (const encoderConfig of this.encoders) {
+          const encoderUrl = encoderConfig.url;
+          const browser = this.browsersRef.get(encoderUrl);
+
+          if (!browser || !browser.isConnected()) {
+            // Browser is missing or disconnected, mark as unhealthy
+            this.updateBrowserHealth(encoderUrl, false);
+
+            // Attempt recovery if we have recovery manager
+            if (this.recoveryManager && this.launchBrowserFunc) {
+              logTS(`[${encoderUrl}] Browser missing or disconnected, attempting automatic recovery...`);
               await this.attemptRecovery(encoderUrl, encoderConfig);
             }
+            continue;
           }
-          continue;
-        }
 
-        const wasHealthy = this.isBrowserHealthy(encoderUrl);
-        const isHealthy = await this.checkBrowserHealth(browser, encoderUrl);
+          const wasHealthy = this.isBrowserHealthy(encoderUrl);
+          const isHealthy = await this.checkBrowserHealth(browser, encoderUrl);
 
-        // If browser just became unhealthy, attempt automatic recovery
-        if (wasHealthy && !isHealthy && this.recoveryManager && this.launchBrowserFunc && this.encoders) {
-          const encoderConfig = this.encoders.find(e => e.url === encoderUrl);
-          if (encoderConfig) {
+          // If browser just became unhealthy, attempt automatic recovery
+          if (wasHealthy && !isHealthy && this.recoveryManager && this.launchBrowserFunc) {
             logTS(`[${encoderUrl}] Browser became unhealthy, attempting automatic recovery...`);
             await this.attemptRecovery(encoderUrl, encoderConfig);
           }
@@ -490,6 +492,38 @@ class BrowserRecoveryManager {
     this.recoveryBackoff = [1000, 5000, 15000]; // Progressive backoff
   }
 
+  /**
+   * Get recovery attempts for an encoder
+   */
+  getRecoveryAttempts(encoderUrl) {
+    return this.recoveryAttempts.get(encoderUrl) || 0;
+  }
+
+  /**
+   * Increment recovery attempt counter
+   */
+  incrementRecoveryAttempts(encoderUrl) {
+    const current = this.getRecoveryAttempts(encoderUrl);
+    this.recoveryAttempts.set(encoderUrl, current + 1);
+  }
+
+  /**
+   * Reset recovery attempts for a single encoder (on success)
+   */
+  resetRecoveryAttempts(encoderUrl) {
+    this.recoveryAttempts.delete(encoderUrl);
+  }
+
+  /**
+   * Reset all recovery attempts (called at start of each health check cycle)
+   */
+  resetAllAttempts() {
+    if (this.recoveryAttempts.size > 0) {
+      logTS(`Resetting recovery attempt counters for new health check cycle`);
+      this.recoveryAttempts.clear();
+    }
+  }
+
   async attemptBrowserRecovery(encoderUrl, encoderConfig, browsers, launchBrowserFunc, Constants) {
     // Check if recovery is already in progress for this encoder
     if (this.recoveryInProgress.has(encoderUrl)) {
@@ -531,31 +565,37 @@ class BrowserRecoveryManager {
   }
 
   async _doRecovery(encoderUrl, encoderConfig, browsers, launchBrowserFunc, Constants) {
-    const attempts = this.recoveryAttempts.get(encoderUrl) || 0;
+    const attempts = this.getRecoveryAttempts(encoderUrl);
 
     if (attempts >= this.maxRecoveryAttempts) {
-      logTS(`Max recovery attempts reached for ${encoderUrl}. Marking as failed.`);
+      logTS(`Max recovery attempts reached for ${encoderUrl}. Will retry on next health check cycle.`);
       return false;
     }
 
-    this.recoveryAttempts.set(encoderUrl, attempts + 1);
+    this.incrementRecoveryAttempts(encoderUrl);
 
     const backoffDelay = this.recoveryBackoff[attempts] || 30000;
     logTS(`Attempting browser recovery for ${encoderUrl} (attempt ${attempts + 1}/${this.maxRecoveryAttempts})`);
 
-    // Close any existing browser instance gracefully
+    // Close any existing browser instance gracefully (with timeout)
     if (browsers.has(encoderUrl)) {
-      try {
-        const browser = browsers.get(encoderUrl);
-        if (browser && browser.isConnected()) {
-          logTS(`[${encoderUrl}] Closing browser gracefully...`);
-          await browser.close();
+      const browser = browsers.get(encoderUrl);
+      browsers.delete(encoderUrl); // Remove from map immediately to prevent reuse
+
+      if (browser) {
+        try {
+          logTS(`[${encoderUrl}] Closing browser gracefully (10s timeout)...`);
+          await Promise.race([
+            browser.close(),
+            new Promise((_, reject) =>
+              setTimeout(() => reject(new Error('browser.close() timeout')), 10000)
+            )
+          ]);
           logTS(`[${encoderUrl}] Browser close() completed`);
+        } catch (e) {
+          logTS(`[${encoderUrl}] Browser close failed: ${e.message} - will force kill processes`);
         }
-      } catch (e) {
-        logTS(`Error closing browser during recovery: ${e.message}`);
       }
-      browsers.delete(encoderUrl);
     }
 
     // Wait for Chrome to fully exit gracefully (3 seconds)
@@ -592,7 +632,7 @@ class BrowserRecoveryManager {
         const success = await launchBrowserFunc("about:blank", encoderConfig, true, false);
         if (success) {
           logTS(`Successfully recovered browser for ${encoderUrl}`);
-          this.recoveryAttempts.set(encoderUrl, 0); // Reset on success
+          this.resetRecoveryAttempts(encoderUrl);
           return true;
         }
         logTS(`[${encoderUrl}] Browser launch returned false, not retrying`);
@@ -618,12 +658,7 @@ class BrowserRecoveryManager {
       }
     }
 
-    this.recoveryAttempts.set(encoderUrl, attempts + 1);
     return false;
-  }
-
-  resetAttempts(encoderUrl) {
-    this.recoveryAttempts.delete(encoderUrl);
   }
 }
 
