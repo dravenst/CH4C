@@ -69,6 +69,61 @@ Examples:
   Enable HTTPS on port 2443 in addition to HTTP on port 2442. A self-signed SSL certificate is auto-generated on first run. Local network IPs are automatically included in the certificate. See HTTPS_SETUP.md for certificate installation instructions.
 ```
 
+* **Configuration via JSON file**: As an alternative to command-line parameters, you can configure CH4C using a `config.json` file in the data directory. This is especially useful for complex multi-encoder setups. If both command-line parameters and config.json exist, command-line parameters take precedence.
+
+Example `data/config.json`:
+```json
+{
+  "channelsUrl": "http://192.168.50.50",
+  "channelsPort": "8089",
+  "ch4cPort": 2442,
+  "ch4cSslPort": 2443,
+  "sslHostnames": [],
+  "dataDir": ".\\data",
+  "enablePauseMonitor": true,
+  "pauseMonitorInterval": 10,
+  "browserHealthInterval": 6,
+  "encoders": [
+    {
+      "url": "http://192.168.50.185/live/stream0",
+      "channel": "24.52",
+      "width": 0,
+      "height": 0,
+      "audioDevice": "Encoder"
+    },
+    {
+      "url": "http://192.168.50.185/live/stream1",
+      "channel": "24.53",
+      "width": 1920,
+      "height": 0,
+      "audioDevice": "HDMI TO USB"
+    }
+  ]
+}
+```
+
+| JSON Property | Command-line Equivalent | Description |
+|---------------|------------------------|-------------|
+| `channelsUrl` | `-s, --channels-url` | Channels server URL |
+| `channelsPort` | `-p, --channels-port` | Channels server port (default: 8089) |
+| `ch4cPort` | `-c, --ch4c-port` | CH4C HTTP port (default: 2442) |
+| `ch4cSslPort` | `-t, --ch4c-ssl-port` | CH4C HTTPS port (optional) |
+| `sslHostnames` | `-n, --ssl-hostnames` | Additional SSL hostnames/IPs |
+| `dataDir` | `-d, --data-dir` | Data directory location |
+| `enablePauseMonitor` | `-m, --enable-pause-monitor` | Enable pause detection (default: true) |
+| `pauseMonitorInterval` | `-i, --pause-monitor-interval` | Pause check interval in seconds |
+| `browserHealthInterval` | `-b, --browser-health-interval` | Browser health check interval in hours |
+| `encoders` | `-e, --encoder` | Array of encoder configurations |
+
+Each encoder object in the `encoders` array has these properties:
+| Property | Description |
+|----------|-------------|
+| `url` | Encoder stream URL (required) |
+| `channel` | Channel number in xx.xx format (default: 24.42) |
+| `width` | Screen X position offset (default: 0) |
+| `height` | Screen Y position offset (default: 0) |
+| `audioDevice` | Audio output device name |
+
 * **Encoder Width and Height Position**: The position values are dependent on your display setup. In Windows, I configured my two encoder HDMI displays to align at the bottom and both are setup as 1920x1080.  Therefore, one display will be setup with width and height position as 0:0 and the other that is offset to the right by the width of the first display will be 1920:0.
 
 There is a powershell command to get more specifics on offsets of your available displays (Please note that the Scale for your display settings needs to be set at 100%):
@@ -146,7 +201,7 @@ Some other features are available from the running CH4C instance:
 
 * **Status Dashboard**: Navigate to http://\<CH4C_IP_ADDRESS\>:\<CH4C_PORT\>/ to see the main status page with encoder health, audio devices, command-line reference, and M3U configuration examples
 
-![StatusPage](./assets/statuspage.jpg)
+![StatusPage](./assets/newstatuspage.jpg)
 
 * **Instant Recording or Viewing**: go to http://\<CH4C_IP_ADDRESS\>:\<CH4C_PORT\>/instant for a simple UI to instantly start recording any given URL. Or you can just "tune" your encoder to that URL (without recording), so you can watch in Channels on the encoder's channel number (default: 24.42, or whatever you specified in the --encoder parameter)
 

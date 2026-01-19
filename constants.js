@@ -1,9 +1,136 @@
 const os = require('os');
 const path = require('path');
+const fs = require('fs');
 const yargs = require('yargs');
 const { hideBin } = require('yargs/helpers');
 const { URL } = require('url');
-const { AudioDeviceManager } = require('./audio-device-manager');
+const { logTS } = require('./logger');
+const { AudioDeviceManager, DisplayManager } = require('./audio-device-manager');
+
+/**
+ * Get data directory from raw CLI args before full yargs parsing.
+ * This allows us to find config.json location early.
+ * @param {string[]} args - Raw command line arguments
+ * @returns {string} - Data directory path
+ */
+function getDataDirFromArgs(args) {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    // Check for --data-dir=value or -d=value
+    if (arg.startsWith('--data-dir=')) {
+      return arg.split('=')[1];
+    }
+    if (arg.startsWith('-d=')) {
+      return arg.split('=')[1];
+    }
+    // Check for --data-dir value or -d value
+    if ((arg === '--data-dir' || arg === '-d') && args[i + 1]) {
+      return args[i + 1];
+    }
+  }
+  return 'data'; // default
+}
+
+/**
+ * Load configuration from config.json file if it exists.
+ * @param {string} configPath - Path to config.json
+ * @returns {object|null} - Parsed config object or null if not found/invalid
+ */
+function loadConfigFile(configPath) {
+  try {
+    if (!fs.existsSync(configPath)) {
+      return null;
+    }
+
+    const content = fs.readFileSync(configPath, 'utf8');
+    const config = JSON.parse(content);
+
+    logTS(`Loading configuration from: ${configPath}`);
+
+    // Validate and normalize the config structure
+    const normalized = {};
+
+    if (config.channelsUrl !== undefined) {
+      normalized.channelsUrl = config.channelsUrl;
+    }
+    if (config.channelsPort !== undefined) {
+      normalized.channelsPort = String(config.channelsPort);
+    }
+    if (config.ch4cPort !== undefined) {
+      normalized.ch4cPort = Number(config.ch4cPort);
+    }
+    if (config.ch4cSslPort !== undefined && config.ch4cSslPort !== null) {
+      normalized.ch4cSslPort = Number(config.ch4cSslPort);
+    }
+    if (config.sslHostnames !== undefined) {
+      normalized.sslHostnames = Array.isArray(config.sslHostnames)
+        ? config.sslHostnames.join(',')
+        : config.sslHostnames;
+    }
+    if (config.dataDir !== undefined) {
+      normalized.dataDir = config.dataDir;
+    }
+    if (config.enablePauseMonitor !== undefined) {
+      normalized.enablePauseMonitor = Boolean(config.enablePauseMonitor);
+    }
+    if (config.pauseMonitorInterval !== undefined) {
+      normalized.pauseMonitorInterval = Number(config.pauseMonitorInterval);
+    }
+    if (config.browserHealthInterval !== undefined) {
+      normalized.browserHealthInterval = Number(config.browserHealthInterval);
+    }
+    if (config.encoders !== undefined && Array.isArray(config.encoders)) {
+      normalized.encoders = config.encoders;
+    }
+
+    return normalized;
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      console.error(`Error: Invalid JSON in config file: ${configPath}`);
+      console.error(`  ${error.message}`);
+    } else {
+      console.error(`Error reading config file: ${error.message}`);
+    }
+    return null;
+  }
+}
+
+/**
+ * Convert encoder objects from config file to CLI-style strings for yargs.
+ * @param {object[]} encoders - Array of encoder config objects
+ * @returns {string[]} - Array of CLI-formatted encoder strings
+ */
+function encodersToCliFormat(encoders) {
+  return encoders.map(enc => {
+    let str = enc.url;
+    // Only append optional parts if we have values beyond defaults
+    const hasChannel = enc.channel && enc.channel !== '24.42';
+    const hasWidth = enc.width && enc.width !== 0;
+    const hasHeight = enc.height && enc.height !== 0;
+    const hasAudio = enc.audioDevice;
+
+    if (hasChannel || hasWidth || hasHeight || hasAudio) {
+      str += `:${enc.channel || '24.42'}`;
+      str += `:${enc.width || 0}`;
+      str += `:${enc.height || 0}`;
+      if (hasAudio) {
+        str += `:${enc.audioDevice}`;
+      }
+    }
+    return str;
+  });
+}
+
+// Determine data directory early to find config file
+const rawArgsForDataDir = hideBin(process.argv);
+const earlyDataDir = getDataDirFromArgs(rawArgsForDataDir);
+const configFilePath = path.resolve(earlyDataDir, 'config.json');
+
+// Load config file if it exists
+const fileConfig = loadConfigFile(configFilePath);
+
+// Track whether we're using config file (for startup message)
+const usingConfigFile = fileConfig !== null;
 
 /**
  * Show available audio devices synchronously (blocking)
@@ -19,6 +146,30 @@ async function showAudioDevices() {
     });
   } catch (error) {
     console.log('  Error retrieving audio devices:', error.message);
+  }
+}
+
+/**
+ * Show display configuration for help/setup
+ * Displays monitor positions for encoder width_pos:height_pos configuration
+ */
+async function showDisplayConfiguration() {
+  logTS('Display Configuration (use these values for width_pos:height_pos):');
+  try {
+    const displayManager = new DisplayManager();
+    const displays = await displayManager.getDisplays();
+    if (displays && displays.length > 0) {
+      displays.forEach((display) => {
+        const primaryTag = display.primary ? ' (Primary)' : '';
+        logTS(`  ${display.name}${primaryTag}: Position ${display.x}:${display.y}, Size ${display.width}x${display.height}`);
+      });
+      logTS('  Note: If using DPI scaling above 100%, reported offsets may be incorrect.');
+      logTS('        Set displays to 100% scaling for accurate values.');
+    } else {
+      logTS('  No displays detected.');
+    }
+  } catch (error) {
+    logTS('  Error retrieving display configuration:', error.message);
   }
 }
 
@@ -75,13 +226,22 @@ const getAudioDevicesHelpText = async () => {
 // Remove the special help handling - let it go through the normal yargs flow
 const rawArgs = hideBin(process.argv);
 
+// Flag to track if yargs encountered an error (prevents further execution)
+let yargsErrorOccurred = false;
+
+// Determine if config file provides required values
+const hasConfigChannelsUrl = fileConfig && fileConfig.channelsUrl;
+const hasConfigEncoders = fileConfig && fileConfig.encoders && fileConfig.encoders.length > 0;
+
 const argv = yargs(rawArgs)
   .option('channels-url', {
     alias: 's',
     type: 'string',
-    demandOption: true,  // This makes the parameter required
+    default: fileConfig?.channelsUrl,
+    demandOption: !hasConfigChannelsUrl,  // Only required if not in config file
     describe: 'Channels server URL',
     coerce: (value) => {
+      if (value === undefined) return value; // Allow undefined for help display
       if (!isValidUrl(value)) {
         throw new Error(`Invalid URL: ${value}`);
       }
@@ -91,7 +251,7 @@ const argv = yargs(rawArgs)
   .option('channels-port', {
     alias: 'p',
     type: 'string',
-    default: '8089',
+    default: fileConfig?.channelsPort || '8089',
     describe: 'Channels server port',
     coerce: (value) => {
       const port = parseInt(value);
@@ -105,10 +265,27 @@ const argv = yargs(rawArgs)
   .option('encoder', {
     alias: 'e',
     type: 'array',
-    demandOption: true,
+    default: hasConfigEncoders ? encodersToCliFormat(fileConfig.encoders) : undefined,
+    demandOption: !hasConfigEncoders,  // Only required if not in config file
     describe: 'Encoder configurations in format "url[:channel:width_pos:height_pos:audio_device]" where channel is optional (format: xx.xx, default: 24.42), width_pos/height_pos are optional screen positions (default: 0:0), and audio_device is the optional audio output device name',
     coerce: (values) => {
+      // Allow undefined for help display
+      if (values === undefined || values === null) return values;
+      // Handle case where values come from config file as objects
+      if (values && values.length > 0 && typeof values[0] === 'object') {
+        return values.map(enc => ({
+          url: enc.url,
+          channel: enc.channel || '24.42',
+          width: parseInt(enc.width) || 0,
+          height: parseInt(enc.height) || 0,
+          audioDevice: enc.audioDevice || null
+        }));
+      }
       return values.map(value => {
+        // Skip undefined/null values
+        if (value === undefined || value === null) {
+          throw new Error('Encoder URL is required');
+        }
         // Find the position of the first colon after http:// or https://
         const protocolEnd = value.indexOf('://');
         if (protocolEnd === -1) {
@@ -165,7 +342,7 @@ const argv = yargs(rawArgs)
   .option('ch4c-port', {
     alias: 'c',
     type: 'number',
-    default: 2442,
+    default: fileConfig?.ch4cPort || 2442,
     describe: 'CH4C port number',
     coerce: (value) => {
       const port = parseInt(value);
@@ -178,19 +355,19 @@ const argv = yargs(rawArgs)
   .option('data-dir', {
     alias: 'd',
     type: 'string',
-    default: 'data',
+    default: fileConfig?.dataDir || 'data',
     describe: 'Directory location for storing channel data.'
   })
   .option('enable-pause-monitor', {
     alias: 'm',
     type: 'boolean',
-    default: true,
+    default: fileConfig?.enablePauseMonitor !== undefined ? fileConfig.enablePauseMonitor : true,
     describe: 'Enable automatic video pause detection and resume'
   })
   .option('pause-monitor-interval', {
     alias: 'i',
     type: 'number',
-    default: 10,
+    default: fileConfig?.pauseMonitorInterval || 10,
     describe: 'Interval in seconds to check for paused video',
     coerce: (value) => {
       const interval = parseInt(value);
@@ -203,7 +380,7 @@ const argv = yargs(rawArgs)
   .option('browser-health-interval', {
     alias: 'b',
     type: 'number',
-    default: 6,
+    default: fileConfig?.browserHealthInterval || 6,
     describe: 'Interval in hours to check browser health (validates browsers can navigate)',
     coerce: (value) => {
       const interval = parseFloat(value);
@@ -216,8 +393,10 @@ const argv = yargs(rawArgs)
   .option('ch4c-ssl-port', {
     alias: 't',
     type: 'number',
+    default: fileConfig?.ch4cSslPort,
     describe: 'Enable HTTPS on specified port (auto-generates SSL certificate if needed)',
     coerce: (value) => {
+      if (value === undefined || value === null) return undefined;
       const port = parseInt(value);
       if (isNaN(port) || port < 1 || port > 65535) {
         throw new Error('SSL port must be a number between 1 and 65535');
@@ -228,17 +407,19 @@ const argv = yargs(rawArgs)
   .option('ssl-hostnames', {
     alias: 'n',
     type: 'string',
+    default: fileConfig?.sslHostnames,
     describe: 'Additional hostnames/IPs for SSL certificate (comma-separated). Auto-detects local IPs if not specified.',
     coerce: (value) => {
       if (!value) return [];
+      if (Array.isArray(value)) return value;
       return value.split(',').map(h => h.trim()).filter(h => h.length > 0);
     }
   })
   .usage('Usage: $0 [options]')
   .example('> $0 -s "http://192.168.50.50" -e "http://192.168.50.71/live/stream0"')
   .example('\nSimple example with channels server at 192.168.50.50 and single encoder at 192.168.50.71')
-  .example('\n> $0 -s "http://192.168.50.50" -e "http://192.168.50.71/live/stream0:24.42:0:0:Encoder" -e "http://192.168.50.71/live/stream1:24.43:1921:0:MACROSILICON"')
-  .example('\nThis sets the channels server to 192.168.50.50 and encoder to 192.168.50.71/live/stream0 and a second encoder at stream1. The 1921 position of stream1 moves it to the right on startup on screen 2 in a dual monitor setup.')
+  .example('\n> $0 -s "http://192.168.50.50" -e "http://192.168.50.71/live/stream0:24.42:0:0:Encoder" -e "http://192.168.50.71/live/stream1:24.43:1920:0:MACROSILICON"')
+  .example('\nThis sets the channels server to 192.168.50.50 and encoder to 192.168.50.71/live/stream0 and a second encoder at stream1. The 1920 position of stream1 moves it to the right on startup on screen 2 in a dual monitor setup.')
   .example('\nWhen specifying more than one encoder, you will need to find the audio device Name and specify the first portion of it at the end of the encoder param.')
   .help(false)  // Disable built-in help to handle it in fail()
   .alias('help', 'h')
@@ -248,6 +429,8 @@ const argv = yargs(rawArgs)
   .strict()
   .exitProcess(false)  // Prevent yargs from calling process.exit()
   .fail((msg, err, yargs) => {
+    yargsErrorOccurred = true;
+
     // Show standard error message
     if (msg) console.error(msg);
     if (err) console.error('Error:', err.message);
@@ -256,13 +439,20 @@ const argv = yargs(rawArgs)
     // Show help
     yargs.showHelp();
 
-    // Show audio devices and exit when done
+    // Show audio devices and display config, then exit
     (async () => {
       await showAudioDevices();
+      await showDisplayConfiguration();
       process.exit(1);
     })();
   })
   .parse();
+
+// If yargs encountered an error, export empty and return (async exit will happen)
+if (yargsErrorOccurred) {
+  module.exports = {};
+  return;
+}
 
 // If help was requested explicitly, handle it here
 // Note: yargs .help(false) disables built-in help, so we need to check for it manually
@@ -280,8 +470,8 @@ if (argv.help) {
     .usage('Usage: $0 [options]')
     .example('> $0 -s "http://192.168.50.50" -e "http://192.168.50.71/live/stream0"')
     .example('\nSimple example with channels server at 192.168.50.50 and single encoder at 192.168.50.71')
-    .example('\n> $0 -s "http://192.168.50.50" -e "http://192.168.50.71/live/stream0:24.42:0:0:Encoder" -e "http://192.168.50.72/live/stream1:24.43:1921:0:MACROSILICON"')
-    .example('\nThis sets the channels server to 192.168.50.50 and encoder to 192.168.50.71/live/stream0 and a second encoder at stream1. The 1921 position of stream1 moves it to the right on startup on screen 2 in a dual monitor setup.')
+    .example('\n> $0 -s "http://192.168.50.50" -e "http://192.168.50.71/live/stream0:24.42:0:0:Encoder" -e "http://192.168.50.72/live/stream1:24.43:1920:0:MACROSILICON"')
+    .example('\nThis sets the channels server to 192.168.50.50 and encoder to 192.168.50.71/live/stream0 and a second encoder at stream1. The 1920 position of stream1 moves it to the right on startup on screen 2 in a dual monitor setup.')
     .example('\nWhen specifying more than one encoder, you will need to find the audio device Name and specify the first portion of it at the end of the encoder param.')
     .help()
     .wrap(null)
@@ -290,10 +480,48 @@ if (argv.help) {
   // Show help
   helpYargs.showHelp();
 
-  // Show audio devices and exit when done
+  // Show audio devices and display config, then exit
   (async () => {
     await showAudioDevices();
+    await showDisplayConfiguration();
     process.exit(0);
+  })();
+
+  // Export empty config and return to prevent further initialization
+  module.exports = {};
+  return;
+}
+
+// Check if required parameters are missing - if so, show help and exit
+if (!argv['channels-url'] || !argv['encoder'] || argv['encoder'].length === 0) {
+  // Show help for missing required parameters
+  console.error('Error: Missing required parameters. Please provide --channels-url (-s) and --encoder (-e).\n');
+
+  const helpYargs = yargs()
+    .option('channels-url', { alias: 's', type: 'string', demandOption: true, describe: 'Channels server URL' })
+    .option('channels-port', { alias: 'p', type: 'string', default: '8089', describe: 'Channels server port' })
+    .option('encoder', { alias: 'e', type: 'array', demandOption: true, describe: 'Encoder configurations in format "url[:channel:width_pos:height_pos:audio_device]"' })
+    .option('ch4c-port', { alias: 'c', type: 'number', default: 2442, describe: 'CH4C port number' })
+    .option('data-dir', { alias: 'd', type: 'string', default: 'data', describe: 'Directory for storing channel data' })
+    .option('enable-pause-monitor', { alias: 'm', type: 'boolean', default: true, describe: 'Enable automatic video pause detection and resume' })
+    .option('pause-monitor-interval', { alias: 'i', type: 'number', default: 10, describe: 'Interval in seconds to check for paused video' })
+    .option('browser-health-interval', { alias: 'b', type: 'number', default: 6, describe: 'Interval in hours to check browser health' })
+    .option('ch4c-ssl-port', { alias: 't', type: 'number', describe: 'Enable HTTPS on specified port' })
+    .option('ssl-hostnames', { alias: 'n', type: 'string', describe: 'Additional hostnames/IPs for SSL certificate (comma-separated)' })
+    .usage('Usage: $0 [options]')
+    .example('$0 -s "http://192.168.50.50" -e "http://192.168.50.71/live/stream0"')
+    .help()
+    .wrap(null)
+    .version(false);
+
+  helpYargs.showHelp();
+
+  // Show audio devices and display config, then exit
+  (async () => {
+    await showAudioDevices();
+    await showDisplayConfiguration();
+    logTS('Tip: Create a config.json file in your data directory to avoid specifying parameters on the command line.');
+    process.exit(1);
   })();
 
   // Export empty config and return to prevent further initialization
@@ -321,8 +549,13 @@ const config = {
   BROWSER_HEALTH_INTERVAL: argv['browser-health-interval']
 };
 
-console.log('Current configuration:');
-console.log(JSON.stringify(config, null, 2));
+if (usingConfigFile) {
+  logTS(`Configuration loaded from: ${configFilePath}`);
+} else {
+  logTS('Configuration loaded from: command line arguments');
+}
+logTS('Current configuration:');
+logTS(JSON.stringify(config, null, 2));
 
 //export default config;
 
@@ -420,6 +653,25 @@ const START_PAGE_HTML = `
         .quick-link:hover {
             transform: translateY(-2px);
             box-shadow: 0 8px 16px rgba(102, 126, 234, 0.4);
+        }
+
+        .docs-link {
+            display: inline-block;
+            padding: 12px 24px;
+            background: white;
+            border: 2px solid #667eea;
+            color: #667eea;
+            text-decoration: none;
+            font-size: 14px;
+            font-weight: 500;
+            border-radius: 8px;
+            transition: all 0.3s ease;
+        }
+
+        .docs-link:hover {
+            background: #f7fafc;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.2);
         }
 
         .section {
@@ -570,8 +822,8 @@ const START_PAGE_HTML = `
             <a href="/instant" class="quick-link">📺 Instant Recording</a>
             <a href="/m3u-manager" class="quick-link">📋 M3U Manager</a>
             <a href="/remote-access" class="quick-link">🖥️ Remote Access</a>
+            <a href="/settings" class="quick-link">⚙️ Settings</a>
             <a href="/logs" class="quick-link">📜 Logs</a>
-            <a href="https://github.com/dravenst/CH4C#readme" target="_blank" class="quick-link">📖 Docs</a>
         </div>
 
         <div id="https-notice" style="display: none; margin: 24px 0; padding: 12px 16px; background: #fff3cd; border: 1px solid #ffc107; border-radius: 8px; color: #856404; position: relative;">
@@ -605,12 +857,11 @@ const START_PAGE_HTML = `
             </div>
         </div>
 
-        <div class="info-box" style="margin: 24px 0;">
-            <p><strong>Features:</strong></p>
-            <p style="margin-top: 8px;">• <strong><a href="/instant" style="color: #667eea; text-decoration: none;">Instant Recording</a>:</strong> Start recording web streams immediately with a single click</p>
-            <p>• <strong><a href="/m3u-manager" style="color: #667eea; text-decoration: none;">M3U Manager</a>:</strong> Visual interface to create and manage your channel lineup</p>
-            <p>• <strong><a href="/remote-access" style="color: #667eea; text-decoration: none;">Remote Access</a>:</strong> View and control CH4C browsers through VNC in your web browser</p>
-            <p>• <strong>Multi-Encoder Support:</strong> Run multiple encoders with independent browser instances</p>
+        <div class="section">
+            <h2 class="section-title">Documentation</h2>
+            <div style="text-align: center;">
+                <a href="https://github.com/dravenst/CH4C#readme" target="_blank" class="docs-link">📖 Documentation & Setup Guide</a>
+            </div>
         </div>
 
         <div class="section">
@@ -684,76 +935,28 @@ const START_PAGE_HTML = `
         </div>
 
         <div class="section">
-            <h2 class="section-title">Command Line Reference</h2>
-
+            <h2 class="section-title">Configuration</h2>
             <div class="info-box">
-                <p><strong>Usage:</strong> <code>node main.js [options]</code></p>
+                <p>Configure CH4C using a <code>config.json</code> file in the data directory. See <a href="https://github.com/dravenst/CH4C#readme" target="_blank" style="color: #667eea;">Documentation</a> for command-line options.</p>
             </div>
-
-            <div class="code-block">Options:
-  -s, --channels-url            Channels server URL
-                                [string] [required]
-
-  -p, --channels-port           Channels server port
-                                [string] [default: "8089"]
-
-  -e, --encoder                 Encoder configurations in format
-                                "url[:channel:width_pos:height_pos:audio_device]"
-                                where channel is optional (format: xx.xx, default: 24.42),
-                                width_pos/height_pos are optional screen positions (default: 0:0),
-                                and audio_device is the optional audio output device name
-                                [array] [required]
-
-  -c, --ch4c-port               CH4C port number (HTTP)
-                                [number] [default: 2442]
-
-  -t, --ch4c-ssl-port           Enable HTTPS on specified port
-                                Auto-generates SSL certificate if needed
-                                [number] [optional]
-
-  -n, --ssl-hostnames           Additional hostnames/IPs for SSL certificate
-                                Comma-separated list (e.g., "192.168.1.100,myserver.local")
-                                Auto-detects local network IPs if not specified
-                                [string] [optional]
-
-  -d, --data-dir                Directory for storing channel data
-                                Can be relative or absolute path
-                                [string] [default: "data"]
-
-  -m, --enable-pause-monitor    Enable automatic video pause detection and resume
-                                [boolean] [default: true]
-
-  -i, --pause-monitor-interval  Interval in seconds to check for paused video
-                                [number] [default: 10]
-
-  -b, --browser-health-interval Interval in hours to check browser health
-                                [number] [default: 6]</div>
-
-            <div class="info-box" style="margin-top: 24px;">
-                <p><strong>Simple setup with single encoder:</strong></p>
-                <p>Replace <code>CHANNELS_DVR_IP</code> with your Channels DVR server IP and <code>ENCODER_IP_ADDRESS</code> with your encoder's IP address.</p>
-            </div>
-            <div class="code-block">node main.js -s "http://CHANNELS_DVR_IP" -e "http://ENCODER_IP_ADDRESS/live/stream0"</div>
-
+            <div class="code-block">{
+  "channelsUrl": "http://CHANNELS_DVR_IP",
+  "channelsPort": "8089",
+  "ch4cPort": 2442,
+  "ch4cSslPort": 2443,
+  "encoders": [
+    {
+      "url": "http://ENCODER_IP/live/stream0",
+      "channel": "24.42",
+      "width": 0,
+      "height": 0,
+      "audioDevice": "Encoder"
+    }
+  ]
+}</div>
             <div class="info-box" style="margin-top: 16px;">
-                <p><strong>With HTTPS enabled (for secure Remote Access clipboard):</strong></p>
-                <p>Adds HTTPS on port 2443. Auto-generates SSL certificate with auto-detected local network IPs in <code>data/</code> directory.</p>
+                <p><strong>Encoder properties:</strong> <code>url</code> (required), <code>channel</code> (default: 24.42), <code>width</code>/<code>height</code> (screen position offset), <code>audioDevice</code> (audio output device name)</p>
             </div>
-            <div class="code-block">node main.js -s "http://CHANNELS_DVR_IP" -e "http://ENCODER_IP_ADDRESS/live/stream0" -t 2443</div>
-
-            <div class="info-box" style="margin-top: 16px;">
-                <p><strong>With HTTPS and additional hostnames/IPs:</strong></p>
-                <p>Specify additional hostnames or IP addresses to include in the SSL certificate (in addition to auto-detected IPs).</p>
-            </div>
-            <div class="code-block">node main.js -s "http://CHANNELS_DVR_IP" -e "http://ENCODER_IP_ADDRESS/live/stream0" -t 2443 -n "10.0.0.5,myserver.local"</div>
-
-            <div class="info-box" style="margin-top: 16px;">
-                <p><strong>Multiple encoders with audio devices and screen positioning:</strong></p>
-                <p>Replace the IP addresses and audio device names (<code>Encoder</code>, <code>MACROSILICON</code>) with your actual values. The <code>1921</code> position moves the second encoder window to screen 2 in a dual monitor setup.</p>
-            </div>
-            <div class="code-block">node main.js -s "http://CHANNELS_DVR_IP" \\
-  -e "http://ENCODER_IP_ADDRESS/live/stream0:24.42:0:0:Encoder" \\
-  -e "http://ENCODER_IP_ADDRESS/live/stream1:24.43:1921:0:MACROSILICON"</div>
         </div>
 
         <div class="section">
@@ -830,17 +1033,35 @@ http://CH4C_IP_ADDRESS:${CH4C_PORT}/stream?url=https://www.spectrum.net/livetv</
                         const activeSection = document.createElement('div');
                         activeSection.style.gridColumn = '1 / -1';
                         activeSection.style.marginTop = '16px';
-                        activeSection.innerHTML = '<h3 style="color: #2d3748; font-size: 16px; margin-bottom: 12px;">Active Streams:</h3>';
+                        activeSection.innerHTML = '<h3 style="color: #2d3748; font-size: 16px; margin-bottom: 12px;">🔴 Active Streams:</h3>';
 
                         data.activeStreams.forEach(stream => {
                             const uptimeMinutes = Math.floor(stream.uptime / 60000);
-                            const targetUrlDisplay = stream.targetUrl ? \`<br><span style="font-size: 12px; color: #4a5568;">Streaming: \${stream.targetUrl}</span>\` : '';
+                            const targetUrlDisplay = stream.targetUrl || 'Unknown URL';
+                            const displayUrl = targetUrlDisplay.length > 60 ? targetUrlDisplay.substring(0, 60) + '...' : targetUrlDisplay;
+                            // Find encoder index by URL
+                            const encoderIndex = data.encoders.findIndex(e => e.url === stream.url);
+                            const encoderChannel = encoderIndex >= 0 ? data.encoders[encoderIndex].channel : '?';
                             activeSection.innerHTML += \`
-                                <div class="info-box" style="margin-bottom: 8px;">
-                                    <p><strong>Encoder: \${stream.url}</strong> - Uptime: \${uptimeMinutes} minutes\${targetUrlDisplay}</p>
+                                <div style="display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; background: #fff5f5; border: 1px solid #feb2b2; border-radius: 8px; margin-bottom: 8px;">
+                                    <div style="flex: 1; min-width: 0;">
+                                        <div style="font-weight: 600; color: #2d3748;">Channel \${encoderChannel}</div>
+                                        <div style="font-size: 12px; color: #718096; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="\${targetUrlDisplay}">\${displayUrl}</div>
+                                        <div style="font-size: 11px; color: #a0aec0;">Running for \${uptimeMinutes} min</div>
+                                    </div>
+                                    <a href="/stop/\${encoderIndex}" onclick="return confirm('Stop this stream on Channel \${encoderChannel}?')" style="padding: 8px 16px; background: #fc8181; color: white; text-decoration: none; border-radius: 6px; font-size: 13px; font-weight: 600; margin-left: 12px; flex-shrink: 0;">Stop</a>
                                 </div>
                             \`;
                         });
+
+                        // Add Stop All button if multiple streams
+                        if (data.activeStreams.length > 0) {
+                            activeSection.innerHTML += \`
+                                <div style="text-align: center; margin-top: 12px;">
+                                    <a href="/stop" onclick="return confirm('Stop ALL active streams?')" style="display: inline-block; padding: 10px 20px; background: #e53e3e; color: white; text-decoration: none; border-radius: 6px; font-size: 14px; font-weight: 600;">Stop All Streams</a>
+                                </div>
+                            \`;
+                        }
                         container.appendChild(activeSection);
                     }
                 } else {
@@ -1169,6 +1390,208 @@ const INSTANT_PAGE_HTML = `
             color: #2d3748;
         }
 
+        .active-streams {
+            margin-top: 32px;
+            padding-top: 24px;
+            border-top: 2px solid #e2e8f0;
+        }
+
+        .active-streams h3 {
+            color: #2d3748;
+            font-size: 18px;
+            margin-bottom: 16px;
+        }
+
+        .stream-list {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .stream-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 16px;
+            background: #f7fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+        }
+
+        .stream-info {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            flex: 1;
+            min-width: 0;
+        }
+
+        .stream-info strong {
+            color: #2d3748;
+            font-size: 14px;
+        }
+
+        .stream-url {
+            color: #718096;
+            font-size: 12px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .stream-duration {
+            color: #a0aec0;
+            font-size: 11px;
+        }
+
+        .btn-stop {
+            padding: 8px 16px;
+            background: #fc8181;
+            color: white;
+            text-decoration: none;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 600;
+            margin-left: 12px;
+            flex-shrink: 0;
+        }
+
+        .btn-stop:hover {
+            background: #f56565;
+        }
+
+        .stream-actions {
+            margin-top: 16px;
+            text-align: center;
+        }
+
+        .btn-stop-all {
+            display: inline-block;
+            padding: 10px 20px;
+            background: #e53e3e;
+            color: white;
+            text-decoration: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .btn-stop-all:hover {
+            background: #c53030;
+        }
+
+        /* Modal styles */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal-overlay.active {
+            display: flex;
+        }
+
+        .modal {
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 450px;
+            width: 90%;
+            padding: 32px;
+            text-align: center;
+            animation: modalSlideIn 0.3s ease;
+        }
+
+        @keyframes modalSlideIn {
+            from {
+                opacity: 0;
+                transform: translateY(-20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .modal-icon {
+            font-size: 48px;
+            margin-bottom: 16px;
+        }
+
+        .modal-title {
+            color: #2d3748;
+            font-size: 22px;
+            font-weight: 700;
+            margin-bottom: 12px;
+        }
+
+        .modal-message {
+            color: #4a5568;
+            font-size: 15px;
+            margin-bottom: 8px;
+        }
+
+        .modal-detail {
+            color: #718096;
+            font-size: 13px;
+            background: #f7fafc;
+            padding: 12px;
+            border-radius: 8px;
+            margin: 16px 0;
+        }
+
+        .modal-buttons {
+            display: flex;
+            gap: 12px;
+            justify-content: center;
+            margin-top: 24px;
+        }
+
+        .modal-btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .modal-btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .modal-btn-primary:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+
+        .modal-btn-danger {
+            background: #fc8181;
+            color: white;
+        }
+
+        .modal-btn-danger:hover {
+            background: #f56565;
+        }
+
+        .modal-success .modal-title { color: #22543d; }
+        .modal-success .modal-icon { color: #48bb78; }
+
+        .modal-info .modal-title { color: #2b6cb0; }
+        .modal-info .modal-icon { color: #4299e1; }
+
+        .modal-error .modal-title { color: #c53030; }
+        .modal-error .modal-icon { color: #fc8181; }
+
         @media (max-width: 640px) {
             .container {
                 padding: 24px;
@@ -1330,11 +1753,20 @@ const INSTANT_PAGE_HTML = `
                     <strong>📹 Start Recording:</strong> Creates a scheduled recording in Channels DVR and begins streaming the URL.<br>
                     <strong>📺 Tune to Channel:</strong> Simply loads the URL on an available encoder without recording. The stream will be available on the encoder's channel number in Channels DVR. Optional: specify duration for auto-stop, or leave blank for indefinite streaming.
                 </p>
-                <p style="margin-top: 12px; padding-top: 12px; border-top: 1px solid #cbd5e0;">
-                    <strong>Need to stop a stream?</strong> Visit <a href="/stop" style="color: #667eea; text-decoration: underline;">/stop</a> to stop all active streams.
-                </p>
             </div>
         </form>
+        <<active_streams>>
+    </div>
+
+    <!-- Modal for confirmations -->
+    <div class="modal-overlay" id="modal-overlay">
+        <div class="modal" id="modal">
+            <div class="modal-icon" id="modal-icon"></div>
+            <h2 class="modal-title" id="modal-title"></h2>
+            <p class="modal-message" id="modal-message"></p>
+            <div class="modal-detail" id="modal-detail"></div>
+            <div class="modal-buttons" id="modal-buttons"></div>
+        </div>
     </div>
 
     <script>
@@ -1369,19 +1801,181 @@ const INSTANT_PAGE_HTML = `
         updateTuneButtonText();
         encoderSelect.addEventListener('change', updateTuneButtonText);
 
-        form.addEventListener('submit', function(e) {
+        // Modal functions
+        function showModal(type, icon, title, message, detail, buttons) {
+            const overlay = document.getElementById('modal-overlay');
+            const modal = document.getElementById('modal');
+            const modalIcon = document.getElementById('modal-icon');
+            const modalTitle = document.getElementById('modal-title');
+            const modalMessage = document.getElementById('modal-message');
+            const modalDetail = document.getElementById('modal-detail');
+            const modalButtons = document.getElementById('modal-buttons');
+
+            modal.className = 'modal modal-' + type;
+            modalIcon.textContent = icon;
+            modalTitle.textContent = title;
+            modalMessage.textContent = message;
+            modalDetail.textContent = detail;
+            modalDetail.style.display = detail ? 'block' : 'none';
+
+            modalButtons.innerHTML = '';
+            buttons.forEach(btn => {
+                const button = document.createElement('button');
+                button.className = 'modal-btn ' + (btn.class || 'modal-btn-primary');
+                button.textContent = btn.text;
+                button.onclick = btn.action;
+                modalButtons.appendChild(button);
+            });
+
+            overlay.classList.add('active');
+        }
+
+        function hideModal() {
+            document.getElementById('modal-overlay').classList.remove('active');
+        }
+
+        // Close modal when clicking overlay
+        document.getElementById('modal-overlay').addEventListener('click', function(e) {
+            if (e.target === this) hideModal();
+        });
+
+        form.addEventListener('submit', async function(e) {
+            e.preventDefault();
             const submitButton = e.submitter;
 
             if (submitButton && submitButton.name === 'button_record') {
                 // Recording requires duration
                 if (!durationInput.value || parseInt(durationInput.value) <= 0) {
-                    e.preventDefault();
-                    alert('Duration is required when starting a recording.');
-                    durationInput.focus();
+                    showModal('error', '⚠️', 'Duration Required',
+                        'Please enter a duration for the recording.', '',
+                        [{ text: 'OK', action: () => { hideModal(); durationInput.focus(); } }]);
                     return;
                 }
             }
+
+            // Disable buttons during submission
+            const buttons = form.querySelectorAll('button[type="submit"]');
+            buttons.forEach(btn => btn.disabled = true);
+
+            try {
+                // Build URL-encoded form data (Express body-parser expects this format)
+                const formData = new FormData(form);
+                formData.append(submitButton.name, submitButton.value);
+
+                // Convert FormData to URL-encoded string
+                const urlEncodedData = new URLSearchParams();
+                for (const [key, value] of formData.entries()) {
+                    urlEncodedData.append(key, value);
+                }
+
+                const response = await fetch('/instant', {
+                    method: 'POST',
+                    body: urlEncodedData,
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'Accept': 'application/json'
+                    }
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    const isRecording = submitButton.name === 'button_record';
+                    const icon = isRecording ? '✓' : '📺';
+                    const title = isRecording ? 'Recording Started' : 'Tuned to Channel ' + result.channel;
+                    const type = isRecording ? 'success' : 'info';
+
+                    let message = result.message || '';
+                    let detail = result.detail || '';
+
+                    showModal(type, icon, title, message, detail, [{ text: 'OK', action: hideModal }]);
+
+                    // Refresh active streams
+                    refreshActiveStreams();
+
+                    // Clear form
+                    document.getElementById('recording_url').value = '';
+                    document.getElementById('recording_name').value = '';
+                    document.getElementById('episode_title').value = '';
+                    document.getElementById('recording_summary').value = '';
+                    document.getElementById('season_number').value = '';
+                    document.getElementById('episode_number').value = '';
+                } else {
+                    showModal('error', '❌', 'Error', result.error || 'An error occurred', '',
+                        [{ text: 'OK', action: hideModal }]);
+                }
+            } catch (error) {
+                showModal('error', '❌', 'Error', 'Failed to communicate with server: ' + error.message, '',
+                    [{ text: 'OK', action: hideModal }]);
+            } finally {
+                buttons.forEach(btn => btn.disabled = false);
+            }
         });
+
+        // Fetch and update active streams
+        async function refreshActiveStreams() {
+            try {
+                const response = await fetch('/health');
+                const data = await response.json();
+
+                let activeStreamsContainer = document.getElementById('active-streams-container');
+
+                // Create the container if it doesn't exist
+                if (!activeStreamsContainer) {
+                    const container = document.querySelector('.container');
+                    const existingSection = container.querySelector('.active-streams');
+                    if (existingSection) {
+                        existingSection.id = 'active-streams-container';
+                        activeStreamsContainer = existingSection;
+                    } else {
+                        activeStreamsContainer = document.createElement('div');
+                        activeStreamsContainer.id = 'active-streams-container';
+                        activeStreamsContainer.className = 'active-streams';
+                        container.appendChild(activeStreamsContainer);
+                    }
+                }
+
+                if (data.activeStreams && data.activeStreams.length > 0) {
+                    let html = '<h3>Active Streams</h3><div class="stream-list">';
+
+                    data.activeStreams.forEach(stream => {
+                        const uptimeMinutes = Math.floor(stream.uptime / 60000);
+                        const targetUrlDisplay = stream.targetUrl || 'Unknown URL';
+                        const displayUrl = targetUrlDisplay.length > 50 ? targetUrlDisplay.substring(0, 50) + '...' : targetUrlDisplay;
+
+                        // Find encoder index by URL
+                        const encoderIndex = data.encoders.findIndex(e => e.url === stream.url);
+                        const encoderChannel = encoderIndex >= 0 ? data.encoders[encoderIndex].channel : '?';
+
+                        html += \`
+                            <div class="stream-item">
+                                <div class="stream-info">
+                                    <strong>Channel \${encoderChannel}</strong>
+                                    <span class="stream-url" title="\${targetUrlDisplay}">\${displayUrl}</span>
+                                    <span class="stream-duration">Running for \${uptimeMinutes} min</span>
+                                </div>
+                                <a href="/stop/\${encoderIndex}" class="btn-stop" onclick="return confirm('Stop this stream on Channel \${encoderChannel}?')">Stop</a>
+                            </div>
+                        \`;
+                    });
+
+                    html += '</div>';
+                    html += '<div class="stream-actions"><a href="/stop" class="btn-stop-all" onclick="return confirm(\\'Stop ALL active streams?\\')">Stop All Streams</a></div>';
+
+                    activeStreamsContainer.innerHTML = html;
+                    activeStreamsContainer.style.display = 'block';
+                } else {
+                    activeStreamsContainer.innerHTML = '';
+                    activeStreamsContainer.style.display = 'none';
+                }
+            } catch (error) {
+                console.error('Error refreshing active streams:', error);
+            }
+        }
+
+        // Initial load and refresh every 5 seconds
+        refreshActiveStreams();
+        setInterval(refreshActiveStreams, 5000);
     </script>
 </body>
 </html>
@@ -1968,7 +2562,8 @@ const REMOTE_ACCESS_PAGE_HTML = `
             try {
                 // Create RFB connection
                 rfb = new RFB(document.getElementById('screen'), wsUrl, {
-                    credentials: { password: password }
+                    credentials: { password: password },
+                    focusOnClick: true  // Ensure VNC canvas gets focus on click
                 });
 
                 // Set viewport options - show full desktop at native resolution
@@ -1977,6 +2572,16 @@ const REMOTE_ACCESS_PAGE_HTML = `
                 rfb.clipViewport = false;   // Show full desktop
                 rfb.showDotCursor = true;   // Always show a local cursor dot
                 rfb.dragViewport = false;   // Disable drag to pan (we use buttons instead)
+
+                // Prevent browser from intercepting Ctrl+C/V/X when VNC has focus
+                // These shortcuts should be sent to the remote machine instead
+                const screenContainer = document.getElementById('screen');
+                screenContainer.addEventListener('keydown', (e) => {
+                    if (e.ctrlKey && (e.key === 'c' || e.key === 'v' || e.key === 'x' || e.key === 'a')) {
+                        e.stopPropagation();
+                        // Don't preventDefault - let noVNC handle it
+                    }
+                }, true);  // Use capture phase to intercept before browser
 
                 // Override _updateScale to prevent noVNC from resetting our manual scale
                 const originalUpdateScale = rfb._updateScale.bind(rfb);
@@ -4043,12 +4648,15 @@ const LOGS_PAGE_HTML = `
             font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
             font-size: 13px;
             line-height: 1.5;
+            user-select: text;
+            cursor: text;
         }
 
         .log-entry {
             color: #e2e8f0;
             padding: 2px 0;
             border-bottom: 1px solid #2d3748;
+            user-select: text;
         }
 
         .log-entry:last-child {
@@ -4140,16 +4748,21 @@ const LOGS_PAGE_HTML = `
             const container = document.getElementById('logContainer');
             const wasAtBottom = container.scrollHeight - container.scrollTop <= container.clientHeight + 50;
 
-            container.innerHTML = logs.map(log =>
+            const newHtml = logs.map(log =>
                 \`<div class="log-entry"><span class="log-timestamp">[\${log.timestamp}]</span><span class="log-message">\${escapeHtml(log.message)}</span></div>\`
             ).join('');
 
-            document.getElementById('logCount').textContent = \`Showing \${logs.length} log entries\`;
+            // Only update if content changed (preserves text selection)
+            if (container.innerHTML !== newHtml) {
+                container.innerHTML = newHtml;
 
-            // Auto-scroll to bottom if user was already at bottom
-            if (wasAtBottom) {
-                container.scrollTop = container.scrollHeight;
+                // Auto-scroll to bottom if user was already at bottom
+                if (wasAtBottom) {
+                    container.scrollTop = container.scrollHeight;
+                }
             }
+
+            document.getElementById('logCount').textContent = \`Showing \${logs.length} log entries\`;
         }
 
         function escapeHtml(text) {
@@ -4207,6 +4820,386 @@ const LOGS_PAGE_HTML = `
 </html>
 `;
 
+const SETTINGS_PAGE_HTML = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Settings - CH4C</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 800px;
+            width: 100%;
+            margin: 0 auto;
+            padding: 40px;
+        }
+
+        .header .back-link {
+            display: inline-block;
+            margin-top: 12px;
+            color: #667eea;
+            text-decoration: none;
+            font-size: 14px;
+        }
+
+        .header .back-link:hover {
+            text-decoration: underline;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 32px;
+        }
+
+        .header h1 {
+            color: #2d3748;
+            font-size: 28px;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+
+        .header p {
+            color: #718096;
+            font-size: 14px;
+        }
+
+        .section {
+            margin-bottom: 32px;
+        }
+
+        .section-header {
+            font-size: 12px;
+            font-weight: 600;
+            color: #667eea;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            padding-bottom: 12px;
+            border-bottom: 2px solid #e2e8f0;
+            margin-bottom: 16px;
+        }
+
+        .settings-table {
+            width: 100%;
+        }
+
+        .settings-row {
+            display: flex;
+            padding: 12px 0;
+            border-bottom: 1px solid #f0f0f0;
+        }
+
+        .settings-row:last-child {
+            border-bottom: none;
+        }
+
+        .settings-label {
+            flex: 0 0 180px;
+            font-weight: 500;
+            color: #4a5568;
+            font-size: 14px;
+        }
+
+        .settings-value {
+            flex: 1;
+            color: #2d3748;
+            font-size: 14px;
+            word-break: break-all;
+        }
+
+        .settings-value.mono {
+            font-family: 'Monaco', 'Courier New', monospace;
+            font-size: 13px;
+            background: #f7fafc;
+            padding: 4px 8px;
+            border-radius: 4px;
+        }
+
+        .encoder-card {
+            background: #f7fafc;
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 12px;
+            border-left: 4px solid #667eea;
+        }
+
+        .encoder-card:last-child {
+            margin-bottom: 0;
+        }
+
+        .encoder-header {
+            font-weight: 600;
+            color: #2d3748;
+            margin-bottom: 12px;
+            font-size: 15px;
+        }
+
+        .encoder-details {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 8px;
+        }
+
+        .encoder-detail {
+            font-size: 13px;
+        }
+
+        .encoder-detail-label {
+            color: #718096;
+        }
+
+        .encoder-detail-value {
+            color: #2d3748;
+            font-family: 'Monaco', 'Courier New', monospace;
+            font-size: 12px;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+
+        .status-badge.enabled {
+            background: #c6f6d5;
+            color: #276749;
+        }
+
+        .status-badge.disabled {
+            background: #fed7d7;
+            color: #c53030;
+        }
+
+        .info-box {
+            background: #edf2f7;
+            border-left: 4px solid #667eea;
+            padding: 16px;
+            border-radius: 4px;
+            margin-top: 24px;
+        }
+
+        .info-box-title {
+            font-weight: 600;
+            color: #2d3748;
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+
+        .info-box-text {
+            color: #4a5568;
+            font-size: 13px;
+            line-height: 1.5;
+        }
+
+        .info-box-text code {
+            background: #e2e8f0;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-family: 'Monaco', 'Courier New', monospace;
+            font-size: 12px;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #718096;
+        }
+
+        .error-message {
+            background: #fed7d7;
+            border-left: 4px solid #c53030;
+            padding: 16px;
+            border-radius: 4px;
+            color: #c53030;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                padding: 24px;
+            }
+
+            .header h1 {
+                font-size: 24px;
+            }
+
+            .settings-row {
+                flex-direction: column;
+                gap: 4px;
+            }
+
+            .settings-label {
+                flex: none;
+            }
+
+            .encoder-details {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>⚙️ Settings</h1>
+            <p>Current CH4C configuration</p>
+            <a href="/" class="back-link">← Back to Home</a>
+        </div>
+
+        <div id="settings-content">
+            <div class="loading">Loading settings...</div>
+        </div>
+    </div>
+
+    <script>
+        async function loadSettings() {
+            const container = document.getElementById('settings-content');
+
+            try {
+                const response = await fetch('/api/settings');
+                if (!response.ok) {
+                    throw new Error('Failed to load settings');
+                }
+                const settings = await response.json();
+
+                container.innerHTML = renderSettings(settings);
+            } catch (error) {
+                container.innerHTML = \`
+                    <div class="error-message">
+                        Error loading settings: \${error.message}
+                    </div>
+                \`;
+            }
+        }
+
+        function renderSettings(settings) {
+            return \`
+                <div class="section">
+                    <div class="section-header">Channels DVR</div>
+                    <div class="settings-table">
+                        <div class="settings-row">
+                            <div class="settings-label">Server URL</div>
+                            <div class="settings-value mono">\${settings.channelsUrl || 'Not configured'}</div>
+                        </div>
+                        <div class="settings-row">
+                            <div class="settings-label">Port</div>
+                            <div class="settings-value">\${settings.channelsPort || '8089'}</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="section">
+                    <div class="section-header">CH4C Server</div>
+                    <div class="settings-table">
+                        <div class="settings-row">
+                            <div class="settings-label">HTTP Port</div>
+                            <div class="settings-value">\${settings.ch4cPort || '2442'}</div>
+                        </div>
+                        <div class="settings-row">
+                            <div class="settings-label">HTTPS Port</div>
+                            <div class="settings-value">\${settings.ch4cSslPort || 'Disabled'}</div>
+                        </div>
+                        <div class="settings-row">
+                            <div class="settings-label">Data Directory</div>
+                            <div class="settings-value mono">\${settings.dataDir || 'data'}</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="section">
+                    <div class="section-header">Encoders</div>
+                    \${renderEncoders(settings.encoders || [])}
+                </div>
+
+                <div class="section">
+                    <div class="section-header">Monitoring</div>
+                    <div class="settings-table">
+                        <div class="settings-row">
+                            <div class="settings-label">Pause Monitor</div>
+                            <div class="settings-value">
+                                <span class="status-badge \${settings.enablePauseMonitor ? 'enabled' : 'disabled'}">
+                                    \${settings.enablePauseMonitor ? 'Enabled' : 'Disabled'}
+                                </span>
+                            </div>
+                        </div>
+                        <div class="settings-row">
+                            <div class="settings-label">Pause Check Interval</div>
+                            <div class="settings-value">\${settings.pauseMonitorInterval || 10} seconds</div>
+                        </div>
+                        <div class="settings-row">
+                            <div class="settings-label">Browser Health Check</div>
+                            <div class="settings-value">\${settings.browserHealthInterval || 6} hours</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="info-box">
+                    <div class="info-box-title">Configuration Source</div>
+                    <div class="info-box-text">
+                        \${settings.configSource === 'file'
+                            ? \`Loaded from: <code>\${settings.configPath}</code>\`
+                            : 'Loaded from command-line arguments'}
+                        <br><br>
+                        To modify settings, edit <code>config.json</code> in your data directory and restart CH4C.
+                    </div>
+                </div>
+            \`;
+        }
+
+        function renderEncoders(encoders) {
+            if (encoders.length === 0) {
+                return '<div class="settings-value">No encoders configured</div>';
+            }
+
+            return encoders.map((encoder, index) => \`
+                <div class="encoder-card">
+                    <div class="encoder-header">Encoder \${index + 1}</div>
+                    <div class="encoder-details">
+                        <div class="encoder-detail">
+                            <span class="encoder-detail-label">URL: </span>
+                            <span class="encoder-detail-value">\${encoder.url}</span>
+                        </div>
+                        <div class="encoder-detail">
+                            <span class="encoder-detail-label">Channel: </span>
+                            <span class="encoder-detail-value">\${encoder.channel}</span>
+                        </div>
+                        <div class="encoder-detail">
+                            <span class="encoder-detail-label">Position: </span>
+                            <span class="encoder-detail-value">\${encoder.width} x \${encoder.height}</span>
+                        </div>
+                        <div class="encoder-detail">
+                            <span class="encoder-detail-label">Audio Device: </span>
+                            <span class="encoder-detail-value">\${encoder.audioDevice || 'Default'}</span>
+                        </div>
+                    </div>
+                </div>
+            \`).join('');
+        }
+
+        // Load settings on page load
+        loadSettings();
+    </script>
+</body>
+</html>
+`;
+
 module.exports = {
   CHANNELS_URL: config.CHANNELS_URL,
   CHANNELS_PORT: config.CHANNELS_PORT,
@@ -4229,6 +5222,9 @@ module.exports = {
   M3U_MANAGER_PAGE_HTML,
   REMOTE_ACCESS_PAGE_HTML,
   LOGS_PAGE_HTML,
+  SETTINGS_PAGE_HTML,
   CHROME_USERDATA_DIRECTORIES,
-  CHROME_EXECUTABLE_DIRECTORIES
+  CHROME_EXECUTABLE_DIRECTORIES,
+  CONFIG_FILE_PATH: configFilePath,
+  USING_CONFIG_FILE: usingConfigFile
 };

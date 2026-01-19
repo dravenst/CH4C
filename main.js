@@ -595,49 +595,87 @@ async function navigateSlingWithModalHandling(page, url, maxAttempts = 10, expec
 async function navigatePeacockLikeHuman(page, streamUrl, encoderUrl = 'unknown') {
   logTS(`[${encoderUrl}] Starting Peacock navigation (direct to stream URL)`);
 
-  try {
-    // Navigate directly to the stream URL (manual paste behavior)
-    // Use 'load' instead of 'networkidle2' to match browser behavior more closely
-    logTS(`[${encoderUrl}] Navigating to streaming URL: ${streamUrl}`);
+  // Helper function to handle profile selection - waits for page to be ready
+  async function handleProfileSelection() {
+    logTS(`[${encoderUrl}] Profile selection page detected, waiting for page to be ready...`);
 
+    // Wait for the page to be fully loaded and interactive
+    try {
+      await page.waitForSelector('body', { timeout: 5000 });
+      // Wait for profile buttons to be clickable (look for common profile page elements)
+      await page.waitForFunction(() => {
+        // Check if we're on profiles page and it's interactive
+        return document.readyState === 'complete' &&
+               document.querySelectorAll('button, [role="button"], a').length > 0;
+      }, { timeout: 5000 });
+    } catch (e) {
+      logTS(`[${encoderUrl}] Profile page wait timeout, proceeding anyway...`);
+    }
+
+    await delay(1500); // Extra delay to ensure page is fully interactive
+
+    logTS(`[${encoderUrl}] Sending profile selection keystrokes (3x Tab + Enter)...`);
+    await page.keyboard.press('Tab');
+    await delay(300);
+    await page.keyboard.press('Tab');
+    await delay(300);
+    await page.keyboard.press('Tab');
+    await delay(300);
+    await page.keyboard.press('Enter');
+    logTS(`[${encoderUrl}] Profile selection keystrokes sent`);
+
+    // Wait for navigation after profile selection
+    await delay(2000);
+  }
+
+  try {
+    // Navigate directly to the stream URL
+    logTS(`[${encoderUrl}] Navigating to streaming URL: ${streamUrl}`);
     await page.goto(streamUrl, {
       waitUntil: 'load',
       timeout: 30000
     });
 
-    // Check if we were redirected to profile selection
-    const currentUrl = page.url();
-    if (currentUrl.includes('/watch/profiles')) {
-      logTS(`[${encoderUrl}] Redirected to profile selection page, selecting default profile...`);
+    // Monitor for profile page for up to 8 seconds after initial navigation
+    // Peacock does delayed JavaScript redirects
+    const maxProfileChecks = 16; // 8 seconds (16 * 500ms)
+    let profileHandleCount = 0;
+    const maxProfileHandles = 3; // Don't get stuck in infinite loop
 
-      // Simulate pressing Tab 3 times to focus on the first profile, then Enter to select it
-      await delay(1000); // Wait a moment for the page to fully render
-      await page.keyboard.press('Tab');
-      await delay(300);
-      await page.keyboard.press('Tab');
-      await delay(300);
-      await page.keyboard.press('Tab');
-      await delay(300);
-      await page.keyboard.press('Enter');
+    for (let i = 0; i < maxProfileChecks && profileHandleCount < maxProfileHandles; i++) {
+      const currentUrl = page.url();
 
-      logTS(`[${encoderUrl}] Sent profile selection keystrokes (3x Tab + Enter)`);
+      // If we're on the playback page, we're done!
+      if (currentUrl.includes('/watch/playback')) {
+        logTS(`[${encoderUrl}] On playback page, navigation complete`);
+        break;
+      }
 
-      // Wait for navigation to complete after profile selection
-      await delay(2000);
+      // If we're on profiles page, handle it
+      if (currentUrl.includes('/watch/profiles')) {
+        profileHandleCount++;
+        logTS(`[${encoderUrl}] On profiles page (handle attempt ${profileHandleCount}/${maxProfileHandles})`);
 
-      // Try to navigate back to the stream URL after profile selection
-      logTS(`[${encoderUrl}] Profile selected, navigating to stream URL again: ${streamUrl}`);
-      await page.goto(streamUrl, {
-        waitUntil: 'load',
-        timeout: 30000
-      });
+        await handleProfileSelection();
+
+        // Navigate back to stream URL
+        logTS(`[${encoderUrl}] Navigating back to stream URL: ${streamUrl}`);
+        await page.goto(streamUrl, {
+          waitUntil: 'load',
+          timeout: 30000
+        });
+
+        // Reset counter to give more time after profile handling
+        i = 0;
+        continue;
+      }
+
+      // Wait before checking again
+      await delay(500);
     }
 
     logTS(`[${encoderUrl}] Successfully navigated to Peacock stream`);
     logTS(`[${encoderUrl}] Final URL: ${page.url()}`);
-
-    // Add slight delay to let page settle
-    await delay(1000);
 
     return true;
 
@@ -856,9 +894,153 @@ async function setupBrowserAudio(page, encoderConfig, targetUrl = null) {
     } finally {
       clearInterval(activityUpdateInterval);
     }
+  } else if (targetUrl && targetUrl.includes("peacocktv.com")) {
+    // Peacock-specific video wait with profile redirect handling
+    const activityUpdateInterval = setInterval(() => {
+      if (global.streamMonitor && encoderConfig && encoderConfig.url) {
+        const stream = global.streamMonitor.activeStreams.get(encoderConfig.url);
+        if (stream) {
+          global.streamMonitor.updateActivity(encoderConfig.url);
+        }
+      }
+    }, 10000);
+
+    try {
+      const maxWaitTime = 60000;
+      const checkInterval = 500;
+      const startTime = Date.now();
+      let videoFound = false;
+      let profileHandleCount = 0;
+      const maxProfileHandles = 3;
+
+      while (Date.now() - startTime < maxWaitTime && !videoFound) {
+        // Check if we got redirected to profiles page
+        let currentUrl;
+        try {
+          currentUrl = page.url();
+        } catch (e) {
+          logTS(`[${encoderConfig.url}] Error getting page URL: ${e.message}`);
+          await delay(checkInterval);
+          continue;
+        }
+
+        // Debug log every 5 seconds
+        const elapsed = Date.now() - startTime;
+        if (elapsed % 5000 < checkInterval) {
+          logTS(`[${encoderConfig.url}] Peacock video wait: ${Math.round(elapsed/1000)}s elapsed, URL: ${currentUrl.substring(0, 80)}...`);
+        }
+
+        if (currentUrl.includes('/watch/profiles') && profileHandleCount < maxProfileHandles) {
+          profileHandleCount++;
+          logTS(`[${encoderConfig.url}] Peacock redirected to profiles during video load (attempt ${profileHandleCount})`);
+
+          // Wait for profile elements to appear and click
+          // Peacock profile selector: <div class="profiles__avatar--image" role="button" tabindex="0">
+          const profileSelectors = [
+            'div.profiles__avatar--image[role="button"]',
+            '.profiles__avatar--image[role="button"]',
+            '.profiles__avatar--image[tabindex="0"]',
+            '.profiles__avatar--image'
+          ];
+
+          let profileClicked = false;
+
+          // Wait up to 10 seconds for profile elements
+          for (let waitAttempt = 0; waitAttempt < 20 && !profileClicked; waitAttempt++) {
+            await delay(500);
+
+            for (const selector of profileSelectors) {
+              try {
+                const element = await page.$(selector);
+                if (element) {
+                  const isVisible = await page.evaluate(el => {
+                    const rect = el.getBoundingClientRect();
+                    const style = window.getComputedStyle(el);
+                    return rect.width > 0 && rect.height > 0 &&
+                           style.visibility !== 'hidden' &&
+                           style.display !== 'none';
+                  }, element);
+
+                  if (isVisible) {
+                    logTS(`[${encoderConfig.url}] Clicking Peacock profile`);
+                    await element.click();
+                    profileClicked = true;
+                    break;
+                  }
+                }
+              } catch (e) {
+                // Selector didn't match, continue
+              }
+            }
+          }
+
+          // Fallback to keyboard if no clickable profile found
+          if (!profileClicked) {
+            logTS(`[${encoderConfig.url}] No profile element found, trying keyboard navigation...`);
+            await page.keyboard.press('Tab');
+            await delay(300);
+            await page.keyboard.press('Tab');
+            await delay(300);
+            await page.keyboard.press('Tab');
+            await delay(300);
+            await page.keyboard.press('Enter');
+            logTS(`[${encoderConfig.url}] Profile keystrokes sent`);
+          }
+
+          // Wait for navigation after profile selection
+          logTS(`[${encoderConfig.url}] Waiting for profile selection to take effect...`);
+          await delay(3000);
+
+          // Navigate back to stream URL
+          logTS(`[${encoderConfig.url}] Navigating back to stream URL: ${targetUrl}`);
+          await page.goto(targetUrl, {
+            waitUntil: 'load',
+            timeout: 30000
+          });
+
+          // Re-inject checkForVideos after navigation
+          await page.evaluate(() => {
+            window.checkForVideos = () => {
+              const videos = [...document.getElementsByTagName('video')];
+              const iframeVideos = [...document.getElementsByTagName('iframe')].reduce((acc, iframe) => {
+                try {
+                  const frameVideos = iframe.contentDocument?.getElementsByTagName('video');
+                  return frameVideos && frameVideos.length ? [...acc, ...frameVideos] : acc;
+                } catch(e) {
+                  return acc;
+                }
+              }, []);
+              return [...videos, ...iframeVideos];
+            };
+          });
+
+          continue;
+        }
+
+        // Check for video
+        try {
+          videoFound = await page.evaluate(() => {
+            const videos = window.checkForVideos();
+            return videos.length > 0 && videos.some(v => v.readyState >= 2);
+          });
+        } catch (e) {
+          // Page may be navigating, ignore error
+          logTS(`[${encoderConfig.url}] Error checking for video: ${e.message}`);
+        }
+
+        if (!videoFound) {
+          await delay(checkInterval);
+        }
+      }
+
+      if (!videoFound) {
+        throw new Error(`Peacock video not found after ${maxWaitTime}ms`);
+      }
+    } finally {
+      clearInterval(activityUpdateInterval);
+    }
   } else {
-    // Non-Sling sites use original logic
-    // Set up periodic activity updates during the long video wait to prevent false "inactive" warnings
+    // Other non-Sling sites use original logic
     const activityUpdateInterval = setInterval(() => {
       if (global.streamMonitor && encoderConfig && encoderConfig.url) {
         const stream = global.streamMonitor.activeStreams.get(encoderConfig.url);
@@ -1369,6 +1551,124 @@ async function GetProperty(element, property) {
 }
 
 /**
+ * Finds the video element in the page, searching through frames
+ * Returns the frame handle and video handle if found
+ * @param {Object} page - The page object to search
+ * @returns {Object} Object with frameHandle and videoHandle (both null if not found)
+ */
+async function findVideoElement(page) {
+  let frameHandle = null;
+  let videoHandle = null;
+
+  try {
+    const frames = await page.frames({ timeout: 1000 });
+    for (const frame of frames) {
+      try {
+        // Look for videos in each frame
+        const videos = await frame.$$('video');
+
+        if (videos.length > 0) {
+          // If multiple videos, try to find one with audio
+          if (videos.length > 1) {
+            logTS(`Found ${videos.length} videos, selecting best candidate`);
+
+            for (const video of videos) {
+              const hasAudio = await frame.evaluate((v) => {
+                return v.mozHasAudio || Boolean(v.webkitAudioDecodedByteCount) ||
+                       Boolean(v.audioTracks && v.audioTracks.length);
+              }, video);
+
+              if (hasAudio) {
+                videoHandle = video;
+                frameHandle = frame;
+                logTS('Selected video element with audio');
+                return { frameHandle, videoHandle };
+              } else if (!videoHandle) {
+                // Keep first video as fallback
+                videoHandle = video;
+                frameHandle = frame;
+              }
+            }
+          } else {
+            // Single video, use it
+            videoHandle = videos[0];
+            frameHandle = frame;
+            logTS('Found video frame');
+          }
+
+          if (videoHandle) {
+            return { frameHandle, videoHandle };
+          }
+        }
+      } catch (error) {
+        // Continue searching other frames
+      }
+    }
+  } catch (error) {
+    logTS(`Error searching for video element: ${error.message}`);
+  }
+
+  return { frameHandle, videoHandle };
+}
+
+/**
+ * Sets up an audio monitor that runs in the browser context
+ * Periodically verifies and re-applies the audio sink if it gets lost
+ * This helps maintain audio when multiple browser instances are running
+ * @param {Object} frameHandle - The frame containing the video element
+ * @param {Object} videoHandle - The video element handle
+ * @param {string} audioDevice - The audio device name to maintain
+ * @param {string} encoderUrl - The encoder URL for logging
+ */
+async function setupAudioMonitor(frameHandle, videoHandle, audioDevice, encoderUrl) {
+  if (!audioDevice) {
+    return;
+  }
+
+  try {
+    await frameHandle.evaluate(async (video, audioDeviceName, encoderUrlForLog) => {
+      // Prevent multiple monitors on the same video
+      if (video.__audioMonitorActive) {
+        return;
+      }
+      video.__audioMonitorActive = true;
+
+      // Check and re-apply audio every 15 seconds
+      setInterval(async () => {
+        try {
+          const currentSinkId = video.sinkId;
+
+          // If sinkId is empty or changed unexpectedly, re-apply
+          if (!currentSinkId || currentSinkId === '' || currentSinkId === 'default') {
+            console.log(`[CH4C] [${encoderUrlForLog}] Audio sink lost (current: ${currentSinkId || 'none'}), re-applying...`);
+
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            const targetDevice = devices
+              .filter(d => d.kind === 'audiooutput')
+              .find(d => d.label.includes(audioDeviceName));
+
+            if (targetDevice && video.setSinkId) {
+              await video.setSinkId(targetDevice.deviceId);
+              console.log(`[CH4C] [${encoderUrlForLog}] Audio sink re-applied: ${targetDevice.label}`);
+            } else {
+              console.log(`[CH4C] [${encoderUrlForLog}] Could not find audio device: ${audioDeviceName}`);
+            }
+          }
+        } catch (err) {
+          console.log(`[CH4C] [${encoderUrlForLog}] Audio monitor error: ${err.message}`);
+        }
+      }, 15000);
+
+      console.log(`[CH4C] [${encoderUrlForLog}] Audio monitor active - checking every 15 seconds`);
+    }, videoHandle, audioDevice, encoderUrl);
+
+    logTS(`[${encoderUrl}] Audio monitor enabled for device: ${audioDevice}`);
+  } catch (error) {
+    logTS(`[${encoderUrl}] Failed to setup audio monitor (non-fatal): ${error.message}`);
+  }
+}
+
+/**
  * Sets up a pause monitor that runs in the browser context
  * Automatically resumes video playback if it gets paused
  * @param {Object} frameHandle - The frame containing the video element
@@ -1558,7 +1858,7 @@ async function fullScreenVideo(page) {
   await hideCursor(page)
 }
 
-async function fullScreenVideoSling(page) {
+async function fullScreenVideoSling(page, encoderConfig = null) {
   logTS("URL contains watch.sling.com, going fullscreen");
 
   // Click the full screen button
@@ -1575,10 +1875,18 @@ async function fullScreenVideoSling(page) {
     await page.keyboard.press('ArrowRight');
   }
   logTS("finished change to fullscreen and max volume");
+
+  // Setup audio monitor to maintain audio sink (helps with multi-stream scenarios)
+  if (encoderConfig && encoderConfig.audioDevice) {
+    const { frameHandle, videoHandle } = await findVideoElement(page);
+    if (frameHandle && videoHandle) {
+      await setupAudioMonitor(frameHandle, videoHandle, encoderConfig.audioDevice, encoderConfig.url);
+    }
+  }
 }
 
-async function fullScreenVideoPeacock(page) {
-  logTS("URL contains peacocktv.com, going fullscreen");
+async function fullScreenVideoPeacock(page, encoderConfig = null) {
+  logTS("URL contains peacocktv.com, setting up video fullscreen");
 
   // Add minimal mouse movement to simulate human presence
   logTS("Adding mouse movement to simulate human presence");
@@ -1589,12 +1897,70 @@ async function fullScreenVideoPeacock(page) {
   await page.mouse.move(600 + Math.random() * 200, 450 + Math.random() * 100);
   await delay(500 + Math.random() * 500); // 0.5-1 second delay
 
-  // Use standard fullscreen approach - browser window is already fullscreen via CDP
-  // Just need to make the video player fullscreen within the page
+  // Press 'f' key to make the video player fullscreen within the browser window
   await delay(1000); // Wait for player to load
-
-  // Press 'f' key to toggle fullscreen on the video player
   await page.keyboard.press('f');
+
+  // Wait for fullscreen transition to complete
+  await delay(1500);
+
+  // Find video element and setup pause monitor
+  const { frameHandle, videoHandle } = await findVideoElement(page);
+  if (frameHandle && videoHandle) {
+    logTS("Found Peacock video element, setting up pause monitor");
+
+    // Re-apply audio device after fullscreen transition (Peacock may recreate video elements)
+    if (encoderConfig && encoderConfig.audioDevice) {
+      logTS(`[${encoderConfig.url}] Re-applying audio device after fullscreen: ${encoderConfig.audioDevice}`);
+      try {
+        const audioResult = await frameHandle.evaluate(async (video, audioDevice) => {
+          const devices = await navigator.mediaDevices.enumerateDevices();
+          const audioDevices = devices.filter(d => d.kind === 'audiooutput');
+          const targetDevice = audioDevices.find(d => d.label.includes(audioDevice));
+
+          if (!targetDevice) {
+            return { success: false, error: `Device not found matching: ${audioDevice}`, availableDevices: audioDevices.map(d => d.label) };
+          }
+
+          if (!video.setSinkId) {
+            return { success: false, error: 'setSinkId not supported' };
+          }
+
+          await video.setSinkId(targetDevice.deviceId);
+          console.log(`[CH4C] Re-applied audio sink to: ${targetDevice.label}`);
+          return { success: true, device: targetDevice.label, sinkId: video.sinkId };
+        }, videoHandle, encoderConfig.audioDevice);
+
+        if (audioResult.success) {
+          logTS(`[${encoderConfig.url}] Audio device re-applied successfully: ${audioResult.device}`);
+        } else {
+          logTS(`[${encoderConfig.url}] Audio device re-application failed: ${audioResult.error}`);
+          if (audioResult.availableDevices) {
+            logTS(`[${encoderConfig.url}] Available audio devices: ${audioResult.availableDevices.join(', ')}`);
+          }
+        }
+      } catch (audioErr) {
+        logTS(`[${encoderConfig.url}] Warning: Could not re-apply audio device: ${audioErr.message}`);
+      }
+    }
+
+    // Ensure video is playing
+    await frameHandle.evaluate((video) => {
+      if (video.paused) {
+        video.play().catch(err => console.log('Play failed:', err));
+      }
+    }, videoHandle);
+
+    // Setup pause monitor to automatically resume if video gets paused
+    await setupPauseMonitor(frameHandle, videoHandle, page);
+
+    // Setup audio monitor to re-apply audio sink if it gets lost (helps with multi-stream scenarios)
+    if (encoderConfig && encoderConfig.audioDevice) {
+      await setupAudioMonitor(frameHandle, videoHandle, encoderConfig.audioDevice, encoderConfig.url);
+    }
+  } else {
+    logTS("Warning: Could not find Peacock video element for pause monitoring");
+  }
 
   logTS("finished fullscreen setup");
 }
@@ -2422,20 +2788,44 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
   app.get('/stream', async (req, res) => {
     let page;
     let targetUrl;
-    
+
     const cleanupManager = req.app.locals.cleanupManager;
     const healthMonitor = req.app.locals.healthMonitor;
     const browserHealthMonitor = req.app.locals.browserHealthMonitor;
     const streamMonitor = req.app.locals.streamMonitor;
     const recoveryManager = req.app.locals.recoveryManager;
 
-    // Get the first available AND healthy encoder with healthy browser
-    let availableEncoder = Constants.ENCODERS.find(encoder =>
-      browsers.has(encoder.url) &&
-      cleanupManager.canStartBrowser(encoder.url) &&
-      healthMonitor.isEncoderHealthy(encoder.url) &&
-      browserHealthMonitor.isBrowserHealthy(encoder.url) // Added browser health check
-    );
+    // Check if a specific encoder was requested
+    const requestedEncoder = req.query.encoder;
+    let availableEncoder;
+
+    if (requestedEncoder) {
+      // Use the specifically requested encoder if it's available
+      availableEncoder = Constants.ENCODERS.find(encoder =>
+        encoder.url === requestedEncoder &&
+        browsers.has(encoder.url) &&
+        cleanupManager.canStartBrowser(encoder.url) &&
+        healthMonitor.isEncoderHealthy(encoder.url) &&
+        browserHealthMonitor.isBrowserHealthy(encoder.url)
+      );
+
+      if (!availableEncoder) {
+        logTS(`Requested encoder ${requestedEncoder} is not available, falling back to auto-select`);
+      } else {
+        logTS(`Using requested encoder: ${requestedEncoder}`);
+      }
+    }
+
+    // If no specific encoder requested or requested encoder not available, auto-select
+    if (!availableEncoder) {
+      // Get the first available AND healthy encoder with healthy browser
+      availableEncoder = Constants.ENCODERS.find(encoder =>
+        browsers.has(encoder.url) &&
+        cleanupManager.canStartBrowser(encoder.url) &&
+        healthMonitor.isEncoderHealthy(encoder.url) &&
+        browserHealthMonitor.isBrowserHealthy(encoder.url)
+      );
+    }
 
     if (!availableEncoder) {
       // Check if any encoders are currently recovering
@@ -2568,8 +2958,9 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
           throw new Error('Failed to get browser page');
         }
 
-        // Set browser window fullscreen with error handling
-        // First restore from minimized, then set to fullscreen
+        // Set browser window state with error handling
+        // First restore from minimized, then set to fullscreen or maximized
+        // Peacock works better with maximized browser (video will go fullscreen via player controls)
         try {
           const session = await page.createCDPSession();
           const {windowId} = await session.send('Browser.getWindowForTarget');
@@ -2701,8 +3092,8 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
             await setupBrowserAudio(page, availableEncoder, targetUrl);
           }
 
-          // Handle site-specific fullscreen
-          await handleSiteSpecificFullscreen(targetUrl, page);
+          // Handle site-specific fullscreen (pass encoder config for audio re-application)
+          await handleSiteSpecificFullscreen(targetUrl, page, availableEncoder);
         }
       }, availableEncoder.url, async () => {
         // Fallback action - attempt recovery
@@ -2786,6 +3177,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
     const cleanupManager = req.app.locals.cleanupManager;
     const healthMonitor = req.app.locals.healthMonitor;
     const browserHealthMonitor = req.app.locals.browserHealthMonitor;
+    const streamMonitor = req.app.locals.streamMonitor;
 
     // Get available encoders
     const availableEncoders = Constants.ENCODERS.filter(encoder =>
@@ -2801,9 +3193,52 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
       encoderOptions += `<option value="${encoder.url}">Channel ${encoder.channel} - ${encoder.url}</option>\n`;
     });
 
+    // Generate active streams HTML
+    let activeStreamsHtml = '';
+    const activeStreams = Array.from(streamMonitor.activeStreams.entries());
+
+    if (activeStreams.length > 0) {
+      activeStreamsHtml = `
+        <div class="active-streams" id="active-streams-container">
+          <h3>Active Streams</h3>
+          <div class="stream-list">
+      `;
+
+      activeStreams.forEach(([encoderUrl, streamInfo]) => {
+        const encoderIndex = Constants.ENCODERS.findIndex(e => e.url === encoderUrl);
+        const encoder = Constants.ENCODERS[encoderIndex];
+        const targetUrl = streamInfo.targetUrl || 'Unknown URL';
+        const displayUrl = targetUrl.length > 50 ? targetUrl.substring(0, 50) + '...' : targetUrl;
+        const duration = Math.floor((Date.now() - streamInfo.startTime) / 60000); // minutes
+
+        activeStreamsHtml += `
+          <div class="stream-item">
+            <div class="stream-info">
+              <strong>Channel ${encoder?.channel || '?'}</strong>
+              <span class="stream-url" title="${targetUrl}">${displayUrl}</span>
+              <span class="stream-duration">Running for ${duration} min</span>
+            </div>
+            <a href="/stop/${encoderIndex}" class="btn-stop" onclick="return confirm('Stop this stream?')">Stop</a>
+          </div>
+        `;
+      });
+
+      activeStreamsHtml += `
+          </div>
+          <div class="stream-actions">
+            <a href="/stop" class="btn-stop-all" onclick="return confirm('Stop ALL active streams?')">Stop All Streams</a>
+          </div>
+        </div>
+      `;
+    } else {
+      // Add empty container for JavaScript to populate when streams start
+      activeStreamsHtml = `<div class="active-streams" id="active-streams-container" style="display: none;"></div>`;
+    }
+
     const html = Constants.INSTANT_PAGE_HTML
       .replaceAll('<<host>>', req.get('host'))
-      .replaceAll('<<encoder_options>>', encoderOptions);
+      .replaceAll('<<encoder_options>>', encoderOptions)
+      .replaceAll('<<active_streams>>', activeStreamsHtml);
 
     res.send(html);
   });
@@ -2812,9 +3247,26 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
   app.post('/instant', async (req, res) => {
     const { recording_name, recording_url, recording_duration, button_record, button_tune, episode_title, recording_summary, season_number, episode_number, selected_encoder } = req.body;
 
+    // Check if client wants JSON response
+    const wantsJson = req.headers.accept && req.headers.accept.includes('application/json');
+
+    // Helper to send response (JSON or HTML)
+    const sendResponse = (status, data) => {
+      if (wantsJson) {
+        res.status(status).json(data);
+      } else {
+        // Legacy HTML response for non-JS clients
+        if (data.success) {
+          res.redirect('/instant');
+        } else {
+          res.status(status).send(data.error || 'An error occurred');
+        }
+      }
+    };
+
     // Validate URL
     if (!recording_url) {
-      res.status(400).send('URL is required');
+      sendResponse(400, { success: false, error: 'URL is required' });
       return;
     }
 
@@ -2822,7 +3274,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
     try {
       targetUrl = new URL(recording_url).toString();
     } catch (e) {
-      res.status(400).send('Invalid URL format');
+      sendResponse(400, { success: false, error: 'Invalid URL format' });
       return;
     }
 
@@ -2843,7 +3295,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
       );
 
       if (!availableEncoder) {
-        res.status(503).send(`Selected encoder is no longer available. Please refresh and try again.`);
+        sendResponse(503, { success: false, error: 'Selected encoder is no longer available. Please refresh and try again.' });
         return;
       }
     } else {
@@ -2888,16 +3340,19 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
       }
 
       if (!availableEncoder) {
-        res.status(503).send('No encoders are currently available. Please try again later.');
+        sendResponse(503, { success: false, error: 'No encoders are currently available. Please try again later.' });
         return;
       }
     }
+
+    // Get encoder index for stop button
+    const encoderIndex = Constants.ENCODERS.findIndex(e => e.url === availableEncoder.url);
 
     if (button_record) {
       // Handle recording
       const duration = parseInt(recording_duration);
       if (isNaN(duration) || duration <= 0) {
-        res.status(400).send('Invalid duration. Must be a positive number.');
+        sendResponse(400, { success: false, error: 'Invalid duration. Must be a positive number.' });
         return;
       }
 
@@ -2929,54 +3384,34 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
           }
         }, totalDurationMs);
 
-        // Show success page instead of redirecting to stream
-        res.send(`
-          <!DOCTYPE html>
-          <html>
-          <head>
-            <title>CH4C - Recording Started</title>
-            <meta charset="UTF-8">
-            <meta http-equiv="refresh" content="3;url=/instant">
-            <style>
-              body { font-family: system-ui; max-width: 600px; margin: 50px auto; padding: 20px; }
-              .message { padding: 30px; background: #d4edda; border: 1px solid #c3e6cb; border-radius: 8px; text-align: center; }
-              h2 { color: #155724; margin-bottom: 16px; }
-              p { color: #155724; margin: 8px 0; }
-              .detail { font-family: monospace; background: white; padding: 8px; border-radius: 4px; margin: 16px 0; }
-              a { display: inline-block; margin-top: 20px; padding: 10px 20px; background: #667eea; color: white; text-decoration: none; border-radius: 6px; }
-              a:hover { background: #5568d3; }
-            </style>
-          </head>
-          <body>
-            <div class="message">
-              <h2>✓ Recording Started</h2>
-              <p><strong>${recordingName}</strong></p>
-              <p>Duration: ${duration} minutes</p>
-              <p>Channel: ${availableEncoder.channel}</p>
-              <div class="detail">The stream is now being recorded by Channels DVR and will automatically stop after ${duration} minutes.</div>
-              <p style="font-size: 14px; color: #666;">Redirecting back to instant page in 3 seconds...</p>
-              <a href="/instant">← Back to Instant</a>
-            </div>
-          </body>
-          </html>
-        `);
+        // Send success response
+        sendResponse(200, {
+          success: true,
+          type: 'recording',
+          channel: availableEncoder.channel,
+          encoderIndex: encoderIndex,
+          message: `${recordingName} - ${duration} minutes`,
+          detail: `Recording on Channel ${availableEncoder.channel}. Will automatically stop after ${duration} minutes.`
+        });
 
         // Start the stream in the background (don't wait for response)
-        const streamUrl = `http://localhost:${Constants.CH4C_PORT}/stream?url=${encodeURIComponent(targetUrl)}`;
+        // Pass the encoder URL so the stream uses the same encoder that was selected for recording
+        const streamUrl = `http://localhost:${Constants.CH4C_PORT}/stream?url=${encodeURIComponent(targetUrl)}&encoder=${encodeURIComponent(availableEncoder.url)}`;
         logTS(`[DEBUG] Initiating stream fetch to: ${streamUrl}`);
         logTS(`[DEBUG] Target URL being streamed: ${targetUrl}`);
+        logTS(`[DEBUG] Using encoder: ${availableEncoder.url}`);
         fetch(streamUrl)
           .catch(err => logTS(`Stream fetch error (expected): ${err.message}`));
       } else {
-        res.status(500).send('Failed to start recording in Channels DVR');
+        sendResponse(500, { success: false, error: 'Failed to start recording in Channels DVR' });
       }
     } else if (button_tune) {
       // Handle tuning (just navigate to the URL without recording)
       const duration = parseInt(recording_duration);
 
-      // Start monitoring this stream
+      // Start monitoring this stream (skip health checks since we're not consuming the stream directly)
       const streamMonitor = req.app.locals.streamMonitor;
-      streamMonitor.startMonitoring(availableEncoder.url, targetUrl);
+      streamMonitor.startMonitoring(availableEncoder.url, targetUrl, { skipHealthCheck: true });
 
       // If duration is provided and valid, use it for auto-stop
       if (!isNaN(duration) && duration > 0) {
@@ -2992,80 +3427,35 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
           }
         }, duration * 60 * 1000);
 
-        // Show success page with duration
-        res.send(`
-          <!DOCTYPE html>
-          <html>
-          <head>
-            <title>CH4C - Tuned to Channel</title>
-            <meta charset="UTF-8">
-            <meta http-equiv="refresh" content="3;url=/instant">
-            <style>
-              body { font-family: system-ui; max-width: 600px; margin: 50px auto; padding: 20px; }
-              .message { padding: 30px; background: #d1ecf1; border: 1px solid #bee5eb; border-radius: 8px; text-align: center; }
-              h2 { color: #0c5460; margin-bottom: 16px; }
-              p { color: #0c5460; margin: 8px 0; }
-              .detail { font-family: monospace; background: white; padding: 8px; border-radius: 4px; margin: 16px 0; font-size: 13px; }
-              a { display: inline-block; margin: 12px 8px; padding: 10px 20px; background: #667eea; color: white; text-decoration: none; border-radius: 6px; }
-              a:hover { background: #5568d3; }
-              .stop-link { background: #dc3545; }
-              .stop-link:hover { background: #c82333; }
-            </style>
-          </head>
-          <body>
-            <div class="message">
-              <h2>📺 Tuned to Channel ${availableEncoder.channel}</h2>
-              <p>Streaming will automatically stop in ${duration} minutes</p>
-              <div class="detail">Watch on channel ${availableEncoder.channel} in Channels DVR</div>
-              <p style="font-size: 14px; color: #666;">Redirecting back to instant page in 3 seconds...</p>
-              <a href="/instant">← Back to Instant</a>
-              <a href="/stop" class="stop-link">Stop Now</a>
-            </div>
-          </body>
-          </html>
-        `);
+        // Send success response with duration
+        sendResponse(200, {
+          success: true,
+          type: 'tune',
+          channel: availableEncoder.channel,
+          encoderIndex: encoderIndex,
+          message: `Will automatically stop in ${duration} minutes`,
+          detail: `Watch on Channel ${availableEncoder.channel} in Channels DVR`
+        });
       } else {
         logTS(`Tuning encoder ${availableEncoder.channel} to ${targetUrl} (indefinitely)`);
 
-        // Show success page without duration
-        res.send(`
-          <!DOCTYPE html>
-          <html>
-          <head>
-            <title>CH4C - Tuned to Channel</title>
-            <meta charset="UTF-8">
-            <meta http-equiv="refresh" content="3;url=/instant">
-            <style>
-              body { font-family: system-ui; max-width: 600px; margin: 50px auto; padding: 20px; }
-              .message { padding: 30px; background: #d1ecf1; border: 1px solid #bee5eb; border-radius: 8px; text-align: center; }
-              h2 { color: #0c5460; margin-bottom: 16px; }
-              p { color: #0c5460; margin: 8px 0; }
-              .detail { font-family: monospace; background: white; padding: 8px; border-radius: 4px; margin: 16px 0; font-size: 13px; }
-              a { display: inline-block; margin: 12px 8px; padding: 10px 20px; background: #667eea; color: white; text-decoration: none; border-radius: 6px; }
-              a:hover { background: #5568d3; }
-              .stop-link { background: #dc3545; }
-              .stop-link:hover { background: #c82333; }
-            </style>
-          </head>
-          <body>
-            <div class="message">
-              <h2>📺 Tuned to Channel ${availableEncoder.channel}</h2>
-              <p>Streaming indefinitely until manually stopped</p>
-              <div class="detail">Watch on channel ${availableEncoder.channel} in Channels DVR</div>
-              <p style="font-size: 14px; color: #666;">Redirecting back to instant page in 3 seconds...</p>
-              <a href="/instant">← Back to Instant</a>
-              <a href="/stop" class="stop-link">Stop Stream</a>
-            </div>
-          </body>
-          </html>
-        `);
+        // Send success response without duration
+        sendResponse(200, {
+          success: true,
+          type: 'tune',
+          channel: availableEncoder.channel,
+          encoderIndex: encoderIndex,
+          message: 'Streaming until manually stopped',
+          detail: `Watch on Channel ${availableEncoder.channel} in Channels DVR`
+        });
       }
 
       // Start the stream in the background (don't wait for response)
-      fetch(`http://localhost:${Constants.CH4C_PORT}/stream?url=${encodeURIComponent(targetUrl)}`)
+      // Pass the encoder URL so the stream uses the same encoder that was selected for tuning
+      fetch(`http://localhost:${Constants.CH4C_PORT}/stream?url=${encodeURIComponent(targetUrl)}&encoder=${encodeURIComponent(availableEncoder.url)}`)
         .catch(err => logTS(`Stream fetch error (expected): ${err.message}`));
     } else {
-      res.status(400).send('Invalid form submission');
+      sendResponse(400, { success: false, error: 'Invalid form submission' });
     }
   });
 
@@ -3233,6 +3623,140 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
     `);
   });
 
+  // GET /stop/:encoderIndex - Stop a specific encoder's stream
+  app.get('/stop/:encoderIndex', async (req, res) => {
+    const cleanupManager = req.app.locals.cleanupManager;
+    const streamMonitor = req.app.locals.streamMonitor;
+    const encoderIndex = parseInt(req.params.encoderIndex, 10);
+
+    // Determine where to redirect back to based on referer
+    const referer = req.get('Referer') || '';
+    const redirectUrl = referer.includes('/instant') ? '/instant' : '/';
+    const backLinkText = referer.includes('/instant') ? '← Back to Instant' : '← Back to Home';
+
+    // Validate encoder index
+    if (isNaN(encoderIndex) || encoderIndex < 0 || encoderIndex >= Constants.ENCODERS.length) {
+      res.status(400).send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <title>CH4C - Invalid Encoder</title>
+          <meta charset="UTF-8">
+          <style>
+            body { font-family: system-ui; max-width: 600px; margin: 50px auto; padding: 20px; }
+            .message { padding: 20px; background: #fee2e2; border: 1px solid #fca5a5; border-radius: 8px; text-align: center; }
+            h2 { color: #dc2626; }
+            a { display: inline-block; margin-top: 20px; padding: 10px 20px; background: #667eea; color: white; text-decoration: none; border-radius: 6px; }
+            a:hover { background: #5568d3; }
+          </style>
+        </head>
+        <body>
+          <div class="message">
+            <h2>Invalid Encoder</h2>
+            <p>Encoder index ${req.params.encoderIndex} is not valid.</p>
+            <a href="${redirectUrl}">${backLinkText}</a>
+          </div>
+        </body>
+        </html>
+      `);
+      return;
+    }
+
+    const encoderConfig = Constants.ENCODERS[encoderIndex];
+    const encoderUrl = encoderConfig.url;
+
+    // Check if this encoder has an active stream
+    if (!streamMonitor.activeStreams.has(encoderUrl)) {
+      res.send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <title>CH4C - No Active Stream</title>
+          <meta charset="UTF-8">
+          <style>
+            body { font-family: system-ui; max-width: 600px; margin: 50px auto; padding: 20px; }
+            .message { padding: 20px; background: #f0f0f0; border-radius: 8px; text-align: center; }
+            a { display: inline-block; margin-top: 20px; padding: 10px 20px; background: #667eea; color: white; text-decoration: none; border-radius: 6px; }
+            a:hover { background: #5568d3; }
+          </style>
+        </head>
+        <body>
+          <div class="message">
+            <h2>No Active Stream</h2>
+            <p>Encoder ${encoderIndex + 1} (Channel ${encoderConfig.channel}) does not have an active stream.</p>
+            <a href="${redirectUrl}">${backLinkText}</a>
+          </div>
+        </body>
+        </html>
+      `);
+      return;
+    }
+
+    // Get stream info before stopping
+    const streamInfo = streamMonitor.activeStreams.get(encoderUrl);
+    const targetUrl = streamInfo?.targetUrl || 'Unknown URL';
+
+    logTS(`Stopping stream on encoder ${encoderIndex} (${encoderUrl})...`);
+
+    try {
+      await cleanupManager.cleanup(encoderUrl, null);
+      logTS(`Stopped stream on encoder ${encoderIndex} (${encoderUrl})`);
+
+      res.send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <title>CH4C - Stream Stopped</title>
+          <meta charset="UTF-8">
+          <meta http-equiv="refresh" content="2;url=${redirectUrl}">
+          <style>
+            body { font-family: system-ui; max-width: 600px; margin: 50px auto; padding: 20px; }
+            .message { padding: 20px; background: #d4edda; border: 1px solid #c3e6cb; border-radius: 8px; text-align: center; }
+            h2 { color: #155724; }
+            .detail { color: #666; font-size: 14px; margin-top: 10px; word-break: break-all; }
+            a { display: inline-block; margin-top: 20px; padding: 10px 20px; background: #667eea; color: white; text-decoration: none; border-radius: 6px; }
+            a:hover { background: #5568d3; }
+          </style>
+        </head>
+        <body>
+          <div class="message">
+            <h2>✓ Stream Stopped</h2>
+            <p>Encoder ${encoderIndex + 1} (Channel ${encoderConfig.channel}) has been stopped.</p>
+            <div class="detail">URL: ${targetUrl.substring(0, 80)}${targetUrl.length > 80 ? '...' : ''}</div>
+            <p style="font-size: 12px; color: #888; margin-top: 15px;">Redirecting back in 2 seconds...</p>
+            <a href="${redirectUrl}">${backLinkText}</a>
+          </div>
+        </body>
+        </html>
+      `);
+    } catch (error) {
+      logTS(`Error stopping stream on encoder ${encoderIndex}: ${error.message}`);
+      res.status(500).send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <title>CH4C - Error</title>
+          <meta charset="UTF-8">
+          <style>
+            body { font-family: system-ui; max-width: 600px; margin: 50px auto; padding: 20px; }
+            .message { padding: 20px; background: #fee2e2; border: 1px solid #fca5a5; border-radius: 8px; text-align: center; }
+            h2 { color: #dc2626; }
+            a { display: inline-block; margin-top: 20px; padding: 10px 20px; background: #667eea; color: white; text-decoration: none; border-radius: 6px; }
+            a:hover { background: #5568d3; }
+          </style>
+        </head>
+        <body>
+          <div class="message">
+            <h2>Error Stopping Stream</h2>
+            <p>${error.message}</p>
+            <a href="${redirectUrl}">${backLinkText}</a>
+          </div>
+        </body>
+        </html>
+      `);
+    }
+  });
+
   // VNC Remote Access page
   app.get('/remote-access', (req, res) => {
     res.send(Constants.REMOTE_ACCESS_PAGE_HTML);
@@ -3246,6 +3770,29 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
   // Logs API endpoint
   app.get('/api/logs', (req, res) => {
     res.json({ logs: getLogBuffer() });
+  });
+
+  // Settings page
+  app.get('/settings', (req, res) => {
+    res.send(Constants.SETTINGS_PAGE_HTML);
+  });
+
+  // Settings API endpoint
+  app.get('/api/settings', (req, res) => {
+    res.json({
+      channelsUrl: Constants.CHANNELS_URL,
+      channelsPort: Constants.CHANNELS_PORT,
+      ch4cPort: Constants.CH4C_PORT,
+      ch4cSslPort: Constants.CH4C_SSL_PORT || null,
+      sslHostnames: Constants.SSL_HOSTNAMES || [],
+      dataDir: Constants.DATA_DIR,
+      enablePauseMonitor: Constants.ENABLE_PAUSE_MONITOR,
+      pauseMonitorInterval: Constants.PAUSE_MONITOR_INTERVAL,
+      browserHealthInterval: Constants.BROWSER_HEALTH_INTERVAL,
+      encoders: Constants.ENCODERS,
+      configSource: Constants.USING_CONFIG_FILE ? 'file' : 'cli',
+      configPath: Constants.CONFIG_FILE_PATH
+    });
   });
 
   // Serve SSL certificate for download
@@ -3489,7 +4036,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
 }
 
 // Helper function to consolidate site-specific fullscreen logic
-async function handleSiteSpecificFullscreen(targetUrl, page) {
+async function handleSiteSpecificFullscreen(targetUrl, page, encoderConfig = null) {
   try {
     if (targetUrl.includes("youtube.com") || targetUrl.includes("youtu.be")) {
       logTS("Handling YouTube video");
@@ -3499,9 +4046,9 @@ async function handleSiteSpecificFullscreen(targetUrl, page) {
       await fullScreenVideoAmazon(page);
     } else if (targetUrl.includes("watch.sling.com")) {
       logTS("Handling Sling video");
-      await fullScreenVideoSling(page);
+      await fullScreenVideoSling(page, encoderConfig);
     } else if (targetUrl.includes("peacocktv.com")) {
-      await fullScreenVideoPeacock(page);
+      await fullScreenVideoPeacock(page, encoderConfig);
     } else if (targetUrl.includes("spectrum.net")) {
       await fullScreenVideoSpectrum(page);
     } else if (targetUrl.includes("photos.app.goo.gl")) {
