@@ -173,7 +173,7 @@ Device               : CoreAudioApi.MMDevice
   * **Windows Startup Configuration**:
 Create a new text file called `ch4c.ps1` and add the following line to it (replacing `(YOUR-PATH)` with your path to where you stored the ch4c.exe file, `(YOUR-ROOT-PATH)` where the data directory is, and update your config.json file in the data directory):
     ```
-    Start-Process -WindowStyle Minimized -FilePath "cmd.exe" -ArgumentList "/k", "(YOUR-PATH)\ch4c.exe" -WorkingDirectory "(YOUR-ROOT-PATH)"`
+    Start-Process -WindowStyle Minimized -FilePath "cmd.exe" -ArgumentList "/k", "(YOUR-PATH)\ch4c.exe" -WorkingDirectory "(YOUR-ROOT-PATH)"
     ```
 
   * **Windows Startup Configuration #2**:
