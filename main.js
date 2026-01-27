@@ -32,6 +32,43 @@ let chromeDataDir, chromePath;
 let browsers = new Map(); // key: encoderUrl, value: {browser, page}
 let launchMutex = new Map(); // key: encoderUrl, value: promise to prevent concurrent launches
 
+/**
+ * Cleanup all browsers on exit - prevents orphaned Chrome processes
+ */
+async function cleanupAllBrowsers() {
+  if (browsers.size === 0) return;
+
+  logTS(`Cleaning up ${browsers.size} browser(s) before exit...`);
+
+  for (const [encoderUrl, browserInfo] of browsers) {
+    try {
+      if (browserInfo && browserInfo.browser) {
+        await browserInfo.browser.close();
+        logTS(`Closed browser for encoder: ${encoderUrl}`);
+      }
+    } catch (e) {
+      logTS(`Error closing browser for ${encoderUrl}: ${e.message}`);
+    }
+  }
+  browsers.clear();
+}
+
+// Handle uncaught exceptions - cleanup browsers before exit
+process.on('uncaughtException', async (err) => {
+  console.error('Uncaught Exception:', err);
+  logTS(`FATAL: Uncaught exception: ${err.message}`);
+  await cleanupAllBrowsers();
+  process.exit(1);
+});
+
+// Handle unhandled promise rejections - cleanup browsers before exit
+process.on('unhandledRejection', async (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+  logTS(`FATAL: Unhandled promise rejection: ${reason}`);
+  await cleanupAllBrowsers();
+  process.exit(1);
+});
+
 function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -4069,8 +4106,10 @@ async function handleSiteSpecificFullscreen(targetUrl, page, encoderConfig = nul
 
 // Only run the main function if this is the main module
 if (require.main === module) {
-  main().catch(err => {
+  main().catch(async (err) => {
     console.error('Error starting server:', err);
+    logTS(`FATAL: Startup error: ${err.message}`);
+    await cleanupAllBrowsers();
     process.exit(1);
   });
 }

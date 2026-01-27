@@ -171,13 +171,35 @@ Device               : CoreAudioApi.MMDevice
 
 * **Windows Startup using Windows Task Scheduler**:
   * **Windows Startup Configuration**:
-Create a new text file called `ch4c.ps1` and add the following line to it (replacing `(YOUR-PATH)` with your path to where you stored the .exe file, and replacing the IP of the channels url and encoder stream url with your config):
-`Start-Process -WindowStyle Minimized -FilePath "cmd.exe" -ArgumentList "/k", "(YOUR-PATH)\ch4c.exe" -WorkingDirectory "C:\Users\drave\Documents\github\dravenst\CH4C"`
-`Start-Process -WindowStyle Minimized -FilePath "(YOUR-PATH)\ch4c.exe" -ArgumentList "-t", "2443", "--channels-url", "http://192.168.50.50", "--encoder", "http://192.168.50.71/live/stream0"`
+Create a new text file called `ch4c.ps1` and add the following line to it (replacing `(YOUR-PATH)` with your path to where you stored the ch4c.exe file, `(YOUR-ROOT-PATH)` where the data directory is, and update your config.json file in the data directory):
+    ```
+    Start-Process -WindowStyle Minimized -FilePath "cmd.exe" -ArgumentList "/k", "(YOUR-PATH)\ch4c.exe" -WorkingDirectory "(YOUR-ROOT-PATH)"`
+    ```
 
   * **Windows Startup Configuration #2**:
-Or a more complex example for the `ch4c.ps1` file using both encoder ports of the ENC1-V3:
-`Start-Process -WindowStyle hidden -FilePath "(YOUR-PATH)\ch4c.exe" -ArgumentList "-t", "2443", "--channels-url", "http://192.168.50.50", "--encoder", "http://192.168.50.71/live/stream0:24.42:0:0:Encoder" "--encoder", "http://192.168.50.72/live/stream1:24.43:1920:0:MACROSILICON"`
+Or run ch4c.exe as a command line tool in `ch4c.ps1` file using two encoders of the ENC1-V3:
+    ```
+    Start-Process -WindowStyle hidden -FilePath "(YOUR-PATH)\ch4c.exe" -ArgumentList "-t", "2443", "--channels-url", "http://192.168.50.50", "--encoder", "http://192.168.50.71/live/stream0:24.42:0:0:Encoder" "--encoder", "http://192.168.50.72/live/stream1:24.43:1920:0:MACROSILICON"
+    ```
+
+  * **Windows Startup Configuration #3**:
+Or a simpler example for the `ch4c.ps1` file where you create a runme.bat file to include your startup parameters :
+    ```
+    Start-Process -WindowStyle hidden -FilePath "(YOUR-PATH)\runme.bat"
+    ```
+
+  * **I use a simple runme.bat like this**:
+I have the runme.bat change to the correct working directory (YOUR-PATH) and run the executable with tee to show the console logs and capture them to a log file.
+    ```
+    cd (YOUR-PATH)
+
+    @echo ***Waiting 30 seconds for system to stabilize on startup...
+    timeout /t 30
+
+    @echo ***Running ch4c and capture logs in data\ch4c.log
+    powershell -Command "dist\ch4c.exe 2>&1 | Tee-Object -FilePath data\ch4c.log -Append"
+    ```
+
 
   * **Create Windows Task Scheduler Task**:
 Create a new task to run the `ch4c.ps1` file in Windows Task Scheduler, leave "Run with highest privileges" UNCHECKED (the latest Chrome browser security settings don't like this), and set it to trigger it when the user logs on (it's critical to run after user login to enable the GPU). Run the new Windows task you created manually to test it and be sure to visit all of the streaming sites within the browser that pops up after you try to stream your first channel.  This will allow you to login to the sites and retain the credentials for later runs. 
