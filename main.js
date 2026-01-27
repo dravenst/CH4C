@@ -864,10 +864,16 @@ async function setupBrowserAudio(page, encoderConfig, targetUrl = null) {
                             currentUrl.includes('/browse') ||
                             (targetUrl && targetUrl.includes('/watch') && !currentUrl.includes('/watch'));
         if (isWrongPage) {
-          logTS(`On wrong page (${currentUrl}), navigating back to channel (set ${tryCount}, attempt ${attempt}/${maxVideoWaitAttempts})`);
-
-          // Wait briefly before re-navigating to let Sling settle
-          await delay(500 + Math.random() * 500);
+          // If we're on /browse, the show likely isn't streaming yet - wait longer
+          const isBrowsePage = currentUrl.includes('/browse');
+          if (isBrowsePage) {
+            logTS(`On browse page (show may not be streaming yet), waiting before retry (set ${tryCount}, attempt ${attempt}/${maxVideoWaitAttempts})`);
+            await delay(5000 + Math.random() * 5000); // Wait 5-10 seconds for /browse
+          } else {
+            logTS(`On wrong page (${currentUrl}), navigating back to channel (set ${tryCount}, attempt ${attempt}/${maxVideoWaitAttempts})`);
+            // Wait briefly before re-navigating to let Sling settle
+            await delay(500 + Math.random() * 500);
+          }
 
           // Navigate back to channel with modal handling
           if (targetUrl) {
@@ -1104,7 +1110,23 @@ async function setupBrowserAudio(page, encoderConfig, targetUrl = null) {
       clearInterval(activityUpdateInterval);
     }
   }
- 
+
+  // Re-inject checkForVideos before final check (page context may have changed, especially for Sling)
+  await page.evaluate(() => {
+    window.checkForVideos = () => {
+      const videos = [...document.getElementsByTagName('video')];
+      const iframeVideos = [...document.getElementsByTagName('iframe')].reduce((acc, iframe) => {
+        try {
+          const frameVideos = iframe.contentDocument?.getElementsByTagName('video');
+          return frameVideos && frameVideos.length ? [...acc, ...frameVideos] : acc;
+        } catch(e) {
+          return acc;
+        }
+      }, []);
+      return [...videos, ...iframeVideos];
+    };
+  });
+
   let videoLength = await page.evaluate(() => window.checkForVideos().length);
   logTS(`Found ${videoLength} videos`);
    
@@ -1220,6 +1242,9 @@ async function launchBrowser(targetUrl, encoderConfig, startMinimized, applyStar
     launchResolve = resolve;
     launchReject = reject;
   });
+  // Add a no-op catch to prevent unhandled rejection when the promise is rejected
+  // but no one is actively waiting on it (the error is still thrown by the function)
+  launchPromise.catch(() => {});
   launchMutex.set(encoderConfig.url, launchPromise);
 
   try {
