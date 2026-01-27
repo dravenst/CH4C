@@ -3,13 +3,13 @@
 This project merges elements of the excellent [Chrome Capture for Channels](https://github.com/fancybits/chrome-capture-for-channels) and [HDMI for Channels](https://github.com/tmm1/androidhdmi-for-channels) projects, in an attempt to capture benefits of each.  It builds on the original idea from [ParksideParade](https://github.com/ParksideParade/CH4C).
 
 Specifically:
-* **vs CC4C**: this project can run on a lower performance PC by offloading the encoding of one or more streams to an external hardware HDMI encoder(s)
-* **vs Android HDMI for Channels (AH4C)**: this project can capture from any web URL with no dependency on an Android TV app/device
+* **vs CC4C**: this project can run on a much lower cost/performance PC by offloading the video encoding of one or more streams to an external hardware HDMI encoder(s)
+* **vs Android HDMI for Channels (AH4C)**: this project can capture from any web URL with no dependency on an Android TV app or device
 
 ### My favorite use cases / why I made this
 * Recovering channels that I lost from TV Everywhere - for example NFL Network
 * Recording content that is web-only - for example a high school sports streaming website that doesn't have an app
-* Can be run on a low cost PC (e.g. the same PC where you're running Channels DVR) with a relatively low cost external hardware HDMI encoder e.g. Link Pi ENC1-V3 ~$120
+* Can be run on a low cost PC (e.g. the same PC where you're running Channels DVR including a Celeron chip-based PC) with a relatively low cost external hardware HDMI encoder e.g. Link Pi ENC1-V3 ~$120
 
 ![Channels](./assets/channelmapping.jpg)
 
@@ -18,7 +18,7 @@ Specifically:
 
 ### Hardware required
 * **Video source**: It's lightweight enough to run on your existing Channels box or a separate server.  (Windows exe available too.)
-* **Encoder**: I used the [Link Pi ENC1-v3](https://a.co/d/76zJF9U) with dual input ports - both hdmi port and USB port - using an [HDMI to USB card like this for the second port](https://www.amazon.com/dp/B0C2MDTY8P?ref=ppx_yo2ov_dt_b_fed_asin_title)
+* **Encoder**: I used the [Link Pi ENC1-v3](https://a.co/d/76zJF9U) with dual input ports - both hdmi port and USB port - using an [HDMI to USB adapter like this for the second port](https://www.amazon.com/dp/B0C2MDTY8P?ref=ppx_yo2ov_dt_b_fed_asin_title)
 
 ### Config
 * **Encoder**: I largely followed the guidelines [here](https://community.getchannels.com/t/linkpi-encoder-family/38860/4) to configure the encoders.  Connect your PC HDMI port(s) to the external encoder box and confirm that you're able to see and hear on the encoder's streaming URL before you go any further using VLC or similar - see Stream menu and Play URL tab for links.  Make sure your PC config is set to 1920x1080 for the PC display(s).
@@ -30,7 +30,7 @@ Download the Windows exe `ch4c.exe` available in the latest [release](https://gi
 
 ![Remote Access with VNC](./assets/remoteaccess.jpg)
 
-* **First Run - configure video sources**: on first startup, you will have to manually complete any one-time logins for the sites triggered by CH4C. Each browser instance uses it's own user directory, and will be created at startup so you can get to the appropriate websites.  You can run via the node command or ch4c.exe to make this happen.  There were will be one browser instance per encoder created at startup and pooled for faster streaming.  (Tip: Set your width_pos browser offset(s) to your main screen initially so that you can easily do your website logins.)
+* **First Run - configure video sources**: on first startup, you will have to manually complete any one-time logins for the sites triggered by CH4C. Each browser instance uses it's own user directory, and will be created at startup so you can get to the appropriate websites.  You can run via the node command or ch4c.exe to make this happen.  There were will be one browser instance per encoder created at startup and pooled for faster streaming.  (Tip: Set your width_pos browser offset(s) to your main screen initially i.e. 0:0 so that you can easily do your website logins.)
 
 * **Run parameters**: 
 It's required to pass in at least --channels-url and --encoder for your setup (see example below).  You can specify more than one encoder if you have multiple hdmi outputs available. 
@@ -128,7 +128,9 @@ Each encoder object in the `encoders` array has these properties:
 
 There is a powershell command to get more specifics on offsets of your available displays (Please note that the Scale for your display settings needs to be set at 100%):
 
-`powershell -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Screen]::AllScreens | Select-Object DeviceName, Primary, Bounds"`
+```
+powershell -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Screen]::AllScreens | Select-Object DeviceName, Primary, Bounds"
+```
 
 ![Windows Display Settings](./assets/displaysetup.jpg)
 
@@ -138,9 +140,10 @@ Here's an example Windows Sound Settings showing the two audio devices available
 
 ![Windows Audio](./assets/pcaudiodevices.jpg)
 
-```
+
 Below is an alternative Powershell command to get a list of audio output devices in Windows.  Note that the Name field contains the device name we're looking for.  My audio devices for the Link Pi were labeled "Encoder" and "MACROSILICON" in the example below, but yours will likely be different.  For multiple encoders, you'll need to test to see which audio device Name maps to the appropriate Encoder stream through trial and error.
 
+```
 PS C:\> Get-AudioDevice -List
 
 Index                : 1
@@ -189,7 +192,7 @@ Or a simpler example for the `ch4c.ps1` file where you create a runme.bat file t
     ```
 
   * **I use a simple runme.bat like this**:
-I have the runme.bat change to the correct working directory (YOUR-PATH) and run the executable with tee to show the console logs and capture them to a log file.
+I have the runme.bat change to the correct working directory (YOUR-PATH) and run the executable (using the config.json) with tee to show the console logs and capture them to a log file.
     ```
     cd (YOUR-PATH)
 
