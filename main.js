@@ -856,10 +856,18 @@ async function setupBrowserAudio(page, encoderConfig, targetUrl = null) {
         logTS(`Starting attempt set ${tryCount}/${maxTries} for video detection`);
 
       for (let attempt = 1; attempt <= maxVideoWaitAttempts && !videoFound; attempt++) {
-        // Check if we're on the wrong page (modal or dashboard) before waiting for video
+        // Check if we're on the wrong page (modal, dashboard, or browse) before waiting for video
+        // Also check if we're NOT on the expected /watch page - Sling sometimes redirects to /browse
         const currentUrl = page.url();
-        if (currentUrl.includes('/modal') || currentUrl.includes('/dashboard')) {
-          logTS(`On modal/dashboard, navigating to channel (set ${tryCount}, attempt ${attempt}/${maxVideoWaitAttempts})`);
+        const isWrongPage = currentUrl.includes('/modal') ||
+                            currentUrl.includes('/dashboard') ||
+                            currentUrl.includes('/browse') ||
+                            (targetUrl && targetUrl.includes('/watch') && !currentUrl.includes('/watch'));
+        if (isWrongPage) {
+          logTS(`On wrong page (${currentUrl}), navigating back to channel (set ${tryCount}, attempt ${attempt}/${maxVideoWaitAttempts})`);
+
+          // Wait briefly before re-navigating to let Sling settle
+          await delay(500 + Math.random() * 500);
 
           // Navigate back to channel with modal handling
           if (targetUrl) {
