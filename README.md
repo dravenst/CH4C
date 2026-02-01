@@ -49,7 +49,7 @@ Follow the guidelines in the [Channels community thread](https://community.getch
 
 1. Connect your PC HDMI port(s) to the external encoder box
 2. Set encoder to 60fps 1920x1080, and test CBR/VBR/AVBR and bitrate (minimum 8,000 recommended) to your preference.  Reminder that the LinkPi ENC1-v3 USB input only supports 30fps so set your encoder appropriately.
-3. Set PC display(s) to 1920x1080 @ 60Hz.  Optionally, in Intel Graphics Command Center, set Quantization Range to "Full" for better black levels
+3. Set PC display(s) to 1920x1080 @ 60Hz (or @30 Hz for LinkPi ENC1-v3 USB input screen).  Optionally, in Intel Graphics Command Center, set Quantization Range to "Full" for better black levels
 
 ---
 
