@@ -425,6 +425,12 @@ class BrowserHealthMonitor {
       if (recovered) {
         logTS(`[${encoderUrl}] Successfully recovered unhealthy browser`);
 
+        // Mark encoder as available after successful recovery
+        if (global.cleanupManager && global.cleanupManager.setBrowserAvailable) {
+          global.cleanupManager.setBrowserAvailable(encoderUrl);
+          logTS(`[${encoderUrl}] Marked as available after health monitor recovery`);
+        }
+
         // Force an immediate health check on the new browser
         const browser = this.browsersRef.get(encoderUrl);
         if (browser && browser.isConnected()) {
@@ -636,6 +642,10 @@ class BrowserRecoveryManager {
           // Mark browser as healthy after successful recovery
           if (global.browserHealthMonitor) {
             global.browserHealthMonitor.updateBrowserHealth(encoderUrl, true);
+          }
+          // Mark encoder as available after successful recovery
+          if (global.cleanupManager && global.cleanupManager.setBrowserAvailable) {
+            global.cleanupManager.setBrowserAvailable(encoderUrl);
           }
           return true;
         }
