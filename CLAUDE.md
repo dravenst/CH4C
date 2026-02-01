@@ -7,7 +7,7 @@ Chrome HDMI for Channels (CH4C) is a Node.js application that captures web strea
 - Use Node.js (no TypeScript - project uses vanilla JavaScript)
 - Follow existing code patterns and naming conventions
 - Always test with actual encoders when making streaming changes
-- Maintain compatibility with both Linux (Pi5) and Windows platforms
+- Focus on the Windows platforms, but may want to add Linux and Mac compatibility in the future.
 
 ## Build & Test Commands
 - **Build**: `npm run build` (creates Windows executable using pkg)

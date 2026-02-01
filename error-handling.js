@@ -633,6 +633,10 @@ class BrowserRecoveryManager {
         if (success) {
           logTS(`Successfully recovered browser for ${encoderUrl}`);
           this.resetRecoveryAttempts(encoderUrl);
+          // Mark browser as healthy after successful recovery
+          if (global.browserHealthMonitor) {
+            global.browserHealthMonitor.updateBrowserHealth(encoderUrl, true);
+          }
           return true;
         }
         logTS(`[${encoderUrl}] Browser launch returned false, not retrying`);
@@ -961,6 +965,11 @@ function setupBrowserCrashHandlers(browser, encoderUrl, recoveryManager, encoder
         if (browsers.has(encoderUrl)) {
           const newBrowser = browsers.get(encoderUrl);
           setupBrowserCrashHandlers(newBrowser, encoderUrl, recoveryManager, encoderConfig, browsers, launchBrowserFunc, Constants);
+        }
+
+        // Mark browser as healthy after successful recovery
+        if (global.browserHealthMonitor) {
+          global.browserHealthMonitor.updateBrowserHealth(encoderUrl, true);
         }
 
         // Mark encoder as available after successful recovery

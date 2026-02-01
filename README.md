@@ -1,77 +1,131 @@
 # Chrome HDMI for Channels (CH4C)
 
-This project merges elements of the excellent [Chrome Capture for Channels](https://github.com/fancybits/chrome-capture-for-channels) and [HDMI for Channels](https://github.com/tmm1/androidhdmi-for-channels) projects, in an attempt to capture benefits of each.  It builds on the original idea from [ParksideParade](https://github.com/ParksideParade/CH4C).
+This project merges elements of the excellent [Chrome Capture for Channels](https://github.com/fancybits/chrome-capture-for-channels) and [HDMI for Channels](https://github.com/tmm1/androidhdmi-for-channels) projects, in an attempt to capture benefits of each. It builds on the original idea from [ParksideParade](https://github.com/ParksideParade/CH4C).
 
-Specifically:
-* **vs CC4C**: this project can run on a much lower cost/performance PC by offloading the video encoding of one or more streams to an external hardware HDMI encoder(s)
-* **vs Android HDMI for Channels (AH4C)**: this project can capture from any web URL with no dependency on an Android TV app or device
+**Compared to similar projects:**
+- **vs CC4C**: This project can run on a much lower cost/performance PC by offloading the video encoding of one or more streams to an external hardware HDMI encoder(s)
+- **vs Android HDMI for Channels (AH4C)**: This project can capture from any web URL with no dependency on an Android TV app or device
 
-### My favorite use cases / why I made this
-* Recovering channels that I lost from TV Everywhere - for example NFL Network
-* Recording content that is web-only - for example a high school sports streaming website that doesn't have an app
-* Can be run on a low cost PC (e.g. the same PC where you're running Channels DVR including a Celeron chip-based PC) with a relatively low cost external hardware HDMI encoder e.g. Link Pi ENC1-V3 ~$120
+**Why I made this:**
 
-![Channels](./assets/channelmapping.jpg)
+- Recovering channels lost from TV Everywhere (e.g., NFL Network)
+- Recording web-only content (e.g., high school sports streaming websites without apps)
+- Running on a low-cost PC (including Celeron-based machines running Channels DVR) with a relatively inexpensive external HDMI encoder like the Link Pi ENC1-V3 (~$120)
+
+## Table of Contents
+
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Configuration](#configuration)
+  - [Command-Line Parameters](#command-line-parameters)
+  - [JSON Configuration File](#json-configuration-file)
+  - [Encoder Display Setup](#encoder-display-setup)
+  - [Audio Device Setup](#audio-device-setup)
+- [First Run Setup](#first-run-setup)
+- [Running CH4C](#running-ch4c)
+  - [Windows Task Scheduler (Auto-Start)](#windows-task-scheduler-auto-start)
+- [Web Interface](#web-interface)
+  - [Status Dashboard](#status-dashboard)
+  - [M3U Manager](#m3u-manager)
+  - [Instant Recording](#instant-recording)
+  - [Remote Access](#remote-access)
+- [Channels DVR Integration](#channels-dvr-integration)
+- [Development](#development)
+- [Performance Notes](#performance-notes)
 
 
-## Getting started
+---
 
-### Hardware required
-* **Video source**: It's lightweight enough to run on your existing Channels box or a separate server.  (Windows exe available too.)
-* **Encoder**: I used the [Link Pi ENC1-v3](https://a.co/d/76zJF9U) with dual input ports - both hdmi port and USB port - using an [HDMI to USB adapter like this for the second port](https://www.amazon.com/dp/B0C2MDTY8P?ref=ppx_yo2ov_dt_b_fed_asin_title)
+## Requirements
 
-### Config
-* **Encoder**: I largely followed the guidelines [here](https://community.getchannels.com/t/linkpi-encoder-family/38860/4) to configure the encoders.  Connect your PC HDMI port(s) to the external encoder box and confirm that you're able to see and hear on the encoder's streaming URL before you go any further using VLC or similar - see Stream menu and Play URL tab for links.  Make sure your PC config is set to 1920x1080 for the PC display(s).
+### Hardware
 
-* **Installation on Windows**:
-Download the Windows exe `ch4c.exe` available in the latest [release](https://github.com/dravenst/CH4C/releases). You can create a ".ps1" file that can be used to run as a Windows startup task as outlined in the [chrome-capture thread](https://community.getchannels.com/t/chrome-capture-for-channels/36667/130) or summarized below. Or pull the source code locally and run `npm install` to install node packages if you're going to to run it via `node main.js`.
+- **Windows PC**: Most Windows PC should work, I run both my Channels DVR service and CH4C together on the same low power Intel Celeron 5105 PC.
+- **Encoder**: Recommended [Link Pi ENC1-v3](https://a.co/d/76zJF9U) with dual input ports (HDMI and USB). For the USB port, use an HDMI to USB adapter.  The LinkPi ENC1-v3 USB ports are only USB 2.0 so it will only effectively support 1920x1080p @30 fps on this second input (or it will show some periodic screen tearing).
 
-* **DO NOT run in a Windows Remote Desktop session**: Video and audio sources can change when running with Windows Remote Desktop aka Windows App.  For remote access, use VNC instead (e.g. [TightVNC server](https://www.tightvnc.com/) or similar.)  The Admin tool includes a VNC viewer to attach to the VNC server running on your CH4C server at http://\<CH4C_IP_ADDRESS\>:\<CH4C_PORT\>/remote-access and more info can be found in the [REMOTE_ACCESS_SETUP](REMOTE_ACCESS_SETUP.md).  For full clipboard functionality and to avoid browser security warnings, enable HTTPS using the `-t` parameter and see the [HTTPS_SETUP](HTTPS_SETUP.md) guide.
+### Encoder Configuration
 
-![Remote Access with VNC](./assets/remoteaccess.jpg)
+Follow the guidelines in the [Channels community thread](https://community.getchannels.com/t/linkpi-encoder-family/38860/4) to configure the encoders:
 
-* **First Run - configure video sources**: on first startup, you will have to manually complete any one-time logins for the sites triggered by CH4C. Each browser instance uses it's own user directory, and will be created at startup so you can get to the appropriate websites.  You can run via the node command or ch4c.exe to make this happen.  There were will be one browser instance per encoder created at startup and pooled for faster streaming.  (Tip: Set your width_pos browser offset(s) to your main screen initially i.e. 0:0 so that you can easily do your website logins.)
+1. Connect your PC HDMI port(s) to the external encoder box
+2. Set encoder to 60fps 1920x1080, and test CBR/VBR/AVBR and bitrate (minimum 8,000 recommended) to your preference.  Reminder that the LinkPi ENC1-v3 USB input only supports 30fps so set your encoder appropriately.
+3. Set PC display(s) to 1920x1080 @ 60Hz.  Optionally, in Intel Graphics Command Center, set Quantization Range to "Full" for better black levels
 
-* **Run parameters**: 
-It's required to pass in at least --channels-url and --encoder for your setup (see example below).  You can specify more than one encoder if you have multiple hdmi outputs available. 
-e.g.
+---
+
+## Installation
+
+Download `ch4c.exe` from the latest [release](https://github.com/dravenst/CH4C/releases).
+
+Alternatively, clone the repository and run from source:
+```bash
+git clone https://github.com/dravenst/CH4C
+cd CH4C
+npm install
+node main.js --help
+```
+
+## Configuration
+
+CH4C can be configured via command-line parameters or a JSON configuration file. If both exist, command-line parameters take precedence.
+
+### Command-Line Parameters
+
 ```
 Usage: node main.js [options]
 
-Options:
-  -s, --channels-url   Channels server URL  [string] [required]
-  -p, --channels-port  Channels server port  [string] [default: "8089"]
-  -e, --encoder        Encoder configurations in format "url[:channel:width_pos:height_pos:audio_device]" where channel is optional (format: xx.xx, default: 24.42), width_pos/height_pos are optional screen positions (default: 0:0), and audio_device is the optional audio output device name  [array] [required]
-  -c, --ch4c-port      CH4C port number  [number] [default: 2442]
-  -t, --ch4c-ssl-port  Enable HTTPS on specified port (auto-generates SSL certificate)  [number] [optional]
-  -n, --ssl-hostnames  Additional hostnames/IPs for SSL certificate (comma-separated)  [string] [optional]
-  -d, --data-dir       Directory location for storing channel data. [string] [default: "data"]
-  -m, --enable-pause-monitor    Enable automatic video pause detection and resume  [boolean] [default: true]
-  -i, --pause-monitor-interval  Interval in seconds to check for paused video  [number] [default: 10]
-  -b, --browser-health-interval  Interval in hours to check browser health  [number] [default: 6]
-  -h, --help           Show help  [boolean]
+Required:
+  -s, --channels-url              Channels server URL                    [string] [required]
+  -e, --encoder                   Encoder config (see format below)      [array] [required]
 
-Examples:
-  > main.js -s "http://192.168.50.50" -e "http://192.168.50.71/live/stream0"
-
-  Simple example with channels server at 192.168.50.50 and single encoder at 192.168.50.71.
-  
-
-  > main.js -s "http://192.168.50.50" -e "http://192.168.50.71/live/stream0:24.42:0:0:Encoder" -e "http://192.168.50.71/live/stream1:24.43:1920:0:MACROSILICON"
-
-  This sets the channels server to 192.168.50.50 and encoder to 192.168.50.71/live/stream0 and a second encoder at stream1. The 1920 position of stream1 moves it to the right on startup on screen 2 in a dual monitor setup.
-
-  When specifying more than one encoder, you will need to find the audio device Name and specify the first portion of it at the end of the encoder param.  In Windows, to see encoder audio device names, look in Windows Sound Settings or use the powershell command: Get-AudioDevice -List
-
-
-  > main.js -s "http://192.168.50.50" -e "http://192.168.50.71/live/stream0" -t 2443
-
-  Enable HTTPS on port 2443 in addition to HTTP on port 2442. A self-signed SSL certificate is auto-generated on first run. Local network IPs are automatically included in the certificate. See HTTPS_SETUP.md for certificate installation instructions.
+Optional:
+  -p, --channels-port             Channels server port                   [default: "8089"]
+  -c, --ch4c-port                 CH4C port number                       [default: 2442]
+  -t, --ch4c-ssl-port             Enable HTTPS on specified port
+  -n, --ssl-hostnames             Additional hostnames/IPs for SSL cert (comma-separated)
+  -d, --data-dir                  Directory for storing channel data     [default: "data"]
+  -m, --enable-pause-monitor      Enable video pause detection/resume    [default: true]
+  -i, --pause-monitor-interval    Pause check interval in seconds        [default: 10]
+  -b, --browser-health-interval   Browser health check interval (hours)  [default: 6]
+  -h, --help                      Show help
 ```
 
-* **Configuration via JSON file**: As an alternative to command-line parameters, you can configure CH4C using a `config.json` file in the data directory. This is especially useful for complex multi-encoder setups. If both command-line parameters and config.json exist, command-line parameters take precedence.
+**Encoder format**: `url[:channel:width_pos:height_pos:audio_device]`
+- `url` - Encoder stream URL (required)
+- `channel` - Channel number in xx.xx format (default: 24.42)
+- `width_pos` - Screen X position offset (default: 0)
+- `height_pos` - Screen Y position offset (default: 0)
+- `audio_device` - Audio output device name (optional)
 
-Example `data/config.json`:
+#### Examples
+
+> **Important**: Do NOT run ch4c.exe or display/sound config-related commands in a Windows Remote Desktop session. Video and audio sources will change when using Remote Desktop. Use VNC instead (e.g., [TightVNC](https://www.tightvnc.com/)). See [Remote Access](#remote-access) for the built-in VNC viewer.
+
+---
+
+**Simple single encoder:**
+```bash
+node main.js -s "http://192.168.50.50" -e "http://192.168.50.71/live/stream0"
+```
+
+**Dual encoders with audio devices:**
+```bash
+node main.js -s "http://192.168.50.50" \
+  -e "http://192.168.50.71/live/stream0:24.42:0:0:Encoder" \
+  -e "http://192.168.50.71/live/stream1:24.43:1920:0:MACROSILICON"
+```
+The `1920` position moves stream1 to the second monitor in a dual-monitor setup.
+
+**With HTTPS enabled:**
+```bash
+node main.js -s "http://192.168.50.50" -e "http://192.168.50.71/live/stream0" -t 2443
+```
+A self-signed SSL certificate is auto-generated on first run. See [HTTPS_SETUP.md](HTTPS_SETUP.md) for certificate installation.
+
+### JSON Configuration File
+
+Create `data/config.json` for complex setups:
+
 ```json
 {
   "channelsUrl": "http://192.168.50.50",
@@ -102,20 +156,21 @@ Example `data/config.json`:
 }
 ```
 
-| JSON Property | Command-line Equivalent | Description |
-|---------------|------------------------|-------------|
-| `channelsUrl` | `-s, --channels-url` | Channels server URL |
-| `channelsPort` | `-p, --channels-port` | Channels server port (default: 8089) |
-| `ch4cPort` | `-c, --ch4c-port` | CH4C HTTP port (default: 2442) |
-| `ch4cSslPort` | `-t, --ch4c-ssl-port` | CH4C HTTPS port (optional) |
-| `sslHostnames` | `-n, --ssl-hostnames` | Additional SSL hostnames/IPs |
-| `dataDir` | `-d, --data-dir` | Data directory location |
-| `enablePauseMonitor` | `-m, --enable-pause-monitor` | Enable pause detection (default: true) |
-| `pauseMonitorInterval` | `-i, --pause-monitor-interval` | Pause check interval in seconds |
-| `browserHealthInterval` | `-b, --browser-health-interval` | Browser health check interval in hours |
-| `encoders` | `-e, --encoder` | Array of encoder configurations |
+| JSON Property | CLI Equivalent | Description |
+|---------------|----------------|-------------|
+| `channelsUrl` | `-s` | Channels server URL |
+| `channelsPort` | `-p` | Channels server port (default: 8089) |
+| `ch4cPort` | `-c` | CH4C HTTP port (default: 2442) |
+| `ch4cSslPort` | `-t` | CH4C HTTPS port (optional) |
+| `sslHostnames` | `-n` | Additional SSL hostnames/IPs |
+| `dataDir` | `-d` | Data directory location |
+| `enablePauseMonitor` | `-m` | Enable pause detection (default: true) |
+| `pauseMonitorInterval` | `-i` | Pause check interval in seconds |
+| `browserHealthInterval` | `-b` | Browser health check interval in hours |
+| `encoders` | `-e` | Array of encoder configurations |
 
-Each encoder object in the `encoders` array has these properties:
+**Encoder object properties:**
+
 | Property | Description |
 |----------|-------------|
 | `url` | Encoder stream URL (required) |
@@ -124,25 +179,35 @@ Each encoder object in the `encoders` array has these properties:
 | `height` | Screen Y position offset (default: 0) |
 | `audioDevice` | Audio output device name |
 
-* **Encoder Width and Height Position**: The position values are dependent on your display setup. In Windows, I configured my two encoder HDMI displays to align at the bottom and both are setup as 1920x1080.  Therefore, one display will be setup with width and height position as 0:0 and the other that is offset to the right by the width of the first display will be 1920:0.
+### Encoder Display Setup
 
-There is a powershell command to get more specifics on offsets of your available displays (Please note that the Scale for your display settings needs to be set at 100%):
+Position values depend on your display setup. For two 1920x1080 displays aligned at the bottom:
+- First display: `width: 0, height: 0`
+- Second display (offset to the right): `width: 1920, height: 0`
 
-```
-powershell -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Screen]::AllScreens | Select-Object DeviceName, Primary, Bounds"
+> **Note**: Display scale must be set to 100% for correct positioning.
+
+**PowerShell command to find display offsets:**
+```powershell
+Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Screen]::AllScreens | Select-Object DeviceName, Primary, Bounds
 ```
 
 ![Windows Display Settings](./assets/displaysetup.jpg)
 
-* **Audio Setup**: Audio setup is tricky in a multi-encoder environment. You need to first identify the appropriate device names (e.g. look under Sound devices in Windows - sample below) or use the Powershell command below in Windows `Get-AudioDevice -List`).  Then use the first portion of the Name field for the Encoder parameter.  For multiple encoders, you'll have to do some trial and error to find the right audio device to match with the appropriate encoder stream url.  If not specified, CH4C will use the default audio device on the platform.  If no match, it will display the available active audio devices in the console.  You can also query the uri /audio-devices to see a full list of audio devices available on the PC when CH4C is running.
+### Audio Device Setup
 
-Here's an example Windows Sound Settings showing the two audio devices available for the Link Pi ENC1-V3 hardware encoder
+For multi-encoder setups, you must identify and specify audio device names.
 
-![Windows Audio](./assets/pcaudiodevices.jpg)
+**Finding audio devices in Windows:**
 
+1. Check Windows Sound Settings, or
+2. Use PowerShell: `Get-AudioDevice -List`
 
-Below is an alternative Powershell command to get a list of audio output devices in Windows.  Note that the Name field contains the device name we're looking for.  My audio devices for the Link Pi were labeled "Encoder" and "MACROSILICON" in the example below, but yours will likely be different.  For multiple encoders, you'll need to test to see which audio device Name maps to the appropriate Encoder stream through trial and error.
+Use the first portion of the device Name field for the encoder parameter. If not specified, CH4C uses the default audio device. Query `/audio-devices` endpoint to see available devices when CH4C is running.
 
+![Windows Sound Settings showing encoder audio devices](./assets/pcaudiodevices.jpg)
+
+**Example PowerShell output:**
 ```
 PS C:\> Get-AudioDevice -List
 
@@ -169,72 +234,151 @@ Type                 : Playback
 Name                 : MACROSILICON (3- HD Audio Driver for Display Audio)
 ID                   : {0.0.0.00000000}.{a14f146f-a40c-41fe-827e-f4f4e6ed3d00}
 Device               : CoreAudioApi.MMDevice
-
 ```
 
-* **Windows Startup using Windows Task Scheduler**:
-  * **Windows Startup Configuration**:
-Create a new text file called `ch4c.ps1` and add the following line to it (replacing `(YOUR-PATH)` with your path to where you stored the ch4c.exe file, `(YOUR-ROOT-PATH)` where the data directory is, and update your config.json file in the data directory):
-    ```
-    Start-Process -WindowStyle Minimized -FilePath "cmd.exe" -ArgumentList "/k", "(YOUR-PATH)\ch4c.exe" -WorkingDirectory "(YOUR-ROOT-PATH)"
-    ```
+In this example, the audio devices are "Encoder" and "MACROSILICON". For multiple encoders, trial and error may be needed to match audio devices to the correct encoder streams.
 
-  * **Windows Startup Configuration #2**:
-Or run ch4c.exe as a command line tool in `ch4c.ps1` file using two encoders of the ENC1-V3:
-    ```
-    Start-Process -WindowStyle hidden -FilePath "(YOUR-PATH)\ch4c.exe" -ArgumentList "-t", "2443", "--channels-url", "http://192.168.50.50", "--encoder", "http://192.168.50.71/live/stream0:24.42:0:0:Encoder" "--encoder", "http://192.168.50.72/live/stream1:24.43:1920:0:MACROSILICON"
-    ```
+---
 
-  * **Windows Startup Configuration #3**:
-Or a simpler example for the `ch4c.ps1` file where you create a runme.bat file to include your startup parameters :
-    ```
-    Start-Process -WindowStyle hidden -FilePath "(YOUR-PATH)\runme.bat"
-    ```
+## First Run Setup
 
-  * **I use a simple runme.bat like this**:
-I have the runme.bat change to the correct working directory (YOUR-PATH) and run the executable (using the config.json) with tee to show the console logs and capture them to a log file.
-    ```
-    cd (YOUR-PATH)
+> **Important**: Do NOT run ch4c.exe or display/sound config-related commands in a Windows Remote Desktop session. Video and audio sources will change when using Remote Desktop. Use VNC instead (e.g., [TightVNC](https://www.tightvnc.com/)). See [Remote Access](#remote-access) for the built-in VNC viewer.
 
-    @echo ***Waiting 30 seconds for system to stabilize on startup...
-    timeout /t 30
+---
 
-    @echo ***Running ch4c and capture logs in data\ch4c.log
-    powershell -Command "dist\ch4c.exe 2>&1 | Tee-Object -FilePath data\ch4c.log -Append"
-    ```
+On the first startup, you need to complete the one-time logins in each encoder browser for all of the streaming sites you plan to use to ensure the credentials are now cached within each encoder browser going forward.  Periodically, the streaming sites may ask you to reauthenticate again.  To complete this, it's easiest if you temporarily adjust the browser positions for the encoder to display in the main screen.  In your startup config,  set the `width_pos` and `height_pos` offsets to your main screen e.g. `0:0` so that browser windows appear on your main screen for easy logins.
 
+---
 
-  * **Create Windows Task Scheduler Task**:
-Create a new task to run the `ch4c.ps1` file in Windows Task Scheduler, leave "Run with highest privileges" UNCHECKED (the latest Chrome browser security settings don't like this), and set it to trigger it when the user logs on (it's critical to run after user login to enable the GPU). Run the new Windows task you created manually to test it and be sure to visit all of the streaming sites within the browser that pops up after you try to stream your first channel.  This will allow you to login to the sites and retain the credentials for later runs. 
+## Running CH4C at PC Startup
 
-* **NEW CH4C M3U Manager**: custom channels can be downloaded from Sling TV (recommend using the default Favorites only) or created as custom channels using the new UI. There is an integrated Lookup feature to search for station IDs by callsign or name.  Navigate to http://\<CH4C_IP_ADDRESS\>:\<CH4C_PORT\>/m3u-manager and either Refresh Sling TV or Add Custom Channel to create M3U.  The Channels DVR Settings->Sources requires an entry with Stream Format to `MPEG-TS` and you can set the Source URL to http://\<CH4C_IP_ADDRESS\>:\<CH4C_PORT\>/m3u-manager/playlist.m3u and CH4C will provide the M3U data automatically.
+### Windows Task Scheduler (Auto-Start) with a powershell `ch4c.ps1` file
 
-![CustomChannels](./assets/m3umanagermain.jpg)
-![CustomChannels](./assets/refreshslingservice.jpg)
-![CustomChannels](./assets/addcustomchannel.jpg)
-![CustomChannels](./assets/stationlookup.jpg)
-![CustomChannels](./assets/nbcnewsnowguide.jpg)
-![CustomChannels](./assets/customchannelm3umgr.jpg)
+**Option 1: Using config.json**
 
-* **Channels DVR custom channel setup**: create a custom channel in the Channels DVR Settings->Sources following the example below. Be sure to set the Stream Format to `MPEG-TS`. If it's a linear channel like NFL Network you can also map the channel so you get guide data. See the [samples.m3u](./assets/samples.m3u) file for more examples for Sling TV. CH4C also supports NBC.com, Spectrum and Peacocktv.com [(see how to do peacock links)](https://community.getchannels.com/t/adbtuner-a-channel-tuning-application-for-networked-google-tv-android-tv-devices/36822/1895).  Please note that in the example below that 192.168.50.71 is the IP address of the Link Pi encoder and 192.168.50.50 is the IP address where CH4C is running.
-
-![CustomChannels](./assets/channelsetup.jpg)
-
-
-### Other Web Pages
-Some other features are available from the running CH4C instance:
-
-* **Status Dashboard**: Navigate to http://\<CH4C_IP_ADDRESS\>:\<CH4C_PORT\>/ to see the main status page with encoder health, audio devices, command-line reference, and M3U configuration examples
-
-![StatusPage](./assets/newstatuspage.jpg)
-
-* **Instant Recording or Viewing**: go to http://\<CH4C_IP_ADDRESS\>:\<CH4C_PORT\>/instant for a simple UI to instantly start recording any given URL. Or you can just "tune" your encoder to that URL (without recording), so you can watch in Channels on the encoder's channel number (default: 24.42, or whatever you specified in the --encoder parameter)
-
-![InstantRecordings](./assets/instantpage.jpg)
-
-### Developing
-windows
+Create `ch4c.ps1` with simple ch4c.exe command line assuming config.json located in `WorkingDirectory` .\data directory:
+```powershell
+Start-Process -WindowStyle Minimized -FilePath "cmd.exe" -ArgumentList "/k", "(YOUR-PATH)\ch4c.exe" -WorkingDirectory "(YOUR-ROOT-PATH)"
 ```
+
+**Option 2: Command-line arguments**
+
+Create `ch4c.ps1` with ch4c.exe command line parameters:
+```powershell
+Start-Process -WindowStyle hidden -FilePath "(YOUR-PATH)\ch4c.exe" -ArgumentList "-t", "2443", "--channels-url", "http://192.168.50.50", "--encoder", "http://192.168.50.71/live/stream0:24.42:0:0:Encoder", "--encoder", "http://192.168.50.72/live/stream1:24.43:1920:0:MACROSILICON"
+```
+
+**Option 3: Using a batch file e.g. runme.bat (Simplest)**
+
+Create `ch4c.ps1` calling the `runme.bat` file:
+```powershell
+Start-Process -WindowStyle hidden -FilePath "(YOUR-PATH)\runme.bat"
+```
+
+Sample `runme.bat` with logging:
+```batch
+cd (YOUR-PATH)
+
+@echo ***Waiting 30 seconds for system to stabilize on startup...
+timeout /t 30
+
+@echo ***Running ch4c and capture logs in .\data\ch4c.log
+powershell -Command "ch4c.exe 2>&1 | Tee-Object -FilePath .\data\ch4c.log -Append"
+```
+
+**Creating the Task Scheduler task:**
+
+1. Create a new task to run `ch4c.ps1`
+2. Leave "Run with highest privileges" **UNCHECKED** (Chrome security doesn't like the browser running with highest privileges)
+3. Set trigger to "When the user logs on" (required to ensure browser has GPU access)
+4. Run the new task manually to test
+
+---
+
+## Web Interface
+
+### Status Dashboard
+
+Navigate to `http://<CH4C_IP>:<CH4C_PORT>/` to view:
+- Encoder health
+- Audio devices
+- Command-line reference
+- M3U configuration examples
+
+![Status Dashboard](./assets/newstatuspage.jpg)
+
+### M3U Manager
+
+Navigate to `http://<CH4C_IP>:<CH4C_PORT>/m3u-manager` to:
+- Synchronize the channel guide from Sling TV (Favorites only recommended)
+- Create custom channels for any streaming service with deep links
+- Search for station IDs by callsign or channel name
+
+**Channels DVR Setup:**
+1. Add a new source in Channels DVR Settings
+2. Set Stream Format to `MPEG-TS`
+3. Set Source URL to `http://<CH4C_IP>:<CH4C_PORT>/m3u-manager/playlist.m3u`
+
+**Navigate to your CH4C IP in a browser and select M3U Manager to view the M3U Manager main screen**
+
+![M3U Manager Main](./assets/m3umanagermain.jpg)
+
+**Selecting Refresh Sling TV will enable you synch the channels automatically from the Sling TV guide**
+
+![Refresh Sling Service](./assets/refreshslingservice.jpg)
+
+**Selecting the Add Custom Channel from the M3U Manager main screen enables you to add any type of channel for any service and Lookup the Station ID**
+
+| Add Custom Channel in M3U Manager | Station Lookup Option |
+|:------------------:|:--------------:|
+| ![Add Custom Channel](./assets/addcustomchannel.jpg) | ![Station Lookup](./assets/stationlookup.jpg) |
+
+**Create a new Custom Channel in Channels DVR admin tool using the playlist.m3u URL found in your M3U Manager main screen:**
+
+![Custom Channel in Channels DVR](./assets/customchannelm3umgr.jpg)
+
+### Instant Recording
+
+Navigate to `http://<CH4C_IP>:<CH4C_PORT>/instant` to:
+- Instantly start recording any URL and it will automatically try to enable full screen video
+- Tune your encoder to a URL without recording (watch in Channels on the encoder's channel number)
+- Enables you to add your own show metadata that will be visible in the Channels DVR Recordings
+
+![Instant Recording Page](./assets/instantpage.jpg)
+
+### Remote Access
+
+CH4C includes a built-in VNC viewer at `http://<CH4C_IP>:<CH4C_PORT>/remote-access` to connect to a VNC server running on your CH4C machine.
+
+For better clipboard functionality and security, to avoid browser security warnings, enable HTTPS using the `-t` parameter. See [HTTPS_SETUP.md](HTTPS_SETUP.md) and [REMOTE_ACCESS_SETUP.md](REMOTE_ACCESS_SETUP.md) for details.
+
+![Remote Access with VNC](./assets/remoteaccess.jpg)
+
+---
+
+## ALTERNATIVE Channels DVR Integration
+
+If you choose not to use the M3U Manager method above to configure new channels for the Channels DVR Integration, you can still manually create a custom channel in the Channels DVR admin tool:
+
+1. Go to Channels DVR Settings → Sources
+2. Add a new custom channel
+3. Set Stream Format to `MPEG-TS`
+4. Add channel entries using the proper format noticed in the samples below
+4. For linear channels (e.g., NFL Network), map the channel for guide data if needed
+
+See [samples.m3u](./assets/samples.m3u) for examples including Sling TV, NBC.com, Spectrum, and Peacock ([Peacock link format](https://community.getchannels.com/t/adbtuner-a-channel-tuning-application-for-networked-google-tv-android-tv-devices/36822/1895)).
+
+> **Note**: In the example below, 192.168.50.71 is the encoder IP and 192.168.50.50 is the CH4C server IP.
+
+![Channel Setup in Channels DVR](./assets/channelsetup.jpg)
+
+---
+
+## Development
+
+### Setup
+
+```bash
 winget install -e --id Git.Git
 winget install -e --id OpenJS.NodeJS
 
@@ -244,16 +388,19 @@ npm install
 node main.js --help
 ```
 
-Build the ch4c.exe executable for Windows
-```
+### Building
+
+Build the Windows executable:
+```bash
 npm run build
 ```
 
-## Results
+---
 
-### Performance
-This works surprisingly well for me, but the streaming providers can have some glitches that prevent consistent loading of screens.
+## Performance Notes
 
-### Other Notes
-* **Mac and Docker**: This is optimized for Windows, so it's not likely to work well on Mac or Docker yet
-* **HLS**: The examples above use MPEG-TS, but you can likely use HLS as well.  You just need to setup your encoder to enable HLS and then adjust your Custom Channel setup in Channels to use HLS. The final setup is to update the startup Encoder parameter to use the HLS stream.
+This works surprisingly well, though streaming providers may have occasional glitches that prevent consistent loading.
+
+**Additional notes:**
+- **Mac and Docker**: This is optimized for Windows and is not likely to work well on Mac or Docker
+- **HLS Support**: The examples use MPEG-TS, but HLS is also supported. Configure your encoder for HLS, update the Channels custom channel to use HLS, and adjust the encoder parameter to use the HLS stream URL

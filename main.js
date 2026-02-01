@@ -864,11 +864,11 @@ async function setupBrowserAudio(page, encoderConfig, targetUrl = null) {
                             currentUrl.includes('/browse') ||
                             (targetUrl && targetUrl.includes('/watch') && !currentUrl.includes('/watch'));
         if (isWrongPage) {
-          // If we're on /browse, the show likely isn't streaming yet - wait longer
+          // If we're on /browse, the show likely isn't streaming yet - wait longer to avoid rate limiting
           const isBrowsePage = currentUrl.includes('/browse');
           if (isBrowsePage) {
-            logTS(`On browse page (show may not be streaming yet), waiting before retry (set ${tryCount}, attempt ${attempt}/${maxVideoWaitAttempts})`);
-            await delay(5000 + Math.random() * 5000); // Wait 5-10 seconds for /browse
+            logTS(`On browse page (show may not be streaming yet), waiting 15-20s before retry (set ${tryCount}, attempt ${attempt}/${maxVideoWaitAttempts})`);
+            await delay(15000 + Math.random() * 5000); // Wait 15-20 seconds for /browse to avoid rate limiting
           } else {
             logTS(`On wrong page (${currentUrl}), navigating back to channel (set ${tryCount}, attempt ${attempt}/${maxVideoWaitAttempts})`);
             // Wait briefly before re-navigating to let Sling settle
