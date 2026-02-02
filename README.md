@@ -41,15 +41,15 @@ This project merges elements of the excellent [Chrome Capture for Channels](http
 ### Hardware
 
 - **Windows PC**: Most Windows PC should work, I run both my Channels DVR service and CH4C together on the same low power Intel Celeron 5105 PC.
-- **Encoder**: Recommended [Link Pi ENC1-v3](https://a.co/d/76zJF9U) with dual input ports (HDMI and USB). For the USB port, use an HDMI to USB adapter.  The LinkPi ENC1-v3 USB ports are only USB 2.0 so it will only effectively support 1920x1080p @30 fps on this second input (or it will show some periodic screen tearing).
+- **Encoder**: Recommended [Link Pi ENC1-v3](https://a.co/d/76zJF9U) with dual input ports (HDMI and USB). For the USB port, use an HDMI to USB adapter.  The LinkPi ENC1-v3 USB ports are only USB 2.0 so it will only effectively support 1920x1080p @30 fps on this second input (or it might show some periodic screen tearing).
 
 ### Encoder Configuration
 
 Follow the guidelines in the [Channels community thread](https://community.getchannels.com/t/linkpi-encoder-family/38860/4) to configure the encoders:
 
 1. Connect your PC HDMI port(s) to the external encoder box
-2. Set encoder to 60fps 1920x1080, and test CBR/VBR/AVBR and bitrate (minimum 8,000 recommended) to your preference.  Reminder that the LinkPi ENC1-v3 USB input only supports 30fps so set your encoder appropriately.
-3. Set PC display(s) to 1920x1080 @ 60Hz (or @30 Hz for LinkPi ENC1-v3 USB input screen).  Optionally, in Intel Graphics Command Center, set Quantization Range to "Full" for better black levels
+2. I recommend setting encoder to 30fps 1920x1080 (to match the streaming services), and test CBR/VBR/AVBR and bitrate (minimum 8,000 recommended) to your preference.  Reminder that the LinkPi ENC1-v3 USB input only supports 30fps so set your encoder appropriately.
+3. Set PC display(s) to 1920x1080 @ 60Hz.  Optionally, in Intel Graphics Command Center, set Quantization Range to "Full" for better black levels
 
 ---
 
