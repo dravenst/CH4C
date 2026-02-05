@@ -1090,6 +1090,57 @@ async function setupBrowserAudio(page, encoderConfig, targetUrl = null) {
     } finally {
       clearInterval(activityUpdateInterval);
     }
+  } else if (targetUrl && targetUrl.includes("disneynow.com")) {
+    // DisneyNow requires clicking the play overlay before video loads
+    logTS("DisneyNow detected, clicking play overlay to start video");
+
+    // Wait for the play overlay button to appear
+    for (let i = 0; i < 10; i++) {
+      const found = await page.evaluate(() => {
+        function querySelectorDeep(selector, root = document) {
+          const element = root.querySelector(selector);
+          if (element) return element;
+          const allElements = root.querySelectorAll('*');
+          for (const el of allElements) {
+            if (el.shadowRoot) {
+              const found = querySelectorDeep(selector, el.shadowRoot);
+              if (found) return found;
+            }
+          }
+          return null;
+        }
+        const btn = querySelectorDeep('.overlay__button button');
+        if (btn) {
+          btn.click();
+          return true;
+        }
+        return false;
+      });
+      if (found) {
+        logTS("DisneyNow play overlay clicked");
+        break;
+      }
+      await delay(500);
+    }
+
+    // Now wait for video to load after play was clicked
+    const activityUpdateInterval = setInterval(() => {
+      if (global.streamMonitor && encoderConfig && encoderConfig.url) {
+        const stream = global.streamMonitor.activeStreams.get(encoderConfig.url);
+        if (stream) {
+          global.streamMonitor.updateActivity(encoderConfig.url);
+        }
+      }
+    }, 10000);
+
+    try {
+      await page.waitForFunction(() => {
+        const videos = window.checkForVideos();
+        return videos.length > 0 && videos.some(v => v.readyState >= 2);
+      }, { timeout: 30000 });
+    } finally {
+      clearInterval(activityUpdateInterval);
+    }
   } else {
     // Other non-Sling sites use original logic
     const activityUpdateInterval = setInterval(() => {
@@ -2073,25 +2124,698 @@ async function fullScreenVideoGooglePhotos(page) {
 }
 
 async function fullScreenVideoESPN(page) {
-  logTS("URL contains ESPN, maximizing volume and going fullscreen");
+  logTS("URL contains ESPN, setting up fullscreen and unmuting");
 
-  // Always press up arrow 5 times to ensure max volume
-  for (let i = 0; i < 5; i++) {
-    await delay(200);
-    await page.keyboard.press('ArrowUp');
+  // Wait for video element to have enough data to play (readyState >= 3)
+  let videoReady = false;
+  for (let i = 0; i < 10; i++) {  // Wait up to ~5 seconds
+    try {
+      videoReady = await page.evaluate(() => {
+        const videos = document.querySelectorAll('video');
+        // Check if any video has enough data (readyState 3=HAVE_FUTURE_DATA, 4=HAVE_ENOUGH_DATA)
+        for (const video of videos) {
+          if (video.readyState >= 3) {
+            return true;
+          }
+        }
+        return false;
+      });
+      if (videoReady) {
+        logTS("ESPN video ready (readyState >= 3)");
+        break;
+      }
+    } catch (e) {
+      // Continue waiting
+    }
+    await delay(500);
   }
-  await delay(200);
 
-  // Press Tab 10 times to navigate to fullscreen button
+  if (!videoReady) {
+    logTS("ESPN video not ready after timeout, continuing anyway");
+  }
+
+  // Move mouse to center of viewport to trigger player controls
+  try {
+    const viewport = page.viewport();
+    const centerX = viewport ? viewport.width / 2 : 640;
+    const centerY = viewport ? viewport.height / 2 : 360;
+    await page.mouse.move(centerX, centerY);
+    await delay(300);
+    await page.mouse.click(centerX, centerY);
+    await delay(500);
+    // Move mouse again to ensure controls stay visible
+    await page.mouse.move(centerX, centerY - 100);
+    await delay(300);
+  } catch (e) {
+    logTS("Could not move mouse to show controls: " + e.message);
+  }
+
+  // Use evaluate to find and interact with elements (handles shadow DOM)
+  const result = await page.evaluate(() => {
+    const results = { mute: 'not found', volume: 'not found', fullscreen: 'not found' };
+
+    // Helper to search in shadow DOM
+    function querySelectorDeep(selector, root = document) {
+      const element = root.querySelector(selector);
+      if (element) return element;
+
+      // Search in shadow roots
+      const allElements = root.querySelectorAll('*');
+      for (const el of allElements) {
+        if (el.shadowRoot) {
+          const found = querySelectorDeep(selector, el.shadowRoot);
+          if (found) return found;
+        }
+      }
+      return null;
+    }
+
+    // Find and handle mute button, return its position for volume hover
+    const muteButton = querySelectorDeep('button.toggle-mute-button');
+    if (muteButton) {
+      if (muteButton.classList.contains('volume-muted')) {
+        muteButton.click();
+        results.mute = 'was muted, clicked unmute';
+      } else {
+        results.mute = 'already unmuted';
+      }
+      const rect = muteButton.getBoundingClientRect();
+      results.muteButtonRect = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+    }
+
+    return results;
+  });
+
+  logTS(`ESPN mute status: ${result.mute}`);
+
+  // Set volume to max: hover over mute button to reveal volume bar, then click far right
+  if (result.muteButtonRect) {
+    const muteCenterX = result.muteButtonRect.x + result.muteButtonRect.width / 2;
+    const muteCenterY = result.muteButtonRect.y + result.muteButtonRect.height / 2;
+    await page.mouse.move(muteCenterX, muteCenterY);
+    await delay(500);
+
+    // Now get the volume bar position
+    const volInfo = await page.evaluate(() => {
+      function querySelectorDeep(selector, root = document) {
+        const element = root.querySelector(selector);
+        if (element) return element;
+        const allElements = root.querySelectorAll('*');
+        for (const el of allElements) {
+          if (el.shadowRoot) {
+            const found = querySelectorDeep(selector, el.shadowRoot);
+            if (found) return found;
+          }
+        }
+        return null;
+      }
+      const thumb = querySelectorDeep('.volume-bar__thumb');
+      if (thumb) {
+        const currentVolume = thumb.getAttribute('aria-valuenow');
+        const bar = thumb.parentElement;
+        if (bar) {
+          const rect = bar.getBoundingClientRect();
+          return { currentVolume, x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+        }
+      }
+      return null;
+    });
+
+    if (volInfo && volInfo.width > 0) {
+      const clickX = volInfo.x + volInfo.width - 2;
+      const clickY = volInfo.y + volInfo.height / 2;
+      await page.mouse.click(clickX, clickY);
+      logTS(`ESPN volume: clicked bar at max position (was ${volInfo.currentVolume}%)`);
+    } else {
+      logTS(`ESPN volume: volume bar not visible`);
+    }
+  } else {
+    logTS(`ESPN volume: mute button not found`);
+  }
+
+  // Move mouse away from controls before fullscreen
+  try {
+    const viewport = page.viewport();
+    const centerX = viewport ? viewport.width / 2 : 640;
+    const centerY = viewport ? viewport.height / 2 : 360;
+    await page.mouse.move(centerX, centerY);
+    await delay(300);
+  } catch (e) {
+    // Continue
+  }
+
+  // Click fullscreen button
+  const fullscreenResult = await page.evaluate(() => {
+    function querySelectorDeep(selector, root = document) {
+      const element = root.querySelector(selector);
+      if (element) return element;
+      const allElements = root.querySelectorAll('*');
+      for (const el of allElements) {
+        if (el.shadowRoot) {
+          const found = querySelectorDeep(selector, el.shadowRoot);
+          if (found) return found;
+        }
+      }
+      return null;
+    }
+    const fullscreenButton = querySelectorDeep('button.fullscreen-icon');
+    if (fullscreenButton) {
+      fullscreenButton.click();
+      return 'clicked';
+    }
+    return 'not found';
+  });
+
+  logTS(`ESPN fullscreen status: ${fullscreenResult}`);
+
+  // Wait for fullscreen transition to complete, then click play to resume
+  await delay(1000);
+
+  const playResult = await page.evaluate(() => {
+    // Helper to search in shadow DOM
+    function querySelectorDeep(selector, root = document) {
+      const element = root.querySelector(selector);
+      if (element) return element;
+
+      const allElements = root.querySelectorAll('*');
+      for (const el of allElements) {
+        if (el.shadowRoot) {
+          const found = querySelectorDeep(selector, el.shadowRoot);
+          if (found) return found;
+        }
+      }
+      return null;
+    }
+
+    // Find and click play button to resume playback
+    const playButton = querySelectorDeep('button.play-button');
+    if (playButton) {
+      playButton.click();
+      return 'clicked';
+    }
+    return 'not found';
+  });
+
+  logTS(`ESPN play status: ${playResult}`);
+  logTS("finished ESPN fullscreen setup");
+}
+
+async function fullScreenVideoDisneyNow(page) {
+  logTS("URL contains DisneyNow, setting up fullscreen");
+
+  // Play overlay already clicked in setupBrowserAudio, move mouse to show controls
+  try {
+    const viewport = page.viewport();
+    const centerX = viewport ? viewport.width / 2 : 640;
+    const centerY = viewport ? viewport.height / 2 : 360;
+    await page.mouse.move(centerX, centerY);
+    await delay(500);
+  } catch (e) {
+    logTS("Could not move mouse to show controls: " + e.message);
+  }
+
+  // Handle unmute, volume, and fullscreen
+  const result = await page.evaluate(() => {
+    const results = { mute: 'not found', volume: 'not found', fullscreen: 'not found' };
+
+    function querySelectorDeep(selector, root = document) {
+      const element = root.querySelector(selector);
+      if (element) return element;
+      const allElements = root.querySelectorAll('*');
+      for (const el of allElements) {
+        if (el.shadowRoot) {
+          const found = querySelectorDeep(selector, el.shadowRoot);
+          if (found) return found;
+        }
+      }
+      return null;
+    }
+
+    // Find and handle mute button, return its position for volume hover
+    const muteButton = querySelectorDeep('button.toggle-mute-button');
+    if (muteButton) {
+      if (muteButton.classList.contains('volume-muted')) {
+        muteButton.click();
+        results.mute = 'was muted, clicked unmute';
+      } else {
+        results.mute = 'already unmuted';
+      }
+      const rect = muteButton.getBoundingClientRect();
+      results.muteButtonRect = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+    }
+
+    return results;
+  });
+
+  logTS(`DisneyNow mute status: ${result.mute}`);
+
+  // Set volume to max: hover over mute button to reveal volume bar, then click far right
+  if (result.muteButtonRect) {
+    const muteCenterX = result.muteButtonRect.x + result.muteButtonRect.width / 2;
+    const muteCenterY = result.muteButtonRect.y + result.muteButtonRect.height / 2;
+    await page.mouse.move(muteCenterX, muteCenterY);
+    await delay(500);
+
+    const volInfo = await page.evaluate(() => {
+      function querySelectorDeep(selector, root = document) {
+        const element = root.querySelector(selector);
+        if (element) return element;
+        const allElements = root.querySelectorAll('*');
+        for (const el of allElements) {
+          if (el.shadowRoot) {
+            const found = querySelectorDeep(selector, el.shadowRoot);
+            if (found) return found;
+          }
+        }
+        return null;
+      }
+      const thumb = querySelectorDeep('.volume-bar__thumb');
+      if (thumb) {
+        const currentVolume = thumb.getAttribute('aria-valuenow');
+        const bar = thumb.parentElement;
+        if (bar) {
+          const rect = bar.getBoundingClientRect();
+          return { currentVolume, x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+        }
+      }
+      return null;
+    });
+
+    if (volInfo && volInfo.width > 0) {
+      const clickX = volInfo.x + volInfo.width - 2;
+      const clickY = volInfo.y + volInfo.height / 2;
+      await page.mouse.click(clickX, clickY);
+      logTS(`DisneyNow volume: clicked bar at max position (was ${volInfo.currentVolume}%)`);
+    } else {
+      logTS(`DisneyNow volume: volume bar not visible`);
+    }
+  } else {
+    logTS(`DisneyNow volume: mute button not found`);
+  }
+
+  // Move mouse away then click fullscreen
+  try {
+    const viewport = page.viewport();
+    const centerX = viewport ? viewport.width / 2 : 640;
+    const centerY = viewport ? viewport.height / 2 : 360;
+    await page.mouse.move(centerX, centerY);
+    await delay(300);
+  } catch (e) {
+    // Continue
+  }
+
+  const fullscreenResult = await page.evaluate(() => {
+    function querySelectorDeep(selector, root = document) {
+      const element = root.querySelector(selector);
+      if (element) return element;
+      const allElements = root.querySelectorAll('*');
+      for (const el of allElements) {
+        if (el.shadowRoot) {
+          const found = querySelectorDeep(selector, el.shadowRoot);
+          if (found) return found;
+        }
+      }
+      return null;
+    }
+    const fullscreenButton = querySelectorDeep('button.fullscreen-icon');
+    if (fullscreenButton) {
+      fullscreenButton.click();
+      return 'clicked';
+    }
+    return 'not found';
+  });
+
+  logTS(`DisneyNow fullscreen status: ${fullscreenResult}`);
+  logTS("finished DisneyNow fullscreen setup");
+}
+
+async function fullScreenVideoFXNow(page) {
+  logTS("URL contains FXNow, setting up fullscreen");
+
+  // Wait for video element to have enough data to play (readyState >= 3)
+  let videoReady = false;
+  for (let i = 0; i < 10; i++) {  // Wait up to ~5 seconds
+    try {
+      videoReady = await page.evaluate(() => {
+        const videos = document.querySelectorAll('video');
+        for (const video of videos) {
+          if (video.readyState >= 3) return true;
+        }
+        return false;
+      });
+      if (videoReady) {
+        logTS("FXNow video ready (readyState >= 3)");
+        break;
+      }
+    } catch (e) {
+      // Continue waiting
+    }
+    await delay(500);
+  }
+
+  if (!videoReady) {
+    logTS("FXNow video not ready after timeout, continuing anyway");
+  }
+
+  // Move mouse to center of viewport to trigger player controls
+  try {
+    const viewport = page.viewport();
+    const centerX = viewport ? viewport.width / 2 : 640;
+    const centerY = viewport ? viewport.height / 2 : 360;
+    await page.mouse.move(centerX, centerY);
+    await delay(300);
+    await page.mouse.click(centerX, centerY);
+    await delay(500);
+    await page.mouse.move(centerX, centerY - 100);
+    await delay(300);
+  } catch (e) {
+    logTS("Could not move mouse to show controls: " + e.message);
+  }
+
+  // Handle unmute, volume, and fullscreen
+  const result = await page.evaluate(() => {
+    const results = { mute: 'not found', volume: 'not found', fullscreen: 'not found' };
+
+    function querySelectorDeep(selector, root = document) {
+      const element = root.querySelector(selector);
+      if (element) return element;
+      const allElements = root.querySelectorAll('*');
+      for (const el of allElements) {
+        if (el.shadowRoot) {
+          const found = querySelectorDeep(selector, el.shadowRoot);
+          if (found) return found;
+        }
+      }
+      return null;
+    }
+
+    // Find and handle mute button, return its position for volume hover
+    const muteButton = querySelectorDeep('button.toggle-mute-button');
+    if (muteButton) {
+      if (muteButton.classList.contains('volume-muted')) {
+        muteButton.click();
+        results.mute = 'was muted, clicked unmute';
+      } else {
+        results.mute = 'already unmuted';
+      }
+      const rect = muteButton.getBoundingClientRect();
+      results.muteButtonRect = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+    }
+
+    return results;
+  });
+
+  logTS(`FXNow mute status: ${result.mute}`);
+
+  // Set volume to max: hover over mute button to reveal volume bar, then click far right
+  if (result.muteButtonRect) {
+    const muteCenterX = result.muteButtonRect.x + result.muteButtonRect.width / 2;
+    const muteCenterY = result.muteButtonRect.y + result.muteButtonRect.height / 2;
+    await page.mouse.move(muteCenterX, muteCenterY);
+    await delay(500);
+
+    const volInfo = await page.evaluate(() => {
+      function querySelectorDeep(selector, root = document) {
+        const element = root.querySelector(selector);
+        if (element) return element;
+        const allElements = root.querySelectorAll('*');
+        for (const el of allElements) {
+          if (el.shadowRoot) {
+            const found = querySelectorDeep(selector, el.shadowRoot);
+            if (found) return found;
+          }
+        }
+        return null;
+      }
+      const thumb = querySelectorDeep('.volume-bar__thumb');
+      if (thumb) {
+        const currentVolume = thumb.getAttribute('aria-valuenow');
+        const bar = thumb.parentElement;
+        if (bar) {
+          const rect = bar.getBoundingClientRect();
+          return { currentVolume, x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+        }
+      }
+      return null;
+    });
+
+    if (volInfo && volInfo.width > 0) {
+      const clickX = volInfo.x + volInfo.width - 2;
+      const clickY = volInfo.y + volInfo.height / 2;
+      await page.mouse.click(clickX, clickY);
+      logTS(`FXNow volume: clicked bar at max position (was ${volInfo.currentVolume}%)`);
+    } else {
+      logTS(`FXNow volume: volume bar not visible`);
+    }
+  } else {
+    logTS(`FXNow volume: mute button not found`);
+  }
+
+  // Move mouse away then click fullscreen
+  try {
+    const viewport = page.viewport();
+    const centerX = viewport ? viewport.width / 2 : 640;
+    const centerY = viewport ? viewport.height / 2 : 360;
+    await page.mouse.move(centerX, centerY);
+    await delay(300);
+  } catch (e) {
+    // Continue
+  }
+
+  const fullscreenResult = await page.evaluate(() => {
+    function querySelectorDeep(selector, root = document) {
+      const element = root.querySelector(selector);
+      if (element) return element;
+      const allElements = root.querySelectorAll('*');
+      for (const el of allElements) {
+        if (el.shadowRoot) {
+          const found = querySelectorDeep(selector, el.shadowRoot);
+          if (found) return found;
+        }
+      }
+      return null;
+    }
+    const fullscreenButton = querySelectorDeep('button.fullscreen-icon');
+    if (fullscreenButton) {
+      fullscreenButton.click();
+      return 'clicked';
+    }
+    return 'not found';
+  });
+
+  logTS(`FXNow fullscreen status: ${fullscreenResult}`);
+
+  // Wait for fullscreen transition, then click play to resume
+  await delay(1000);
+
+  const playResult = await page.evaluate(() => {
+    function querySelectorDeep(selector, root = document) {
+      const element = root.querySelector(selector);
+      if (element) return element;
+      const allElements = root.querySelectorAll('*');
+      for (const el of allElements) {
+        if (el.shadowRoot) {
+          const found = querySelectorDeep(selector, el.shadowRoot);
+          if (found) return found;
+        }
+      }
+      return null;
+    }
+
+    const playButton = querySelectorDeep('button.play-button');
+    if (playButton) {
+      playButton.click();
+      return 'clicked';
+    }
+    return 'not found';
+  });
+
+  logTS(`FXNow play status: ${playResult}`);
+  logTS("finished FXNow fullscreen setup");
+}
+
+async function fullScreenVideoNatGeo(page) {
+  logTS("URL contains National Geographic, setting up fullscreen");
+
+  // Wait for video element to have enough data to play (readyState >= 3)
+  let videoReady = false;
   for (let i = 0; i < 10; i++) {
-    await delay(200);
-    await page.keyboard.press('Tab');
+    try {
+      videoReady = await page.evaluate(() => {
+        const videos = document.querySelectorAll('video');
+        for (const video of videos) {
+          if (video.readyState >= 3) return true;
+        }
+        return false;
+      });
+      if (videoReady) {
+        logTS("NatGeo video ready (readyState >= 3)");
+        break;
+      }
+    } catch (e) {
+      // Continue waiting
+    }
+    await delay(500);
   }
 
-  // Press Enter to activate fullscreen
-  await page.keyboard.press('Enter');
+  if (!videoReady) {
+    logTS("NatGeo video not ready after timeout, continuing anyway");
+  }
 
-  logTS("finished maximizing volume and fullscreen");
+  // Move mouse to center of viewport to trigger player controls
+  try {
+    const viewport = page.viewport();
+    const centerX = viewport ? viewport.width / 2 : 640;
+    const centerY = viewport ? viewport.height / 2 : 360;
+    await page.mouse.move(centerX, centerY);
+    await delay(300);
+    await page.mouse.click(centerX, centerY);
+    await delay(500);
+    await page.mouse.move(centerX, centerY - 100);
+    await delay(300);
+  } catch (e) {
+    logTS("Could not move mouse to show controls: " + e.message);
+  }
+
+  // Handle unmute
+  const result = await page.evaluate(() => {
+    const results = { mute: 'not found' };
+
+    function querySelectorDeep(selector, root = document) {
+      const element = root.querySelector(selector);
+      if (element) return element;
+      const allElements = root.querySelectorAll('*');
+      for (const el of allElements) {
+        if (el.shadowRoot) {
+          const found = querySelectorDeep(selector, el.shadowRoot);
+          if (found) return found;
+        }
+      }
+      return null;
+    }
+
+    const muteButton = querySelectorDeep('button.toggle-mute-button');
+    if (muteButton) {
+      if (muteButton.classList.contains('volume-muted')) {
+        muteButton.click();
+        results.mute = 'was muted, clicked unmute';
+      } else {
+        results.mute = 'already unmuted';
+      }
+      const rect = muteButton.getBoundingClientRect();
+      results.muteButtonRect = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+    }
+
+    return results;
+  });
+
+  logTS(`NatGeo mute status: ${result.mute}`);
+
+  // Set volume to max: hover over mute button to reveal volume bar, then click far right
+  if (result.muteButtonRect) {
+    const muteCenterX = result.muteButtonRect.x + result.muteButtonRect.width / 2;
+    const muteCenterY = result.muteButtonRect.y + result.muteButtonRect.height / 2;
+    await page.mouse.move(muteCenterX, muteCenterY);
+    await delay(500);
+
+    const volInfo = await page.evaluate(() => {
+      function querySelectorDeep(selector, root = document) {
+        const element = root.querySelector(selector);
+        if (element) return element;
+        const allElements = root.querySelectorAll('*');
+        for (const el of allElements) {
+          if (el.shadowRoot) {
+            const found = querySelectorDeep(selector, el.shadowRoot);
+            if (found) return found;
+          }
+        }
+        return null;
+      }
+      const thumb = querySelectorDeep('.volume-bar__thumb');
+      if (thumb) {
+        const currentVolume = thumb.getAttribute('aria-valuenow');
+        const bar = thumb.parentElement;
+        if (bar) {
+          const rect = bar.getBoundingClientRect();
+          return { currentVolume, x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+        }
+      }
+      return null;
+    });
+
+    if (volInfo && volInfo.width > 0) {
+      const clickX = volInfo.x + volInfo.width - 2;
+      const clickY = volInfo.y + volInfo.height / 2;
+      await page.mouse.click(clickX, clickY);
+      logTS(`NatGeo volume: clicked bar at max position (was ${volInfo.currentVolume}%)`);
+    } else {
+      logTS(`NatGeo volume: volume bar not visible`);
+    }
+  } else {
+    logTS(`NatGeo volume: mute button not found`);
+  }
+
+  // Move mouse away then click fullscreen
+  try {
+    const viewport = page.viewport();
+    const centerX = viewport ? viewport.width / 2 : 640;
+    const centerY = viewport ? viewport.height / 2 : 360;
+    await page.mouse.move(centerX, centerY);
+    await delay(300);
+  } catch (e) {
+    // Continue
+  }
+
+  const fullscreenResult = await page.evaluate(() => {
+    function querySelectorDeep(selector, root = document) {
+      const element = root.querySelector(selector);
+      if (element) return element;
+      const allElements = root.querySelectorAll('*');
+      for (const el of allElements) {
+        if (el.shadowRoot) {
+          const found = querySelectorDeep(selector, el.shadowRoot);
+          if (found) return found;
+        }
+      }
+      return null;
+    }
+    const fullscreenButton = querySelectorDeep('button.fullscreen-icon');
+    if (fullscreenButton) {
+      fullscreenButton.click();
+      return 'clicked';
+    }
+    return 'not found';
+  });
+
+  logTS(`NatGeo fullscreen status: ${fullscreenResult}`);
+
+  // Wait for fullscreen transition, then click play to resume
+  await delay(1000);
+
+  const playResult = await page.evaluate(() => {
+    function querySelectorDeep(selector, root = document) {
+      const element = root.querySelector(selector);
+      if (element) return element;
+      const allElements = root.querySelectorAll('*');
+      for (const el of allElements) {
+        if (el.shadowRoot) {
+          const found = querySelectorDeep(selector, el.shadowRoot);
+          if (found) return found;
+        }
+      }
+      return null;
+    }
+
+    const playButton = querySelectorDeep('button.play-button');
+    if (playButton) {
+      playButton.click();
+      return 'clicked';
+    }
+    return 'not found';
+  });
+
+  logTS(`NatGeo play status: ${playResult}`);
+  logTS("finished NatGeo fullscreen setup");
 }
 
 async function fullScreenVideoYouTube(page) {
@@ -4127,6 +4851,15 @@ async function handleSiteSpecificFullscreen(targetUrl, page, encoderConfig = nul
     } else if (targetUrl.includes("espn.com")) {
       logTS("Handling ESPN video");
       await fullScreenVideoESPN(page);
+    } else if (targetUrl.includes("disneynow.com")) {
+      logTS("Handling DisneyNow video");
+      await fullScreenVideoDisneyNow(page);
+    } else if (targetUrl.includes("fxnow.fxnetworks.com")) {
+      logTS("Handling FXNow video");
+      await fullScreenVideoFXNow(page);
+    } else if (targetUrl.includes("nationalgeographic.com")) {
+      logTS("Handling National Geographic video");
+      await fullScreenVideoNatGeo(page);
     } else {
       logTS("Handling default video");
       await fullScreenVideo(page);
