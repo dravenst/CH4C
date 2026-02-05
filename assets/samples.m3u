@@ -137,3 +137,29 @@ http://192.168.50.50:2442/stream/?url=https://watch.sling.com/1/channel/385c71f4
 
 #EXTINF:-1 channel-id="USA" tvc-guide-stationid="58452" channel-number="242",USA
 http://192.168.50.50:2442/stream/?url=https://watch.sling.com/1/channel/35b320ac77ce4a2fbaf685e401933dc1/watch
+
+
+#EXTINF:-1 tvg-id="custom-1770256975748" tvg-name="ESPNHD" tvg-logo="https://tmsimg.fancybits.co/assets/s32645_ll_h15_ab.png?w=360&h=270" tvc-guide-stationid="32645" channel-number="206" tvc-guide-genres="Sports" tvc-guide-tags="HDTV",ESPN
+http://192.168.50.50:2442/stream?url=https%3A%2F%2Fwww.espn.com%2Fwatch%2Fplayer%3Fnetwork%3Despn
+
+#EXTINF:-1 tvg-id="custom-1770257046486" tvg-name="ESPN2HD" tvg-logo="https://tmsimg.fancybits.co/assets/s45507_ll_h15_aa.png?w=360&h=270" tvc-guide-stationid="45507" channel-number="209" tvc-guide-genres="Sports" tvc-guide-tags="HDTV",ESPN2
+http://192.168.50.50:2442/stream?url=https%3A%2F%2Fwww.espn.com%2Fwatch%2Fplayer%3Fnetwork%3Despn2
+
+#EXTINF:-1 tvg-id="custom-1770263484257" tvg-name="FXHD" tvg-logo="https://tmsimg.fancybits.co/assets/s58574_h3_aa.png?w=360&h=270" tvc-guide-stationid="58574" channel-number="248" tvc-guide-genres="Sports" tvc-guide-tags="HDTV",FX
+http://192.168.50.50:2442/stream?url=https%3A%2F%2Ffxnow.fxnetworks.com%2Fwatch-live%2F93256af4-5e80-4558-aa2e-2bdfffa119a0
+
+#EXTINF:-1 tvg-id="custom-1770266087994" tvg-name="FXMHD" tvg-logo="https://tmsimg.fancybits.co/assets/s70253_ll_h15_aa.png?w=360&h=270" tvc-guide-stationid="70253" channel-number="258" tvc-guide-genres="Sports" tvc-guide-tags="HDTV",FXM
+http://192.168.50.50:2442/stream?url=https%3A%2F%2Ffxnow.fxnetworks.com%2Fwatch-live%2Fd298ab7e-c6b1-4efa-ac6e-a52dceed92ee
+
+#EXTINF:-1 tvg-id="custom-1770266192570" tvg-name="FXXHD" tvg-logo="https://tmsimg.fancybits.co/assets/s66379_ll_h9_aa.png?w=360&h=270" tvc-guide-stationid="66379" channel-number="259" tvc-guide-genres="Sports" tvc-guide-tags="HDTV",FXX
+http://192.168.50.50:2442/stream?url=https%3A%2F%2Ffxnow.fxnetworks.com%2Fwatch-live%2F49f4a471-8d36-4728-8457-ea65cbbc84ea
+
+#EXTINF:-1 tvg-id="custom-1770265810926" tvg-name="NGCHD" tvg-logo="https://tmsimg.fancybits.co/assets/s49438_ll_h15_ab.png?w=360&h=270" tvc-guide-stationid="49438" channel-number="276" tvc-guide-genres="Sports" tvc-guide-tags="HDTV",National Geographic
+http://192.168.50.50:2442/stream?url=https%3A%2F%2Fwww.nationalgeographic.com%2Ftv%2Fwatch-live%2F0826a9a3-3384-4bb5-8841-91f01cb0e3a7
+
+#EXTINF:-1 tvg-id="custom-1770266357410" tvg-name="NATGW" tvg-logo="https://tmsimg.fancybits.co/assets/s76858_ll_h15_aa.png?w=360&h=270" tvc-guide-stationid="66804" channel-number="283" tvc-guide-genres="Sports",National Geographic Wild
+http://192.168.50.50:2442/stream?url=https%3A%2F%2Fwww.nationalgeographic.com%2Ftv%2Fwatch-live%2F239b9590-583f-4955-a499-22e9eefff9cf
+
+#EXTINF:-1 tvg-id="custom-1770261340766" tvg-name="DISNHD" tvg-logo="https://tmsimg.fancybits.co/assets/s59684_ll_h15_ae.png?w=360&h=270" tvc-guide-stationid="59684" channel-number="290" tvc-guide-genres="Sports" tvc-guide-tags="HDTV",Disney Channel
+http://192.168.50.50:2442/stream?url=https%3A%2F%2Fdisneynow.com%2Fwatch-live%3Fbrand%3D004
+
