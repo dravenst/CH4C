@@ -32,6 +32,7 @@ This project merges elements of the excellent [Chrome Capture for Channels](http
 - [Channels DVR Integration](#channels-dvr-integration)
 - [Development](#development)
 - [Performance Notes](#performance-notes)
+- [License](#license)
 
 
 ---
@@ -423,3 +424,9 @@ This works surprisingly well, though streaming providers may have occasional gli
 **Additional notes:**
 - **Mac and Docker**: This is optimized for Windows and is not likely to work well on Mac or Docker
 - **HLS Support**: The examples use MPEG-TS, but HLS is also supported. Configure your encoder for HLS, update the Channels custom channel to use HLS, and adjust the encoder parameter to use the HLS stream URL
+
+---
+
+## License
+
+This project is licensed under the [ISC License](LICENSE).

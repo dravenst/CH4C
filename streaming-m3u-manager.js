@@ -1002,6 +1002,60 @@ class StreamingM3UManager {
   }
 
   /**
+   * Generate M3U playlist with remote Channels DVR URLs
+   * Instead of proxy wrapper URLs, generates direct Channels DVR URLs:
+   * http://<ipAddress>:<port>/devices/ANY/channels/<channelNumber>/hls/master.m3u8?bitrate=<bitrate>
+   */
+  generateRemoteM3U(ipAddress = 'CH4C_IP_ADDRESS', port = '8089', bitrate = '5000') {
+    // Get all enabled channels, sorted by channel number
+    const enabledChannels = this.channels
+      .filter(ch => ch.enabled !== false)
+      .sort((a, b) => {
+        const aNum = parseFloat(a.channelNumber) || 9999;
+        const bNum = parseFloat(b.channelNumber) || 9999;
+        return aNum - bNum;
+      });
+
+    let m3u = `#EXTM3U\n\n`;
+
+    for (const ch of enabledChannels) {
+      const tvgId = ch.id;
+      const tvgName = ch.callSign || ch.name;
+      const tvgLogo = ch.logo || '';
+      const channelNum = ch.channelNumber || '';
+      const genreMap = {
+        'Entertainment': 'Drama',
+        'Kids': 'Children',
+        'Movies': 'Movies',
+        'Sports': 'Sports',
+        'News': 'News',
+        'Drama': 'Drama',
+        'Children': 'Children',
+        'Other': null
+      };
+      const genre = genreMap[ch.category] !== undefined ? genreMap[ch.category] : 'Other';
+      const displayName = ch.name;
+
+      let guideAttribute = '';
+      if (ch.stationId) {
+        guideAttribute = ` tvc-guide-stationid="${ch.stationId}"`;
+      } else if (ch.duration) {
+        const durationSeconds = ch.duration * 60;
+        guideAttribute = ` tvc-guide-placeholders="${durationSeconds}"`;
+      }
+
+      const genreAttribute = genre ? ` tvc-guide-genres="${genre}"` : '';
+      const videoType = typeof ch.videoQuality === 'object' ? ch.videoQuality?.videoType : ch.videoQuality;
+      const tagsAttribute = (videoType === 'HDTV' || videoType === 'SDTV') ? ` tvc-guide-tags="${videoType}"` : '';
+
+      m3u += `#EXTINF:-1 tvg-id="${tvgId}" tvg-name="${tvgName}" tvg-logo="${tvgLogo}"${guideAttribute} channel-number="${channelNum}"${genreAttribute}${tagsAttribute},${displayName}\n`;
+      m3u += `http://${ipAddress}:${port}/devices/ANY/channels/${channelNum}/hls/master.m3u8?bitrate=${bitrate}\n\n`;
+    }
+
+    return m3u;
+  }
+
+  /**
    * Get manager status
    */
   getStatus() {
