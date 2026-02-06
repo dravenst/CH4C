@@ -4854,8 +4854,8 @@ async function handleSiteSpecificFullscreen(targetUrl, page, encoderConfig = nul
     } else if (targetUrl.includes("disneynow.com")) {
       logTS("Handling DisneyNow video");
       await fullScreenVideoDisneyNow(page);
-    } else if (targetUrl.includes("fxnow.fxnetworks.com")) {
-      logTS("Handling FXNow video");
+    } else if (targetUrl.includes("fxnow.fxnetworks.com") || targetUrl.includes("abc.com")) {
+      logTS("Handling FXNow/ABC video");
       await fullScreenVideoFXNow(page);
     } else if (targetUrl.includes("nationalgeographic.com")) {
       logTS("Handling National Geographic video");

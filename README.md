@@ -333,6 +333,25 @@ Navigate to `http://<CH4C_IP>:<CH4C_PORT>/m3u-manager` to:
 |:------------------:|:--------------:|
 | ![Add Custom Channel](./assets/addcustomchannel.jpg) | ![Station Lookup](./assets/stationlookup.jpg) |
 
+**Sample Custom Channel URLs:**
+
+| Channel | URL |
+|---------|-----|
+| ESPN | `https://www.espn.com/watch/player?network=espn` |
+| ESPN2 | `https://www.espn.com/watch/player?network=espn2` |
+| Disney | `https://disneynow.com/watch-live?brand=004` |
+| Disney XD | `https://disneynow.com/watch-live?brand=009` |
+| Disney Jr | `https://disneynow.com/watch-live?brand=008` |
+| FX | `https://fxnow.fxnetworks.com/watch-live/93256af4-5e80-4558-aa2e-2bdfffa119a0` |
+| FXX | `https://fxnow.fxnetworks.com/watch-live/49f4a471-8d36-4728-8457-ea65cbbc84ea` |
+| FXM | `https://fxnow.fxnetworks.com/watch-live/d298ab7e-c6b1-4efa-ac6e-a52dceed92ee` |
+| NGC | `https://www.nationalgeographic.com/tv/watch-live/0826a9a3-3384-4bb5-8841-91f01cb0e3a7` |
+| NGC Wild | `https://www.nationalgeographic.com/tv/watch-live/239b9590-583f-4955-a499-22e9eefff9cf` |
+| NBC KUSA | `https://www.nbc.com/live?brand=nbc&callsign=KUSA` |
+| NBC News Now | `https://nbc.com/live?brand=nbc-news&callsign=nbcnews` |
+| Bravo | `https://www.nbc.com/live?brand=bravo&callsign=BRAVOHD` |
+| FreeForm | `https://abc.com/watch-live/885c669e-fa9a-4039-b42e-6c85c90cc86d` |
+
 **Create a new Custom Channel in Channels DVR admin tool using the playlist.m3u URL found in your M3U Manager main screen:**
 
 ![Custom Channel in Channels DVR](./assets/customchannelm3umgr.jpg)
