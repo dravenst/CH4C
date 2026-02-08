@@ -4348,17 +4348,6 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
     res.send(m3u);
   });
 
-  // GET /m3u-manager/playlist-remote.m3u - Generate M3U playlist with remote Channels DVR URLs
-  app.get('/m3u-manager/playlist-remote.m3u', (req, res) => {
-    const ip = req.query.url || req.get('host').split(':')[0];
-    const port = req.query.port || '8089';
-    const bitrate = req.query.bitrate || '5000';
-    const m3u = m3uManager.generateRemoteM3U(ip, port, bitrate);
-    res.type('audio/x-mpegurl');
-    res.setHeader('Content-Disposition', 'attachment; filename="streaming_channels_remote.m3u"');
-    res.send(m3u);
-  });
-
   // GET /stop - Stop all active streams and return encoders to pool
   app.get('/stop', async (req, res) => {
     const cleanupManager = req.app.locals.cleanupManager;
