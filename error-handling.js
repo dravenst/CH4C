@@ -1056,6 +1056,50 @@ function setupBrowserCrashHandlers(browser, encoderUrl, recoveryManager, encoder
       const url = target.url();
       if (url && url !== 'about:blank') {
         logTS(`Page target changed for ${encoderUrl}: ${url.substring(0, 100)}`);
+
+        // Auto-recovery: detect Sling navigating away from watch page during active stream
+        if (global.streamMonitor && url.includes('/dashboard')) {
+          const stream = global.streamMonitor.activeStreams.get(encoderUrl);
+          if (stream && stream.targetUrl && stream.targetUrl.includes('watch.sling.com') && stream.targetUrl.includes('/watch')) {
+            logTS(`[${encoderUrl}] RECOVERY: Sling navigated away from watch page to dashboard during active stream`);
+            logTS(`[${encoderUrl}] RECOVERY: Attempting to navigate back to ${stream.targetUrl}`);
+
+            // Run recovery async (don't block the event handler)
+            (async () => {
+              try {
+                const page = await target.page();
+                if (!page) {
+                  logTS(`[${encoderUrl}] RECOVERY: Could not get page object, aborting`);
+                  return;
+                }
+
+                // Re-navigate to the original watch URL
+                if (global.navigateSlingLikeHuman) {
+                  const success = await global.navigateSlingLikeHuman(page, stream.targetUrl, encoderUrl);
+                  if (success) {
+                    logTS(`[${encoderUrl}] RECOVERY: Successfully navigated back to ${stream.targetUrl}`);
+
+                    // Wait for video and re-apply fullscreen
+                    if (global.setupBrowserAudio) {
+                      await global.setupBrowserAudio(page, encoderConfig, stream.targetUrl);
+                    }
+                    if (global.handleSiteSpecificFullscreen) {
+                      await global.handleSiteSpecificFullscreen(stream.targetUrl, page, encoderConfig);
+                    }
+
+                    logTS(`[${encoderUrl}] RECOVERY: Stream fully restored`);
+                  } else {
+                    logTS(`[${encoderUrl}] RECOVERY: Failed to navigate back to watch page`);
+                  }
+                } else {
+                  logTS(`[${encoderUrl}] RECOVERY: navigateSlingLikeHuman not available`);
+                }
+              } catch (err) {
+                logTS(`[${encoderUrl}] RECOVERY: Error during auto-recovery: ${err.message}`);
+              }
+            })();
+          }
+        }
       }
     }
   });

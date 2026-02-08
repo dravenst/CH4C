@@ -426,7 +426,7 @@ This works surprisingly well, though streaming providers may have occasional gli
 - **HLS Support**: The examples use MPEG-TS, but HLS is also supported. Configure your encoder for HLS, update the Channels custom channel to use HLS, and adjust the encoder parameter to use the HLS stream URL
 - **Secondary Channels DVR Server**: Channels allows you to export an M3U playlist from your primary Channels DVR server and import it into a secondary server to allow remote access for a second Channels DVR instance (e.g. if you only want to run a single CH4C instance and share with another device.). See the [Channels DVR Export Channels](https://getchannels.com/docs/channels-dvr-server/how-to/export-channels/) documentation for details on how to export and customize the M3U parameters. I highly recommend using Tailscale to create a private network to provide connectivity between your Channels DVR servers.
 
-  Example M3U URL with customization parameters entered in Secondary Channels DVR as a new Custom Channel M3U Source:
+  Example M3U URL with customization parameters entered in Secondary Channels DVR as a new [Custom Channel](https://getchannels.com/docs/channels-dvr-server/how-to/custom-channels/) M3U Source:
   ```
   http://<TAILSCALE-CHANNELSDVR-IP>:8089/devices/<SOURCENAME>/channels.m3u?format=hls&bitrate=5000&codec=h264&acodec=copy
   ```

@@ -3459,6 +3459,9 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
   global.setupBrowserCrashHandlers = setupBrowserCrashHandlers;
   global.streamMonitor = streamMonitor;
   global.Constants = Constants;
+  global.navigateSlingLikeHuman = navigateSlingLikeHuman;
+  global.setupBrowserAudio = setupBrowserAudio;
+  global.handleSiteSpecificFullscreen = handleSiteSpecificFullscreen;
 
   // Start health monitoring
   await healthMonitor.startMonitoring(Constants.ENCODERS);
