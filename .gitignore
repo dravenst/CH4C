@@ -6,5 +6,6 @@ dist/
 *.bat
 package-lock.json
 slingexample/
-data/
+data*
 tmpclaude*
+Screenshot*

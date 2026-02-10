@@ -27,6 +27,7 @@ const {
 } = require('./error-handling');
 
 const { AudioDeviceManager, DisplayManager } = require('./audio-device-manager');
+const { CONFIG_METADATA, ENCODER_FIELDS, validateAllSettings, validateEncoder, saveConfig, loadConfig, getDefaults } = require('./config-manager');
 
 let chromeDataDir, chromePath;
 let browsers = new Map(); // key: encoderUrl, value: {browser, page}
@@ -3258,9 +3259,9 @@ async function loadSSLCertificates(dataDir, additionalHostnames = []) {
 
 // Modified main() function with enhanced error handling
 async function main() {
-  // Check if Constants was properly initialized (will be empty if --help or missing args)
-  if (!Constants.CHANNELS_URL) {
-    // Constants module exited early (help/missing args), so don't start the server
+  // Check if Constants was properly initialized (will be empty if --help or yargs error)
+  if (!Constants.CH4C_PORT) {
+    // Constants module exited early (help/error), so don't start the server
     return;
   }
 
@@ -3476,11 +3477,14 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
   browsers          // Add browsers Map parameter
   );
 
-  // Check if we have at least one working encoder
+  // Check if we have at least one working encoder (only if encoders were configured)
   const workingEncoders = initResults.filter(r => r.success);
-  if (workingEncoders.length === 0) {
+  if (Constants.ENCODERS.length > 0 && workingEncoders.length === 0) {
     logTS('FATAL: No encoders could be initialized. Exiting.');
     process.exit(1);
+  }
+  if (Constants.ENCODERS.length === 0) {
+    logTS('No encoders configured. Add encoders via Settings to start streaming.');
   }
 
   // Start browser health monitoring after browsers are initialized
@@ -3553,22 +3557,42 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
 
           logTS(`[M3U Manager] Auto-created encoder channel: ${enriched.name} (channel ${enriched.channelNumber})`);
         } else {
-          // Update existing encoder channel - only update streamUrl to match current encoder config
-          // Preserve user modifications to name, callSign, channelNumber, etc.
+          // Update existing encoder channel to match current encoder config.
+          // When encoders are deleted, indices shift, so we must sync all encoder-derived
+          // fields (name, callSign, streamUrl, channelNumber) to reflect the encoder now at this index.
+          const encoderName = encoder.audioDevice || `Encoder ${i + 1}`;
+          const encoderCallSign = encoder.audioDevice || `ENC${i + 1}`;
           const channelIndex = manager.channels.findIndex(ch => ch.id === channelId);
           if (channelIndex !== -1) {
             manager.channels[channelIndex] = {
               ...manager.channels[channelIndex],
-              streamUrl: encoder.url, // Always sync streamUrl with encoder config
+              name: encoderName,
+              callSign: encoderCallSign,
+              streamUrl: encoder.url,
+              channelNumber: encoder.channel || manager.channels[channelIndex].channelNumber,
               updatedAt: new Date().toISOString()
             };
-            logTS(`[M3U Manager] Refreshed encoder channel streamUrl: ${manager.channels[channelIndex].name} (channel ${manager.channels[channelIndex].channelNumber})`);
+            logTS(`[M3U Manager] Synced encoder channel: ${encoderName} (channel ${manager.channels[channelIndex].channelNumber})`);
           }
         }
       }
 
+      // Remove orphaned encoder channels (from encoders that were deleted)
+      const orphaned = manager.channels.filter(ch => {
+        if (!ch.id || !ch.id.startsWith('encoder-')) return false;
+        const idx = parseInt(ch.id.replace('encoder-', ''), 10);
+        return isNaN(idx) || idx >= Constants.ENCODERS.length;
+      });
+      for (const ch of orphaned) {
+        const chIdx = manager.channels.findIndex(c => c.id === ch.id);
+        if (chIdx !== -1) {
+          manager.channels.splice(chIdx, 1);
+          logTS(`[M3U Manager] Removed orphaned encoder channel: ${ch.name} (${ch.id})`);
+        }
+      }
+
       // Save all channels to disk
-      if (Constants.ENCODERS.length > 0) {
+      if (Constants.ENCODERS.length > 0 || orphaned.length > 0) {
         manager.lastUpdate = new Date().toISOString();
         await manager.saveToDisk();
       }
@@ -4569,27 +4593,273 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
     res.json({ logs: getLogBuffer() });
   });
 
-  // Settings page
+  // Settings page (editable config UI)
   app.get('/settings', (req, res) => {
     res.send(Constants.SETTINGS_PAGE_HTML);
   });
 
-  // Settings API endpoint
+  // Settings API endpoint - returns current config, metadata, defaults, and CLI overrides
   app.get('/api/settings', (req, res) => {
     res.json({
-      channelsUrl: Constants.CHANNELS_URL,
-      channelsPort: Constants.CHANNELS_PORT,
-      ch4cPort: Constants.CH4C_PORT,
-      ch4cSslPort: Constants.CH4C_SSL_PORT || null,
-      sslHostnames: Constants.SSL_HOSTNAMES || [],
-      dataDir: Constants.DATA_DIR,
-      enablePauseMonitor: Constants.ENABLE_PAUSE_MONITOR,
-      pauseMonitorInterval: Constants.PAUSE_MONITOR_INTERVAL,
-      browserHealthInterval: Constants.BROWSER_HEALTH_INTERVAL,
+      values: {
+        channelsUrl: Constants.CHANNELS_URL,
+        channelsPort: Constants.CHANNELS_PORT,
+        ch4cPort: Constants.CH4C_PORT,
+        ch4cSslPort: Constants.CH4C_SSL_PORT || null,
+        sslHostnames: Constants.SSL_HOSTNAMES || [],
+        dataDir: Constants.DATA_DIR,
+        enablePauseMonitor: Constants.ENABLE_PAUSE_MONITOR,
+        pauseMonitorInterval: Constants.PAUSE_MONITOR_INTERVAL,
+        browserHealthInterval: Constants.BROWSER_HEALTH_INTERVAL
+      },
       encoders: Constants.ENCODERS,
+      metadata: CONFIG_METADATA,
+      encoderFields: ENCODER_FIELDS,
+      defaults: getDefaults(),
+      cliOverrides: Constants.CLI_OVERRIDES || {},
       configSource: Constants.USING_CONFIG_FILE ? 'file' : 'cli',
       configPath: Constants.CONFIG_FILE_PATH
     });
+  });
+
+  // Save settings - validate and write to config.json
+  app.post('/api/settings', async (req, res) => {
+    const { values, encoders } = req.body;
+
+    // Validate settings
+    const validation = validateAllSettings(values || {});
+    if (!validation.valid) {
+      return res.status(400).json({ success: false, errors: validation.errors });
+    }
+
+    // Validate encoders if provided
+    if (encoders && Array.isArray(encoders)) {
+      for (let i = 0; i < encoders.length; i++) {
+        const encValidation = validateEncoder(encoders[i]);
+        if (!encValidation.valid) {
+          return res.status(400).json({
+            success: false,
+            errors: { [`encoder_${i}`]: encValidation.errors }
+          });
+        }
+      }
+      validation.parsed.encoders = encoders;
+    }
+
+    // Migrate data directory contents if dataDir changed
+    const migratedFiles = [];
+    const newDataDir = validation.parsed.dataDir;
+    const oldDataDir = Constants.DATA_DIR;
+    if (newDataDir && path.resolve(newDataDir) !== path.resolve(oldDataDir)) {
+      try {
+        // Ensure the new directory exists
+        if (!fs.existsSync(newDataDir)) {
+          fs.mkdirSync(newDataDir, { recursive: true });
+          logTS(`Created new data directory: ${newDataDir}`);
+        }
+
+        // Migrate SSL certificates
+        const filesToMigrate = ['cert.pem', 'key.pem'];
+        for (const file of filesToMigrate) {
+          const srcPath = path.join(oldDataDir, file);
+          const destPath = path.join(newDataDir, file);
+          if (fs.existsSync(srcPath) && !fs.existsSync(destPath)) {
+            fs.copyFileSync(srcPath, destPath);
+            migratedFiles.push(file);
+            logTS(`Migrated ${file} from ${oldDataDir} to ${newDataDir}`);
+          }
+        }
+      } catch (error) {
+        logTS(`Warning: Failed to migrate data directory contents: ${error.message}`);
+      }
+    }
+
+    // Save to config.json
+    const result = saveConfig(Constants.CONFIG_FILE_PATH, validation.parsed);
+    if (!result.success) {
+      return res.status(500).json({ success: false, error: result.error });
+    }
+
+    let message = 'Configuration saved. Restart CH4C for changes to take effect.';
+    if (migratedFiles.length > 0) {
+      message += ` Migrated ${migratedFiles.join(', ')} to new data directory.`;
+    }
+
+    // Pre-generate SSL certificates if SSL port is configured and certs don't exist yet
+    const sslPort = validation.parsed.ch4cSslPort;
+    const effectiveDataDir = newDataDir || oldDataDir;
+    if (sslPort) {
+      const certPath = path.join(effectiveDataDir, 'cert.pem');
+      const keyPath = path.join(effectiveDataDir, 'key.pem');
+      if (!fs.existsSync(certPath) || !fs.existsSync(keyPath)) {
+        const sslHostnames = validation.parsed.sslHostnames || Constants.SSL_HOSTNAMES || [];
+        const success = await generateSelfSignedCert(certPath, keyPath, sslHostnames);
+        if (success) {
+          message += ' SSL certificates generated.';
+        } else {
+          message += ' Warning: SSL certificate generation failed.';
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      message,
+      configPath: Constants.CONFIG_FILE_PATH,
+      migratedFiles
+    });
+  });
+
+  // Restart endpoint - graceful shutdown for service manager to restart
+  app.post('/api/settings/restart', async (_req, res) => {
+    logTS('Restart requested via settings UI');
+    res.json({ success: true, message: 'Server is shutting down...' });
+
+    // Brief delay to allow response to be sent
+    setTimeout(async () => {
+      logTS('Shutting down for restart...');
+
+      // Close all browser instances gracefully
+      for (const [encoderUrl, browser] of browsers) {
+        try {
+          await browser.close();
+          logTS(`Closed browser for encoder: ${encoderUrl}`);
+        } catch (e) {
+          logTS(`Error closing browser for ${encoderUrl}: ${e.message}`);
+        }
+      }
+
+      process.exit(0);
+    }, 500);
+  });
+
+  // Encoder CRUD endpoints
+  app.get('/api/encoders', (req, res) => {
+    res.json({ encoders: Constants.ENCODERS });
+  });
+
+  app.post('/api/encoders', (req, res) => {
+    const encoder = req.body;
+    const validation = validateEncoder(encoder);
+    if (!validation.valid) {
+      return res.status(400).json({ success: false, errors: validation.errors });
+    }
+
+    // Load current config, add encoder, save
+    const configResult = loadConfig(Constants.CONFIG_FILE_PATH);
+    const currentConfig = configResult.config;
+    if (!currentConfig.encoders) {
+      currentConfig.encoders = [];
+    }
+    currentConfig.encoders.push({
+      url: encoder.url,
+      channel: encoder.channel || '24.42',
+      width: parseInt(encoder.width) || 0,
+      height: parseInt(encoder.height) || 0,
+      audioDevice: encoder.audioDevice || null
+    });
+
+    const result = saveConfig(Constants.CONFIG_FILE_PATH, currentConfig);
+    if (!result.success) {
+      return res.status(500).json({ success: false, error: result.error });
+    }
+
+    // Update in-memory encoders so the settings UI reflects the change immediately
+    Constants.ENCODERS = currentConfig.encoders.slice();
+
+    res.json({ success: true, message: 'Encoder added. Restart to apply.' });
+  });
+
+  app.put('/api/encoders/:index', (req, res) => {
+    const index = parseInt(req.params.index);
+    const encoder = req.body;
+    const validation = validateEncoder(encoder);
+    if (!validation.valid) {
+      return res.status(400).json({ success: false, errors: validation.errors });
+    }
+
+    const configResult = loadConfig(Constants.CONFIG_FILE_PATH);
+    const currentConfig = configResult.config;
+    if (!currentConfig.encoders || index < 0 || index >= currentConfig.encoders.length) {
+      return res.status(404).json({ success: false, error: 'Encoder not found' });
+    }
+
+    currentConfig.encoders[index] = {
+      url: encoder.url,
+      channel: encoder.channel || '24.42',
+      width: parseInt(encoder.width) || 0,
+      height: parseInt(encoder.height) || 0,
+      audioDevice: encoder.audioDevice || null
+    };
+
+    const result = saveConfig(Constants.CONFIG_FILE_PATH, currentConfig);
+    if (!result.success) {
+      return res.status(500).json({ success: false, error: result.error });
+    }
+
+    // Update in-memory encoders so the settings UI reflects the change immediately
+    Constants.ENCODERS = currentConfig.encoders.slice();
+
+    res.json({ success: true, message: 'Encoder updated. Restart to apply.' });
+  });
+
+  app.delete('/api/encoders/:index', (req, res) => {
+    const index = parseInt(req.params.index);
+
+    const configResult = loadConfig(Constants.CONFIG_FILE_PATH);
+    const currentConfig = configResult.config;
+    if (!currentConfig.encoders || index < 0 || index >= currentConfig.encoders.length) {
+      return res.status(404).json({ success: false, error: 'Encoder not found' });
+    }
+
+    currentConfig.encoders.splice(index, 1);
+
+    const result = saveConfig(Constants.CONFIG_FILE_PATH, currentConfig);
+    if (!result.success) {
+      return res.status(500).json({ success: false, error: result.error });
+    }
+
+    // Update in-memory encoders so the settings UI reflects the change immediately
+    Constants.ENCODERS = currentConfig.encoders.slice();
+
+    res.json({ success: true, message: 'Encoder removed. Restart to apply.' });
+  });
+
+  // Directory browser API - lists subdirectories for the data directory picker
+  app.get('/api/directories', (req, res) => {
+    const requestedPath = req.query.path;
+    let dirPath;
+
+    if (!requestedPath || requestedPath === '') {
+      // Start from the current working directory
+      dirPath = process.cwd();
+    } else {
+      dirPath = path.resolve(String(requestedPath));
+    }
+
+    try {
+      if (!fs.existsSync(dirPath) || !fs.statSync(dirPath).isDirectory()) {
+        return res.status(400).json({ error: 'Not a valid directory' });
+      }
+
+      const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+      const dirs = entries
+        .filter(e => e.isDirectory() && !e.name.startsWith('.'))
+        .map(e => e.name)
+        .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+
+      // Get parent directory (unless we're at a root)
+      const parentDir = path.dirname(dirPath);
+      const hasParent = parentDir !== dirPath;
+
+      res.json({
+        current: dirPath,
+        parent: hasParent ? parentDir : null,
+        directories: dirs
+      });
+    } catch (error) {
+      res.status(500).json({ error: 'Cannot read directory: ' + error.message });
+    }
   });
 
   // Serve SSL certificate for download
@@ -4622,6 +4892,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
       logTS(`See status at http://localhost:${Constants.CH4C_PORT}/`);
       logTS(`Instant recording/tuning available at http://localhost:${Constants.CH4C_PORT}/instant`);
     }
+    logTS(`Configure settings at http://localhost:${Constants.CH4C_PORT}/settings`);
   });
 
   // Handle HTTP server startup errors

@@ -238,7 +238,6 @@ const argv = yargs(rawArgs)
     alias: 's',
     type: 'string',
     default: fileConfig?.channelsUrl,
-    demandOption: !hasConfigChannelsUrl,  // Only required if not in config file
     describe: 'Channels server URL',
     coerce: (value) => {
       if (value === undefined) return value; // Allow undefined for help display
@@ -266,11 +265,11 @@ const argv = yargs(rawArgs)
     alias: 'e',
     type: 'array',
     default: hasConfigEncoders ? encodersToCliFormat(fileConfig.encoders) : undefined,
-    demandOption: !hasConfigEncoders,  // Only required if not in config file
     describe: 'Encoder configurations in format "url[:channel:width_pos:height_pos:audio_device]" where channel is optional (format: xx.xx, default: 24.42), width_pos/height_pos are optional screen positions (default: 0:0), and audio_device is the optional audio output device name',
     coerce: (values) => {
-      // Allow undefined for help display
+      // Allow undefined/null/empty for optional encoder
       if (values === undefined || values === null) return values;
+      if (Array.isArray(values) && values.length === 0) return undefined;
       // Handle case where values come from config file as objects
       if (values && values.length > 0 && typeof values[0] === 'object') {
         return values.map(enc => ({
@@ -282,9 +281,9 @@ const argv = yargs(rawArgs)
         }));
       }
       return values.map(value => {
-        // Skip undefined/null values
-        if (value === undefined || value === null) {
-          throw new Error('Encoder URL is required');
+        // Skip undefined/null/empty values
+        if (value === undefined || value === null || value === '') {
+          return null;
         }
         // Find the position of the first colon after http:// or https://
         const protocolEnd = value.indexOf('://');
@@ -336,7 +335,7 @@ const argv = yargs(rawArgs)
           height: browserHeightPos,
           audioDevice
         };
-      });
+      }).filter(Boolean);
     }
   })
   .option('ch4c-port', {
@@ -459,15 +458,17 @@ if (yargsErrorOccurred) {
 if (argv.help) {
   // Create a temporary yargs instance for showing help
   const helpYargs = yargs()
-    .option('channels-url', { alias: 's', type: 'string', demandOption: true, describe: 'Channels server URL' })
+    .option('channels-url', { alias: 's', type: 'string', describe: 'Channels server URL' })
     .option('channels-port', { alias: 'p', type: 'string', default: '8089', describe: 'Channels server port' })
-    .option('encoder', { alias: 'e', type: 'array', demandOption: true, describe: 'Encoder configurations in format "url[:channel:width_pos:height_pos:audio_device]" where channel is optional (format: xx.xx, default: 24.42), width_pos/height_pos are optional screen positions (default: 0:0), and audio_device is the optional audio output device name' })
+    .option('encoder', { alias: 'e', type: 'array', describe: 'Encoder configurations in format "url[:channel:width_pos:height_pos:audio_device]" where channel is optional (format: xx.xx, default: 24.42), width_pos/height_pos are optional screen positions (default: 0:0), and audio_device is the optional audio output device name' })
     .option('ch4c-port', { alias: 'c', type: 'number', default: 2442, describe: 'CH4C port number' })
     .option('data-dir', { alias: 'd', type: 'string', default: 'data', describe: 'Directory for storing channel data. Can be relative or absolute path (default: data)' })
     .option('enable-pause-monitor', { alias: 'm', type: 'boolean', default: true, describe: 'Enable automatic video pause detection and resume' })
     .option('pause-monitor-interval', { alias: 'i', type: 'number', default: 10, describe: 'Interval in seconds to check for paused video' })
     .option('browser-health-interval', { alias: 'b', type: 'number', default: 6, describe: 'Interval in hours to check browser health (default: 6)' })
-    .usage('Usage: $0 [options]')
+    .option('ch4c-ssl-port', { alias: 't', type: 'number', describe: 'Enable HTTPS on specified port' })
+    .option('ssl-hostnames', { alias: 'n', type: 'string', describe: 'Additional hostnames/IPs for SSL certificate (comma-separated)' })
+    .usage('Usage: $0 [options]\n\nAll parameters are optional. You can configure settings via the web UI at http://localhost:<ch4c-port>/settings')
     .example('> $0 -s "http://192.168.50.50" -e "http://192.168.50.71/live/stream0"')
     .example('\nSimple example with channels server at 192.168.50.50 and single encoder at 192.168.50.71')
     .example('\n> $0 -s "http://192.168.50.50" -e "http://192.168.50.71/live/stream0:24.42:0:0:Encoder" -e "http://192.168.50.72/live/stream1:24.43:1920:0:MACROSILICON"')
@@ -485,43 +486,6 @@ if (argv.help) {
     await showAudioDevices();
     await showDisplayConfiguration();
     process.exit(0);
-  })();
-
-  // Export empty config and return to prevent further initialization
-  module.exports = {};
-  return;
-}
-
-// Check if required parameters are missing - if so, show help and exit
-if (!argv['channels-url'] || !argv['encoder'] || argv['encoder'].length === 0) {
-  // Show help for missing required parameters
-  console.error('Error: Missing required parameters. Please provide --channels-url (-s) and --encoder (-e).\n');
-
-  const helpYargs = yargs()
-    .option('channels-url', { alias: 's', type: 'string', demandOption: true, describe: 'Channels server URL' })
-    .option('channels-port', { alias: 'p', type: 'string', default: '8089', describe: 'Channels server port' })
-    .option('encoder', { alias: 'e', type: 'array', demandOption: true, describe: 'Encoder configurations in format "url[:channel:width_pos:height_pos:audio_device]"' })
-    .option('ch4c-port', { alias: 'c', type: 'number', default: 2442, describe: 'CH4C port number' })
-    .option('data-dir', { alias: 'd', type: 'string', default: 'data', describe: 'Directory for storing channel data' })
-    .option('enable-pause-monitor', { alias: 'm', type: 'boolean', default: true, describe: 'Enable automatic video pause detection and resume' })
-    .option('pause-monitor-interval', { alias: 'i', type: 'number', default: 10, describe: 'Interval in seconds to check for paused video' })
-    .option('browser-health-interval', { alias: 'b', type: 'number', default: 6, describe: 'Interval in hours to check browser health' })
-    .option('ch4c-ssl-port', { alias: 't', type: 'number', describe: 'Enable HTTPS on specified port' })
-    .option('ssl-hostnames', { alias: 'n', type: 'string', describe: 'Additional hostnames/IPs for SSL certificate (comma-separated)' })
-    .usage('Usage: $0 [options]')
-    .example('$0 -s "http://192.168.50.50" -e "http://192.168.50.71/live/stream0"')
-    .help()
-    .wrap(null)
-    .version(false);
-
-  helpYargs.showHelp();
-
-  // Show audio devices and display config, then exit
-  (async () => {
-    await showAudioDevices();
-    await showDisplayConfiguration();
-    logTS('Tip: Create a config.json file in your data directory to avoid specifying parameters on the command line.');
-    process.exit(1);
   })();
 
   // Export empty config and return to prevent further initialization
@@ -548,6 +512,34 @@ const config = {
   PAUSE_MONITOR_INTERVAL: argv['pause-monitor-interval'],
   BROWSER_HEALTH_INTERVAL: argv['browser-health-interval']
 };
+
+// Track which settings were explicitly provided via CLI args (not from config file defaults).
+// These will be shown as "CLI" overrides in the settings UI and cannot be changed via the web form.
+const cliOverrides = {};
+const cliArgMap = {
+  'channels-url': 'channelsUrl',
+  'channels-port': 'channelsPort',
+  'ch4c-port': 'ch4cPort',
+  'ch4c-ssl-port': 'ch4cSslPort',
+  'ssl-hostnames': 'sslHostnames',
+  'data-dir': 'dataDir',
+  'enable-pause-monitor': 'enablePauseMonitor',
+  'pause-monitor-interval': 'pauseMonitorInterval',
+  'browser-health-interval': 'browserHealthInterval'
+};
+
+// An arg is CLI-provided if it was explicitly passed on the command line (not from config file or default).
+// yargs tracks which args were explicitly provided in argv._ and via the parsed object.
+for (const [cliName, configName] of Object.entries(cliArgMap)) {
+  // Check if the raw CLI args contain this option (not from config file defaults)
+  const hasCliArg = rawArgs.some(arg =>
+    arg === `--${cliName}` || arg.startsWith(`--${cliName}=`) ||
+    arg === `-${cliName.charAt(0)}`
+  );
+  if (hasCliArg) {
+    cliOverrides[configName] = String(argv[cliName]);
+  }
+}
 
 if (usingConfigFile) {
   logTS(`Configuration loaded from: ${configFilePath}`);
@@ -580,7 +572,7 @@ const PAUSE_MONITOR_INTERVAL = config.PAUSE_MONITOR_INTERVAL
 const BROWSER_HEALTH_INTERVAL = config.BROWSER_HEALTH_INTERVAL
 
 // path to create recording jobs on Channels
-const CHANNELS_POST_URL = `${CHANNELS_URL}:${CHANNELS_PORT}/dvr/jobs/new`
+const CHANNELS_POST_URL = CHANNELS_URL ? `${CHANNELS_URL}:${CHANNELS_PORT}/dvr/jobs/new` : null
 
 const START_PAGE_HTML = `
 <!DOCTYPE html>
@@ -935,65 +927,74 @@ const START_PAGE_HTML = `
         </div>
 
         <div class="section">
-            <h2 class="section-title">Configuration</h2>
-            <div class="info-box">
-                <p>Configure CH4C using a <code>config.json</code> file in the data directory. See <a href="https://github.com/dravenst/CH4C#readme" target="_blank" style="color: #667eea;">Documentation</a> for command-line options.</p>
+            <h2 class="section-title">Getting Started</h2>
+            <div style="display: flex; flex-direction: column; gap: 20px;">
+
+                <!-- Step 1 -->
+                <div style="display: flex; gap: 16px; align-items: flex-start;">
+                    <div style="background: linear-gradient(135deg, #667eea, #764ba2); color: white; border-radius: 50%; min-width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 16px;">1</div>
+                    <div style="flex: 1;">
+                        <h3 style="margin: 0 0 6px 0; font-size: 16px;">Preparation</h3>
+                        <p style="margin: 0; color: #4a5568; font-size: 14px;">Connect your HDMI encoder(s) to the PC. Set the PC display(s) to <strong>1920x1080</strong> and configure the encoder transport stream to match (recommended <strong>30fps</strong>). Install a VNC server (e.g., <a href="https://www.intergrid.com.au/tightvnc/" target="_blank" style="color: #667eea; font-weight: 600;">TightVNC</a>) and enable <strong>loopback connections</strong>. See the <a href="https://github.com/dravenst/CH4C#readme" target="_blank" style="color: #667eea;">documentation</a> for detailed hardware and encoder configuration.</p>
+                    </div>
+                </div>
+
+                <!-- Step 2 -->
+                <div style="display: flex; gap: 16px; align-items: flex-start;">
+                    <div style="background: linear-gradient(135deg, #667eea, #764ba2); color: white; border-radius: 50%; min-width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 16px;">2</div>
+                    <div style="flex: 1;">
+                        <h3 style="margin: 0 0 6px 0; font-size: 16px;">Configure Settings</h3>
+                        <p style="margin: 0; color: #4a5568; font-size: 14px;">Go to <a href="/settings" style="color: #667eea; font-weight: 600;">Settings</a> and enter your <strong>Channels DVR URL</strong>. Optionally configure the HTTPS port for secure remote access.</p>
+                    </div>
+                </div>
+
+                <!-- Step 3 -->
+                <div style="display: flex; gap: 16px; align-items: flex-start;">
+                    <div style="background: linear-gradient(135deg, #667eea, #764ba2); color: white; border-radius: 50%; min-width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 16px;">3</div>
+                    <div style="flex: 1;">
+                        <h3 style="margin: 0 0 6px 0; font-size: 16px;">Add Encoder(s)</h3>
+                        <p style="margin: 0; color: #4a5568; font-size: 14px;">In <a href="/settings" style="color: #667eea; font-weight: 600;">Settings</a>, click <strong>+ Add Encoder</strong> for each HDMI encoder. Set the <strong>Encoder URL</strong> (e.g., <code style="font-size: 12px;">http://192.168.1.50/live/stream0</code>). Use the <strong>Audio Devices</strong> list to find the correct audio output device name for each encoder. For multi-monitor setups, set the <strong>Screen X/Y Position</strong> using the <strong>Display Configuration</strong> offsets with Screens. Save settings and restart CH4C.</p>
+                    </div>
+                </div>
+
+                <!-- Step 4 -->
+                <div style="display: flex; gap: 16px; align-items: flex-start;">
+                    <div style="background: linear-gradient(135deg, #667eea, #764ba2); color: white; border-radius: 50%; min-width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 16px;">4</div>
+                    <div style="flex: 1;">
+                        <h3 style="margin: 0 0 6px 0; font-size: 16px;">Add M3U Source to Channels DVR</h3>
+                        <p style="margin: 0; color: #4a5568; font-size: 14px;">In Channels DVR, go to Settings &rarr; Add Source &rarr; Custom Channels. Set Stream Format to <strong>MPEG-TS</strong> and enter the M3U URL found in the <a href="/m3u-manager" style="color: #667eea; font-weight: 600;">M3U Manager</a>:<br>
+                        <code id="ch4c-m3u-url" style="display: inline-block; margin-top: 6px; padding: 4px 8px; background: #f0f0f0; border-radius: 4px; font-size: 12px;">http://CH4C_IP:${CH4C_PORT}/m3u-manager/playlist.m3u</code></p>
+                    </div>
+                </div>
+
+                <!-- Step 5 -->
+                <div style="display: flex; gap: 16px; align-items: flex-start;">
+                    <div style="background: linear-gradient(135deg, #667eea, #764ba2); color: white; border-radius: 50%; min-width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 16px;">5</div>
+                    <div style="flex: 1;">
+                        <h3 style="margin: 0 0 6px 0; font-size: 16px;">Test the Encoder</h3>
+                        <p style="margin: 0; color: #4a5568; font-size: 14px;">After restarting, verify your encoder appears in the <strong>Encoder Status</strong> section above with a healthy status. Try tuning to the encoder's channel in Channels DVR to confirm the video and audio are working correctly.  E.g. Use the Chrome instance(s) started by CH4C and navigate to a site such as youtube.com to play a video with sound and confirm it works through the Channels DVR app.</p>
+                    </div>
+                </div>
+
+                <!-- Step 6 -->
+                <div style="display: flex; gap: 16px; align-items: flex-start;">
+                    <div style="background: linear-gradient(135deg, #667eea, #764ba2); color: white; border-radius: 50%; min-width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 16px;">6</div>
+                    <div style="flex: 1;">
+                        <h3 style="margin: 0 0 6px 0; font-size: 16px;">Log In to Streaming Services</h3>
+                        <p style="margin: 0; color: #4a5568; font-size: 14px;">Use <a href="/remote-access" style="color: #667eea; font-weight: 600;">Remote Access</a> to connect to this PC via the built-in VNC viewer. Log in to each streaming service (NBC, Sling, Disney+, etc.) in the browser windows. Credentials are cached per encoder, but services may periodically require re-authentication.</p>
+                    </div>
+                </div>
+
+                <!-- Step 7 -->
+                <div style="display: flex; gap: 16px; align-items: flex-start;">
+                    <div style="background: linear-gradient(135deg, #667eea, #764ba2); color: white; border-radius: 50%; min-width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 16px;">7</div>
+                    <div style="flex: 1;">
+                        <h3 style="margin: 0 0 6px 0; font-size: 16px;">Add Channels</h3>
+                        <p style="margin: 0; color: #4a5568; font-size: 14px;">Use the <a href="/m3u-manager" style="color: #667eea; font-weight: 600;">M3U Manager</a> to add channels. Use <strong>Refresh Sling TV</strong> to automatically sync Sling channels, or <strong>Add Custom Channel</strong> for any streaming service URL. See the <a href="https://github.com/dravenst/CH4C#readme" target="_blank" style="color: #667eea;">documentation</a> for sample channel URLs. You will need to Reload M3U for the M3U source you added to the Channels Sources in Step 4 for the new channels to appear in the Guide. </p>
+                    </div>
+                </div>
+
             </div>
-            <div class="code-block">{
-  "channelsUrl": "http://CHANNELS_DVR_IP",
-  "channelsPort": "8089",
-  "ch4cPort": 2442,
-  "ch4cSslPort": 2443,
-  "encoders": [
-    {
-      "url": "http://ENCODER_IP/live/stream0",
-      "channel": "24.42",
-      "width": 0,
-      "height": 0,
-      "audioDevice": "Encoder"
-    }
-  ]
-}</div>
-            <div class="info-box" style="margin-top: 16px;">
-                <p><strong>Encoder properties:</strong> <code>url</code> (required), <code>channel</code> (default: 24.42), <code>width</code>/<code>height</code> (screen position offset), <code>audioDevice</code> (audio output device name)</p>
-            </div>
-        </div>
-
-        <div class="section">
-            <h2 class="section-title">Sample M3U Configuration</h2>
-            <div class="info-box">
-                <p>Create a custom channel source in Channels DVR using an M3U playlist.</p>
-                <p><strong>CH4C Server:</strong> <code id="ch4c-ip-display">Detecting...</code>:<code>${CH4C_PORT}</code></p>
-                <p><strong>Encoder:</strong> <code>${ENCODERS[0]?.url || 'Not configured'}</code> (Channel ${ENCODERS[0]?.channel || '24.42'})</p>
-                <p style="margin-top: 8px; font-size: 12px; color: #718096;">The CH4C server address is auto-detected. If incorrect, replace it in the M3U below.</p>
-                <p style="margin-top: 8px;"><strong>💡 Tip:</strong> Use the <a href="/m3u-manager" style="color: #667eea; text-decoration: underline;">M3U Manager</a> to easily create and manage your channel lineup with a visual interface.</p>
-                <p style="margin-top: 8px;"><strong>More examples:</strong> <a href="https://github.com/dravenst/CH4C/blob/main/assets/samples.m3u" target="_blank" style="color: #667eea; text-decoration: underline;">View additional M3U samples on GitHub</a></p>
-            </div>
-            <div class="code-block" id="m3u-config">#EXTM3U
-
-#EXTINF:-1 channel-id="CH4C_Encoder" channel-number="${ENCODERS[0]?.channel || '24.42'}" tvc-guide-placeholders="3600",CH4C Encoder
-${ENCODERS[0]?.url || 'http://ENCODER_IP_ADDRESS/live/stream0'}
-
-#EXTINF:-1 channel-id="CH4C_Weather" channel-number="24.1" tvc-guide-placeholders="3600",Weatherscan
-http://CH4C_IP_ADDRESS:${CH4C_PORT}/stream?url=https://weatherscan.net/
-
-#EXTINF:-1 channel-id="CH4C_NFL_Network" channel-number="24.2",NFL Network
-http://CH4C_IP_ADDRESS:${CH4C_PORT}/stream?url=https://www.nfl.com/network/watch/nfl-network-live
-
-#EXTINF:-1 channel-id="CH4C_NatGeo" channel-number="24.3",National Geographic
-http://CH4C_IP_ADDRESS:${CH4C_PORT}/stream?url=https://www.nationalgeographic.com/tv/watch-live/
-
-#EXTINF:-1 channel-id="CH4C_Disney" channel-number="24.4",Disney Channel
-http://CH4C_IP_ADDRESS:${CH4C_PORT}/stream?url=https://disneynow.com/watch-live?brand=004
-
-#EXTINF:-1 channel-id="CH4C_NBC" channel-number="24.5",NBC Live
-http://CH4C_IP_ADDRESS:${CH4C_PORT}/stream?url=https://www.nbc.com/live
-
-#EXTINF:-1 channel-id="BTN" tvc-guide-stationid="403557" channel-number="6199",BTN
-http://CH4C_IP_ADDRESS:${CH4C_PORT}/stream?url=https://watch.sling.com/1/channel/0984387944df47b58a687d60babc2c43/watch
-
-#EXTINF:-1 channel-id="CH4C_Spectrum" channel-number="24.8",Spectrum
-http://CH4C_IP_ADDRESS:${CH4C_PORT}/stream?url=https://www.spectrum.net/livetv</div>
         </div>
     </div>
 
@@ -1163,24 +1164,16 @@ http://CH4C_IP_ADDRESS:${CH4C_PORT}/stream?url=https://www.spectrum.net/livetv</
         function updateM3UConfig() {
             const ch4cAddress = window.location.hostname;
 
-            // Update the display in the info box
-            const ipDisplay = document.getElementById('ch4c-ip-display');
-            if (ipDisplay) {
-                ipDisplay.textContent = ch4cAddress;
+            // Update the M3U URL in getting started
+            const m3uUrl = document.getElementById('ch4c-m3u-url');
+            if (m3uUrl) {
+                m3uUrl.textContent = m3uUrl.textContent.replace('CH4C_IP', ch4cAddress);
             }
 
             // Update the custom URL prefix in Add Custom Channel modal
             const customUrlPrefix = document.getElementById('customUrlPrefix');
             if (customUrlPrefix) {
                 customUrlPrefix.textContent = ch4cAddress;
-            }
-
-            // Update the M3U config block
-            const m3uBlock = document.getElementById('m3u-config');
-            if (m3uBlock) {
-                const currentText = m3uBlock.textContent;
-                const updatedText = currentText.replace(/CH4C_IP_ADDRESS/g, ch4cAddress);
-                m3uBlock.textContent = updatedText;
             }
         }
 
@@ -4828,373 +4821,1131 @@ const SETTINGS_PAGE_HTML = `
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Settings - CH4C</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
+        * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             min-height: 100vh;
             padding: 20px;
         }
-
         .container {
             background: white;
             border-radius: 16px;
             box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-            max-width: 800px;
+            max-width: 850px;
             width: 100%;
             margin: 0 auto;
             padding: 40px;
         }
-
+        .header { text-align: center; margin-bottom: 32px; }
+        .header h1 { color: #2d3748; font-size: 28px; font-weight: 700; margin-bottom: 8px; }
+        .header p { color: #718096; font-size: 14px; }
         .header .back-link {
-            display: inline-block;
-            margin-top: 12px;
-            color: #667eea;
-            text-decoration: none;
-            font-size: 14px;
+            display: inline-block; margin-top: 12px; color: #667eea;
+            text-decoration: none; font-size: 14px;
         }
+        .header .back-link:hover { text-decoration: underline; }
 
-        .header .back-link:hover {
-            text-decoration: underline;
-        }
-
-        .header {
-            text-align: center;
-            margin-bottom: 32px;
-        }
-
-        .header h1 {
-            color: #2d3748;
-            font-size: 28px;
-            font-weight: 700;
-            margin-bottom: 8px;
-        }
-
-        .header p {
-            color: #718096;
-            font-size: 14px;
-        }
-
-        .section {
-            margin-bottom: 32px;
-        }
-
+        /* Sections */
+        .section { margin-bottom: 32px; }
+        .section + .section { margin-top: 8px; }
         .section-header {
-            font-size: 12px;
-            font-weight: 600;
-            color: #667eea;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            padding-bottom: 12px;
-            border-bottom: 2px solid #e2e8f0;
-            margin-bottom: 16px;
+            font-size: 12px; font-weight: 600; color: #667eea;
+            text-transform: uppercase; letter-spacing: 0.5px;
+            padding-bottom: 12px; border-bottom: 2px solid #e2e8f0;
+            margin-bottom: 16px; display: flex; align-items: center; gap: 8px;
         }
 
-        .settings-table {
-            width: 100%;
+        /* Form fields */
+        .form-group { padding: 12px 0; border-bottom: 1px solid #f0f0f0; }
+        .form-group:last-child { border-bottom: none; }
+        .form-group.disabled { opacity: 0.6; }
+        .form-group.depends-disabled { opacity: 0.5; }
+
+        /* Checkbox + field pair on one line */
+        .form-group-toggle-pair { padding: 12px 0; border-bottom: 1px solid #f0f0f0; }
+        .form-group-toggle-pair.disabled { opacity: 0.6; }
+        .toggle-pair-row { display: flex; align-items: center; gap: 12px; }
+        .toggle-pair-row .toggle-checkbox-field { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+        .toggle-pair-row .toggle-dependent-field { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+        .toggle-pair-row .toggle-dependent-field.toggled-off input { opacity: 0.4; pointer-events: none; }
+        .toggle-pair-row .toggle-dependent-field.toggled-off .form-unit { opacity: 0.4; }
+        .form-row { display: flex; align-items: center; gap: 12px; }
+        .form-label {
+            flex: 0 0 auto; font-weight: 500; color: #4a5568; font-size: 14px;
+            display: flex; align-items: center; gap: 6px;
+        }
+        .form-input, .form-select {
+            flex: 1; padding: 8px 12px; border: 1px solid #e2e8f0; border-radius: 6px;
+            font-size: 14px; color: #2d3748; background: white;
+            font-family: inherit; max-width: 300px;
+        }
+        .form-input:focus, .form-select:focus {
+            outline: none; border-color: #667eea; box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.15);
+        }
+        .form-input:disabled, .form-select:disabled {
+            background: #f7fafc; cursor: not-allowed;
+        }
+        .form-input.error { border-color: #e53e3e; }
+        .form-checkbox { width: 18px; height: 18px; accent-color: #667eea; cursor: pointer; }
+        .form-unit { font-size: 13px; color: #718096; white-space: nowrap; }
+        .form-description { font-size: 12px; color: #a0aec0; margin-top: 4px; padding-left: 0; }
+
+        /* Paired fields on one line */
+        .form-group-pair { padding: 12px 0; border-bottom: 1px solid #f0f0f0; }
+        .form-group-pair.disabled { opacity: 0.6; }
+        .form-pair-row { display: flex; align-items: center; gap: 12px; }
+        .form-pair-row .pair-field { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+        .form-pair-row .pair-field.pair-field-wide { flex: 1; }
+        .form-pair-row .pair-label {
+            font-weight: 500; color: #4a5568; font-size: 14px; white-space: nowrap;
+            display: flex; align-items: center; gap: 6px;
+        }
+        .form-pair-row .pair-input-wide {
+            flex: 1; padding: 8px 12px; border: 1px solid #e2e8f0; border-radius: 6px;
+            font-size: 14px; color: #2d3748; background: white; font-family: inherit;
+            min-width: 0;
+        }
+        .form-pair-row .pair-input-narrow {
+            width: 80px; padding: 8px 12px; border: 1px solid #e2e8f0; border-radius: 6px;
+            font-size: 14px; color: #2d3748; background: white; font-family: inherit;
+        }
+        .form-pair-row input:focus {
+            outline: none; border-color: #667eea; box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.15);
+        }
+        .form-pair-row input:disabled { background: #f7fafc; cursor: not-allowed; }
+        .form-pair-description { font-size: 12px; color: #a0aec0; margin-top: 4px; }
+        .form-error { font-size: 12px; color: #e53e3e; margin-top: 4px; }
+
+        /* Badges */
+        .cli-badge {
+            display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 10px;
+            font-weight: 600; background: #edf2f7; color: #667eea; letter-spacing: 0.5px;
+        }
+        .modified-dot {
+            display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+            background: #667eea; flex-shrink: 0;
         }
 
-        .settings-row {
-            display: flex;
-            padding: 12px 0;
-            border-bottom: 1px solid #f0f0f0;
+        /* Directory browser */
+        .browse-btn {
+            padding: 6px 12px; border: 1px solid #e2e8f0; border-radius: 6px; background: #edf2f7;
+            color: #4a5568; font-size: 13px; cursor: pointer; white-space: nowrap;
         }
-
-        .settings-row:last-child {
-            border-bottom: none;
+        .browse-btn:hover { background: #e2e8f0; }
+        .dir-modal-overlay {
+            display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.4); z-index: 1000; justify-content: center; align-items: center;
         }
-
-        .settings-label {
-            flex: 0 0 180px;
-            font-weight: 500;
-            color: #4a5568;
-            font-size: 14px;
+        .dir-modal-overlay.show { display: flex; }
+        .dir-modal {
+            background: white; border-radius: 12px; box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            width: 500px; max-width: 90vw; max-height: 70vh; display: flex; flex-direction: column;
         }
-
-        .settings-value {
-            flex: 1;
-            color: #2d3748;
-            font-size: 14px;
+        .dir-modal-header {
+            padding: 16px 20px; border-bottom: 1px solid #e2e8f0;
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        .dir-modal-header h3 { font-size: 16px; color: #2d3748; margin: 0; }
+        .dir-modal-close { background: none; border: none; font-size: 20px; cursor: pointer; color: #a0aec0; padding: 4px; }
+        .dir-modal-close:hover { color: #4a5568; }
+        .dir-modal-path {
+            padding: 10px 20px; background: #f7fafc; border-bottom: 1px solid #e2e8f0;
+            font-family: 'Monaco', 'Courier New', monospace; font-size: 12px; color: #4a5568;
             word-break: break-all;
         }
-
-        .settings-value.mono {
-            font-family: 'Monaco', 'Courier New', monospace;
-            font-size: 13px;
-            background: #f7fafc;
-            padding: 4px 8px;
-            border-radius: 4px;
+        .dir-modal-list {
+            flex: 1; overflow-y: auto; padding: 8px 0; min-height: 200px; max-height: 400px;
         }
+        .dir-item {
+            padding: 8px 20px; cursor: pointer; font-size: 14px; color: #2d3748;
+            display: flex; align-items: center; gap: 8px;
+        }
+        .dir-item:hover { background: #edf2f7; }
+        .dir-item-icon { color: #667eea; font-size: 16px; flex-shrink: 0; }
+        .dir-item-parent { color: #718096; font-style: italic; }
+        .dir-modal-footer {
+            padding: 12px 20px; border-top: 1px solid #e2e8f0;
+            display: flex; justify-content: flex-end; gap: 8px;
+        }
+        .dir-modal-empty { padding: 20px; text-align: center; color: #a0aec0; font-size: 14px; }
 
+        /* Screen picker modal */
+        .screen-modal-overlay {
+            display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.5); z-index: 1000; align-items: center; justify-content: center;
+        }
+        .screen-modal-overlay.show { display: flex; }
+        .screen-modal {
+            background: white; border-radius: 12px; box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            width: 90%; max-width: 650px; max-height: 80vh; display: flex; flex-direction: column;
+        }
+        .screen-modal-header {
+            padding: 16px 20px; border-bottom: 1px solid #e2e8f0;
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        .screen-modal-header h3 { font-size: 16px; color: #2d3748; margin: 0; }
+        .screen-modal-body { padding: 20px; overflow-y: auto; }
+        .screen-modal-hint { font-size: 13px; color: #718096; margin-bottom: 16px; }
+        .screen-display {
+            cursor: pointer; transition: box-shadow 0.15s, transform 0.15s;
+        }
+        .screen-display:hover {
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.6), 0 4px 12px rgba(0,0,0,0.3) !important;
+            transform: scale(1.03);
+        }
+        .screen-modal-footer {
+            padding: 12px 20px; border-top: 1px solid #e2e8f0;
+            display: flex; justify-content: flex-end; gap: 8px;
+        }
+        .screen-modal-none { padding: 20px; text-align: center; color: #a0aec0; font-size: 14px; }
+
+        /* Encoder cards */
         .encoder-card {
-            background: #f7fafc;
-            border-radius: 8px;
-            padding: 16px;
+            background: #f7fafc; border-radius: 8px; padding: 16px;
+            margin-bottom: 12px; border-left: 4px solid #667eea;
+        }
+        .encoder-card-header {
+            display: flex; justify-content: space-between; align-items: center;
             margin-bottom: 12px;
-            border-left: 4px solid #667eea;
         }
-
-        .encoder-card:last-child {
-            margin-bottom: 0;
-        }
-
-        .encoder-header {
-            font-weight: 600;
-            color: #2d3748;
-            margin-bottom: 12px;
-            font-size: 15px;
-        }
-
+        .encoder-card-title { font-weight: 600; color: #2d3748; font-size: 15px; }
+        .encoder-card-actions { display: flex; gap: 8px; }
         .encoder-details {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 8px;
+            display: flex; flex-direction: column; gap: 6px;
         }
-
-        .encoder-detail {
-            font-size: 13px;
+        .encoder-detail-row {
+            display: flex; gap: 24px; font-size: 13px; align-items: baseline;
         }
-
-        .encoder-detail-label {
-            color: #718096;
-        }
-
+        .encoder-detail { display: flex; gap: 4px; align-items: baseline; }
+        .encoder-detail-label { color: #718096; white-space: nowrap; font-size: 12px; }
         .encoder-detail-value {
-            color: #2d3748;
-            font-family: 'Monaco', 'Courier New', monospace;
-            font-size: 12px;
+            color: #2d3748; font-family: 'Monaco', 'Courier New', monospace; font-size: 12px;
         }
 
-        .status-badge {
-            display: inline-block;
-            padding: 4px 12px;
-            border-radius: 12px;
-            font-size: 12px;
-            font-weight: 500;
+        /* Encoder form (inline) */
+        .encoder-form {
+            background: #f7fafc; border-radius: 8px; padding: 20px;
+            margin-bottom: 12px; border: 2px dashed #667eea; display: none;
         }
+        .encoder-form.show { display: block; }
+        .encoder-form h3 { font-size: 15px; color: #2d3748; margin-bottom: 16px; }
+        .encoder-form .form-row { margin-bottom: 12px; }
+        .encoder-form .form-label { flex: 0 0 140px; }
+        .encoder-form .form-description { padding-left: 0; }
 
-        .status-badge.enabled {
-            background: #c6f6d5;
-            color: #276749;
+        /* Buttons */
+        .btn {
+            padding: 8px 16px; border: none; border-radius: 6px; font-size: 13px;
+            font-weight: 500; cursor: pointer; transition: all 0.15s;
         }
+        .btn-sm { padding: 4px 10px; font-size: 12px; }
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea, #764ba2); color: white;
+        }
+        .btn-primary:hover { opacity: 0.9; }
+        .btn-primary:disabled { background: #cbd5e0; cursor: not-allowed; opacity: 0.6; }
+        .btn-secondary { background: #edf2f7; color: #4a5568; }
+        .btn-secondary:hover { background: #e2e8f0; }
+        .btn-danger { background: #fed7d7; color: #c53030; }
+        .btn-danger:hover { background: #feb2b2; }
+        .btn-success { background: #c6f6d5; color: #276749; }
 
-        .status-badge.disabled {
-            background: #fed7d7;
-            color: #c53030;
+        /* Action bar */
+        .action-bar {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-top: 24px; padding-top: 20px; border-top: 2px solid #e2e8f0;
         }
+        .config-path { font-size: 12px; color: #a0aec0; }
+        .config-path code {
+            background: #edf2f7; padding: 2px 6px; border-radius: 4px;
+            font-family: 'Monaco', 'Courier New', monospace; font-size: 11px;
+        }
+        .action-buttons { display: flex; gap: 8px; }
 
-        .info-box {
-            background: #edf2f7;
-            border-left: 4px solid #667eea;
-            padding: 16px;
-            border-radius: 4px;
-            margin-top: 24px;
+        /* Messages (toast popup) */
+        .message {
+            position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+            padding: 12px 24px; border-radius: 6px; font-size: 13px;
+            display: none; z-index: 9999; box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            max-width: 600px; text-align: center;
         }
+        .message.show { display: block; }
+        .message.success { background: #c6f6d5; color: #276749; border-left: 4px solid #38a169; }
+        .message.error { background: #fed7d7; color: #c53030; border-left: 4px solid #e53e3e; }
 
-        .info-box-title {
-            font-weight: 600;
-            color: #2d3748;
-            margin-bottom: 8px;
-            font-size: 14px;
-        }
-
-        .info-box-text {
-            color: #4a5568;
-            font-size: 13px;
-            line-height: 1.5;
-        }
-
-        .info-box-text code {
-            background: #e2e8f0;
-            padding: 2px 6px;
-            border-radius: 4px;
-            font-family: 'Monaco', 'Courier New', monospace;
-            font-size: 12px;
-        }
-
-        .loading {
-            text-align: center;
-            padding: 40px;
-            color: #718096;
-        }
-
-        .error-message {
-            background: #fed7d7;
-            border-left: 4px solid #c53030;
-            padding: 16px;
-            border-radius: 4px;
-            color: #c53030;
-        }
+        .loading { text-align: center; padding: 40px; color: #718096; }
 
         @media (max-width: 768px) {
-            .container {
-                padding: 24px;
-            }
-
-            .header h1 {
-                font-size: 24px;
-            }
-
-            .settings-row {
-                flex-direction: column;
-                gap: 4px;
-            }
-
-            .settings-label {
-                flex: none;
-            }
-
-            .encoder-details {
-                grid-template-columns: 1fr;
-            }
+            .container { padding: 24px; }
+            .header h1 { font-size: 24px; }
+            .form-row { flex-direction: column; gap: 4px; align-items: flex-start; }
+            .form-label { flex: none; }
+            .form-input, .form-select { max-width: 100%; width: 100%; }
+            .form-description, .form-error, .form-pair-description { padding-left: 0; }
+            .form-pair-row { flex-direction: column; gap: 4px; align-items: flex-start; }
+            .form-pair-row .pair-field { width: 100%; }
+            .form-pair-row .pair-input-wide, .form-pair-row .pair-input-narrow { width: 100%; }
+            .encoder-details { grid-template-columns: 1fr; }
+            .encoder-form .form-label { flex: none; }
+            .encoder-form .form-description { padding-left: 0; }
+            .action-bar { flex-direction: column; gap: 12px; }
         }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <h1>⚙️ Settings</h1>
-            <p>Current CH4C configuration</p>
-            <a href="/" class="back-link">← Back to Home</a>
+            <h1>Settings</h1>
+            <p>Configure CH4C server, monitoring, and encoders</p>
+            <a href="/" class="back-link">&larr; Back to Home</a>
         </div>
 
+        <div id="message" class="message"></div>
         <div id="settings-content">
             <div class="loading">Loading settings...</div>
         </div>
     </div>
 
+    <!-- Directory browser modal -->
+    <div id="dir-modal-overlay" class="dir-modal-overlay" onclick="if(event.target===this)closeDirBrowser()">
+        <div class="dir-modal">
+            <div class="dir-modal-header">
+                <h3>Select Directory</h3>
+                <button class="dir-modal-close" onclick="closeDirBrowser()">&times;</button>
+            </div>
+            <div class="dir-modal-path" id="dir-modal-path"></div>
+            <div class="dir-modal-list" id="dir-modal-list"></div>
+            <div class="dir-modal-footer">
+                <button class="btn btn-secondary" onclick="closeDirBrowser()">Cancel</button>
+                <button class="btn btn-primary" onclick="selectCurrentDir()">Select This Directory</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="screen-modal-overlay" class="screen-modal-overlay" onclick="if(event.target===this)closeScreenPicker()">
+        <div class="screen-modal">
+            <div class="screen-modal-header">
+                <h3>Select Screen</h3>
+                <button class="dir-modal-close" onclick="closeScreenPicker()">&times;</button>
+            </div>
+            <div class="screen-modal-body">
+                <div class="screen-modal-hint">Click a display to use its position offsets. If using DPI scaling above 100%, offsets may be incorrect.</div>
+                <div id="screen-layout"></div>
+            </div>
+            <div class="screen-modal-footer">
+                <button class="btn btn-secondary" onclick="closeScreenPicker()">Cancel</button>
+            </div>
+        </div>
+    </div>
+
     <script>
+        let settingsData = null;
+        let audioDevices = [];
+        let displayData = [];
+        let screenPickerPrefix = null;
+        let hasChanges = false;
+
         async function loadSettings() {
             const container = document.getElementById('settings-content');
+            try {
+                const [settingsRes, audioRes, displayRes] = await Promise.all([
+                    fetch('/api/settings'),
+                    fetch('/audio-devices').catch(() => ({ ok: false })),
+                    fetch('/displays').catch(() => ({ ok: false }))
+                ]);
+                if (!settingsRes.ok) throw new Error('Failed to load settings');
+                settingsData = await settingsRes.json();
+                if (audioRes.ok) {
+                    const audioData = await audioRes.json();
+                    audioDevices = audioData.devices || audioData || [];
+                }
+                if (displayRes.ok) {
+                    displayData = await displayRes.json();
+                    if (!Array.isArray(displayData)) displayData = [];
+                }
+                container.innerHTML = renderAll();
+            } catch (error) {
+                container.innerHTML = '<div class="message error show">Error loading settings: ' + error.message + '</div>';
+            }
+        }
+
+        function renderAll() {
+            let html = '';
+            const { values, encoders, metadata, defaults, cliOverrides, configSource, configPath } = settingsData;
+
+            // Render Server section with paired fields
+            if (metadata.server) {
+                html += '<div class="section">';
+                html += '<div class="section-header">Server</div>';
+                const serverByPath = {};
+                metadata.server.forEach(function(f) { serverByPath[f.path] = f; });
+                // Channels DVR URL + Port on same line
+                if (serverByPath.channelsUrl && serverByPath.channelsPort) {
+                    html += renderFieldPair(serverByPath.channelsUrl, serverByPath.channelsPort, values, defaults, cliOverrides);
+                }
+                // CH4C HTTP Port + HTTPS Port on same line
+                if (serverByPath.ch4cPort && serverByPath.ch4cSslPort) {
+                    html += renderFieldPair(serverByPath.ch4cPort, serverByPath.ch4cSslPort, values, defaults, cliOverrides);
+                }
+                // Remaining server fields rendered individually (with browse button for dataDir)
+                var pairedPaths = ['channelsUrl', 'channelsPort', 'ch4cPort', 'ch4cSslPort'];
+                for (const field of metadata.server) {
+                    if (pairedPaths.indexOf(field.path) === -1) {
+                        html += renderField(field, values, defaults, cliOverrides, field.path === 'dataDir');
+                    }
+                }
+                html += '</div>';
+            }
+
+            // Encoders section
+            html += '<div class="section">';
+            html += '<div class="section-header">Encoders <button class="btn btn-sm btn-secondary" onclick="showAddEncoder()">+ Add</button></div>';
+            html += '<div id="encoder-form-add" class="encoder-form"></div>';
+            html += '<div id="encoder-list">';
+            if (encoders && encoders.length > 0) {
+                encoders.forEach((enc, i) => { html += renderEncoderCard(enc, i); });
+            } else {
+                html += '<div style="color:#718096;font-size:14px;padding:8px 0;">No encoders configured</div>';
+            }
+            html += '</div></div>';
+
+            // Render Monitoring section with paired toggle fields
+            if (metadata.monitoring) {
+                html += '<div class="section">';
+                html += '<div class="section-header">Monitoring</div>';
+                var monByPath = {};
+                metadata.monitoring.forEach(function(f) { monByPath[f.path] = f; });
+
+                // Pause Monitor checkbox + Pause Check Interval on same line
+                if (monByPath.enablePauseMonitor && monByPath.pauseMonitorInterval) {
+                    html += renderTogglePair(monByPath.enablePauseMonitor, monByPath.pauseMonitorInterval, values, defaults, cliOverrides);
+                }
+
+                // Browser Health Check - rendered inline to match toggle pair style
+                if (monByPath.browserHealthInterval) {
+                    var bhField = monByPath.browserHealthInterval;
+                    var bhVal = values[bhField.path];
+                    var bhDef = defaults[bhField.path];
+                    var bhCli = cliOverrides[bhField.path];
+                    var bhIsCli = bhCli !== undefined;
+                    var bhIsModified = !bhIsCli && bhVal !== undefined && bhVal !== null && String(bhVal) !== String(bhDef);
+                    var bhDisabled = bhIsCli ? 'disabled' : '';
+                    var bhDisplayVal = (bhVal !== null && bhVal !== undefined) ? bhVal : '';
+                    var bhMin = bhField.min !== undefined ? ' min="' + bhField.min + '"' : '';
+                    var bhMax = bhField.max !== undefined ? ' max="' + bhField.max + '"' : '';
+                    var bhStep = bhField.type === 'float' ? ' step="0.1"' : '';
+
+                    html += '<div class="form-group-toggle-pair' + (bhIsCli ? ' disabled' : '') + '">';
+                    html += '<div class="toggle-pair-row">';
+                    html += '<div class="toggle-checkbox-field">';
+                    html += '<label class="pair-label" for="field-' + bhField.path + '">';
+                    if (bhIsModified) html += '<span class="modified-dot" title="Modified from default"></span>';
+                    html += escapeHtml(bhField.label);
+                    if (bhIsCli) html += ' <span class="cli-badge">CLI</span>';
+                    html += '</label>';
+                    html += '</div>';
+                    html += '<div class="toggle-dependent-field">';
+                    html += '<input type="number"' + bhStep + ' class="pair-input-narrow" id="field-' + bhField.path + '" data-path="' + bhField.path + '" value="' + bhDisplayVal + '"' + bhMin + bhMax + ' ' + bhDisabled + ' onchange="markChanged()">';
+                    if (bhField.unit) html += '<span class="form-unit">' + escapeHtml(bhField.unit) + '</span>';
+                    html += '</div>';
+                    html += '</div>';
+                    html += '<div class="form-pair-description">' + escapeHtml(bhField.description);
+                    if (bhDef !== null && bhDef !== undefined) {
+                        html += ' (default: ' + escapeHtml(String(bhDef));
+                        if (bhField.unit) html += ' ' + escapeHtml(bhField.unit);
+                        html += ')';
+                    }
+                    html += '</div>';
+                    if (bhIsCli) html += '<div class="form-pair-description" style="color:#667eea;">Set via command line: ' + escapeHtml(bhCli) + '</div>';
+                    html += '</div>';
+                }
+
+                // Remaining monitoring fields rendered individually (if any beyond explicitly handled ones)
+                var explicitMonPaths = ['enablePauseMonitor', 'pauseMonitorInterval', 'browserHealthInterval'];
+                for (const field of metadata.monitoring) {
+                    if (explicitMonPaths.indexOf(field.path) === -1) {
+                        html += renderField(field, values, defaults, cliOverrides);
+                    }
+                }
+                html += '</div>';
+            }
+
+            // Render any other metadata sections not explicitly handled
+            for (const [sectionKey, fields] of Object.entries(metadata)) {
+                if (sectionKey === 'server' || sectionKey === 'monitoring') continue;
+                html += '<div class="section">';
+                html += '<div class="section-header">' + sectionKey.charAt(0).toUpperCase() + sectionKey.slice(1) + '</div>';
+                for (const field of fields) {
+                    html += renderField(field, values, defaults, cliOverrides);
+                }
+                html += '</div>';
+            }
+
+            // Action bar
+            html += '<div class="action-bar">';
+            html += '<div class="config-path">Config: <code>' + escapeHtml(configPath) + '</code>';
+            html += ' (' + (configSource === 'file' ? 'file' : 'CLI args') + ')</div>';
+            html += '<div class="action-buttons">';
+            html += '<button class="btn btn-secondary" onclick="cancelSettings()">Cancel</button>';
+            html += '<button class="btn btn-primary" id="save-btn" onclick="saveSettings()" disabled>Save</button>';
+            html += '</div></div>';
+
+            return html;
+        }
+
+        function renderField(field, values, defaults, cliOverrides, showBrowse) {
+            const value = values[field.path];
+            const defaultVal = defaults[field.path];
+            const cliVal = cliOverrides[field.path];
+            const isCli = cliVal !== undefined;
+            const isModified = !isCli && value !== undefined && value !== null && String(value) !== String(defaultVal);
+            const disabled = isCli ? 'disabled' : '';
+            const groupClass = 'form-group' + (isCli ? ' disabled' : '');
+
+            // Check dependsOn
+            const dependsDisabled = field.dependsOn && !values[field.dependsOn];
+            const finalClass = groupClass + (dependsDisabled ? ' depends-disabled' : '');
+
+            let html = '<div class="' + finalClass + '">';
+            html += '<div class="form-row">';
+
+            // Label
+            html += '<label class="form-label" for="field-' + field.path + '">';
+            if (isModified) html += '<span class="modified-dot" title="Modified from default"></span>';
+            html += escapeHtml(field.label);
+            if (isCli) html += ' <span class="cli-badge">CLI</span>';
+            html += '</label>';
+
+            // Input
+            const inputId = 'field-' + field.path;
+            if (field.type === 'boolean') {
+                const checked = value ? 'checked' : '';
+                html += '<input type="checkbox" class="form-checkbox" id="' + inputId + '" data-path="' + field.path + '" ' + checked + ' ' + disabled + ' onchange="markChanged()">';
+            } else if (field.type === 'port' || field.type === 'integer') {
+                const displayVal = (value !== null && value !== undefined) ? value : '';
+                const min = field.min !== undefined ? ' min="' + field.min + '"' : '';
+                const max = field.max !== undefined ? ' max="' + field.max + '"' : '';
+                html += '<input type="number" class="form-input" style="flex:0 0 80px;max-width:80px;" id="' + inputId + '" data-path="' + field.path + '" value="' + displayVal + '"' + min + max + ' ' + disabled + ' onchange="markChanged()">';
+            } else if (field.type === 'float') {
+                const displayVal = (value !== null && value !== undefined) ? value : '';
+                const min = field.min !== undefined ? ' min="' + field.min + '"' : '';
+                const max = field.max !== undefined ? ' max="' + field.max + '"' : '';
+                html += '<input type="number" step="0.1" class="form-input" style="flex:0 0 80px;max-width:80px;" id="' + inputId + '" data-path="' + field.path + '" value="' + displayVal + '"' + min + max + ' ' + disabled + ' onchange="markChanged()">';
+            } else {
+                const displayVal = (value !== null && value !== undefined) ? escapeHtml(String(value)) : '';
+                const ph = field.placeholder ? ' placeholder="' + escapeHtml(field.placeholder) + '"' : '';
+                var extraOnchange = field.path === 'dataDir' ? 'checkDataDirChange()' : '';
+                html += '<input type="text" class="form-input" id="' + inputId + '" data-path="' + field.path + '" value="' + displayVal + '"' + ph + ' ' + disabled + ' onchange="markChanged();' + extraOnchange + '">';
+            }
+
+            // Unit
+            if (field.unit) {
+                html += '<span class="form-unit">' + escapeHtml(field.unit) + '</span>';
+            }
+
+            // Browse button for directory fields
+            if (showBrowse && !isCli) {
+                html += '<button type="button" class="browse-btn" onclick="openDirBrowser(\\'' + field.path + '\\')">Browse</button>';
+            }
+
+            html += '</div>'; // end form-row
+
+            // Description
+            html += '<div class="form-description">' + escapeHtml(field.description);
+            if (defaultVal !== null && defaultVal !== undefined) {
+                html += ' (default: ' + escapeHtml(String(defaultVal));
+                if (field.unit) html += ' ' + escapeHtml(field.unit);
+                html += ')';
+            }
+            html += '</div>';
+
+            // Migration warning for data directory changes
+            if (field.path === 'dataDir') {
+                html += '<div id="datadir-warning" class="form-description" style="color:#dd6b20;display:none;">SSL certificates will be copied to the new directory on save. Chrome login profiles are stored separately and are not affected.</div>';
+            }
+
+            // CLI override notice
+            if (isCli) {
+                html += '<div class="form-description" style="color:#667eea;">Set via command line: ' + escapeHtml(cliVal) + '</div>';
+            }
+
+            html += '</div>'; // end form-group
+            return html;
+        }
+
+        function renderFieldPair(fieldA, fieldB, values, defaults, cliOverrides) {
+            var html = '';
+            var anyDisabled = false;
+
+            // Helper to get field state
+            function fieldState(f) {
+                var val = values[f.path];
+                var def = defaults[f.path];
+                var cli = cliOverrides[f.path];
+                var isCli = cli !== undefined;
+                var isModified = !isCli && val !== undefined && val !== null && String(val) !== String(def);
+                return { val: val, def: def, cli: cli, isCli: isCli, isModified: isModified, disabled: isCli ? 'disabled' : '' };
+            }
+
+            var a = fieldState(fieldA);
+            var b = fieldState(fieldB);
+            if (a.isCli || b.isCli) anyDisabled = true;
+
+            html += '<div class="form-group-pair' + (anyDisabled ? ' disabled' : '') + '">';
+            html += '<div class="form-pair-row">';
+
+            // Field A - wide if it's a text input, auto if it's a narrow port/number
+            var fieldAWide = (fieldA.type !== 'port' && fieldA.type !== 'integer');
+            html += '<div class="pair-field' + (fieldAWide ? ' pair-field-wide' : '') + '">';
+            html += '<label class="pair-label" for="field-' + fieldA.path + '">';
+            if (a.isModified) html += '<span class="modified-dot" title="Modified from default"></span>';
+            html += escapeHtml(fieldA.label);
+            if (a.isCli) html += ' <span class="cli-badge">CLI</span>';
+            html += '</label>';
+            var aId = 'field-' + fieldA.path;
+            if (fieldA.type === 'port' || fieldA.type === 'integer') {
+                var aVal = (a.val !== null && a.val !== undefined) ? a.val : '';
+                html += '<input type="number" class="pair-input-narrow" id="' + aId + '" data-path="' + fieldA.path + '" value="' + aVal + '" ' + a.disabled + ' onchange="markChanged()">';
+            } else {
+                var aVal = (a.val !== null && a.val !== undefined) ? escapeHtml(String(a.val)) : '';
+                var ph = fieldA.placeholder ? ' placeholder="' + escapeHtml(fieldA.placeholder) + '"' : '';
+                html += '<input type="text" class="pair-input-wide" id="' + aId + '" data-path="' + fieldA.path + '" value="' + aVal + '"' + ph + ' ' + a.disabled + ' onchange="markChanged()">';
+            }
+            html += '</div>';
+
+            // Field B (narrow input - port/number)
+            html += '<div class="pair-field">';
+            html += '<label class="pair-label" for="field-' + fieldB.path + '">';
+            if (b.isModified) html += '<span class="modified-dot" title="Modified from default"></span>';
+            html += escapeHtml(fieldB.label);
+            if (b.isCli) html += ' <span class="cli-badge">CLI</span>';
+            html += '</label>';
+            var bId = 'field-' + fieldB.path;
+            if (fieldB.type === 'port' || fieldB.type === 'integer') {
+                var bVal = (b.val !== null && b.val !== undefined) ? b.val : '';
+                html += '<input type="number" class="pair-input-narrow" id="' + bId + '" data-path="' + fieldB.path + '" value="' + bVal + '" ' + b.disabled + ' onchange="markChanged()">';
+            } else {
+                var bVal = (b.val !== null && b.val !== undefined) ? escapeHtml(String(b.val)) : '';
+                var ph2 = fieldB.placeholder ? ' placeholder="' + escapeHtml(fieldB.placeholder) + '"' : '';
+                html += '<input type="text" class="pair-input-wide" id="' + bId + '" data-path="' + fieldB.path + '" value="' + bVal + '"' + ph2 + ' ' + b.disabled + ' onchange="markChanged()">';
+            }
+            html += '</div>';
+
+            html += '</div>'; // end form-pair-row
+
+            // Combined description
+            html += '<div class="form-pair-description">' + escapeHtml(fieldA.description);
+            if (a.def !== null && a.def !== undefined) html += ' (default: ' + escapeHtml(String(a.def)) + ')';
+            html += '</div>';
+
+            // CLI notices
+            if (a.isCli) html += '<div class="form-pair-description" style="color:#667eea;">' + escapeHtml(fieldA.label) + ' set via CLI: ' + escapeHtml(a.cli) + '</div>';
+            if (b.isCli) html += '<div class="form-pair-description" style="color:#667eea;">' + escapeHtml(fieldB.label) + ' set via CLI: ' + escapeHtml(b.cli) + '</div>';
+
+            html += '</div>'; // end form-group-pair
+            return html;
+        }
+
+        // Render a boolean toggle + dependent field on one line
+        function renderTogglePair(toggleField, depField, values, defaults, cliOverrides) {
+            var tVal = values[toggleField.path];
+            var tDef = defaults[toggleField.path];
+            var tCli = cliOverrides[toggleField.path];
+            var tIsCli = tCli !== undefined;
+            var tIsModified = !tIsCli && tVal !== undefined && tVal !== null && String(tVal) !== String(tDef);
+
+            var dVal = values[depField.path];
+            var dDef = defaults[depField.path];
+            var dCli = cliOverrides[depField.path];
+            var dIsCli = dCli !== undefined;
+            var dIsModified = !dIsCli && dVal !== undefined && dVal !== null && String(dVal) !== String(dDef);
+
+            var anyDisabled = tIsCli || dIsCli;
+            var isOn = !!tVal;
+
+            var html = '<div class="form-group-toggle-pair' + (anyDisabled ? ' disabled' : '') + '">';
+            html += '<div class="toggle-pair-row">';
+
+            // Checkbox field
+            html += '<div class="toggle-checkbox-field">';
+            html += '<label class="pair-label" for="field-' + toggleField.path + '">';
+            if (tIsModified) html += '<span class="modified-dot" title="Modified from default"></span>';
+            html += escapeHtml(toggleField.label);
+            if (tIsCli) html += ' <span class="cli-badge">CLI</span>';
+            html += '</label>';
+            var checked = isOn ? 'checked' : '';
+            var tDisabled = tIsCli ? 'disabled' : '';
+            html += '<input type="checkbox" class="form-checkbox" id="field-' + toggleField.path + '" data-path="' + toggleField.path + '" ' + checked + ' ' + tDisabled + ' onchange="toggleDependent(\\'' + toggleField.path + '\\', \\'' + depField.path + '\\'); markChanged()">';
+            html += '</div>';
+
+            // Dependent number field
+            var depOffClass = isOn ? '' : ' toggled-off';
+            html += '<div class="toggle-dependent-field' + depOffClass + '" id="dep-wrap-' + depField.path + '">';
+            html += '<label class="pair-label" for="field-' + depField.path + '">';
+            if (dIsModified) html += '<span class="modified-dot" title="Modified from default"></span>';
+            html += escapeHtml(depField.label);
+            if (dIsCli) html += ' <span class="cli-badge">CLI</span>';
+            html += '</label>';
+            var depDisabled = (dIsCli || !isOn) ? 'disabled' : '';
+            var depDisplayVal = (dVal !== null && dVal !== undefined) ? dVal : '';
+            var depMin = depField.min !== undefined ? ' min="' + depField.min + '"' : '';
+            var depMax = depField.max !== undefined ? ' max="' + depField.max + '"' : '';
+            var step = depField.type === 'float' ? ' step="0.1"' : '';
+            html += '<input type="number"' + step + ' class="pair-input-narrow" id="field-' + depField.path + '" data-path="' + depField.path + '" value="' + depDisplayVal + '"' + depMin + depMax + ' ' + depDisabled + ' onchange="markChanged()">';
+            if (depField.unit) html += '<span class="form-unit">' + escapeHtml(depField.unit) + '</span>';
+            html += '</div>';
+
+            html += '</div>'; // end toggle-pair-row
+
+            // Description
+            html += '<div class="form-pair-description">' + escapeHtml(toggleField.description);
+            if (dDef !== null && dDef !== undefined) {
+                html += ' (default: ' + escapeHtml(String(dDef));
+                if (depField.unit) html += ' ' + escapeHtml(depField.unit);
+                html += ')';
+            }
+            html += '</div>';
+
+            // CLI notices
+            if (tIsCli) html += '<div class="form-pair-description" style="color:#667eea;">' + escapeHtml(toggleField.label) + ' set via CLI: ' + escapeHtml(tCli) + '</div>';
+            if (dIsCli) html += '<div class="form-pair-description" style="color:#667eea;">' + escapeHtml(depField.label) + ' set via CLI: ' + escapeHtml(dCli) + '</div>';
+
+            html += '</div>'; // end form-group-toggle-pair
+            return html;
+        }
+
+        function renderEncoderCard(enc, index) {
+            let html = '<div class="encoder-card" id="encoder-card-' + index + '">';
+            html += '<div class="encoder-card-header">';
+            html += '<div class="encoder-card-title">Encoder ' + (index + 1) + '</div>';
+            html += '<div class="encoder-card-actions">';
+            html += '<button class="btn btn-sm btn-secondary" onclick="showEditEncoder(' + index + ')">Edit</button>';
+            html += '<button class="btn btn-sm btn-danger" onclick="deleteEncoder(' + index + ')">Delete</button>';
+            html += '</div></div>';
+            html += '<div class="encoder-details">';
+            html += '<div class="encoder-detail-row"><div class="encoder-detail"><span class="encoder-detail-label">URL:</span><span class="encoder-detail-value">' + escapeHtml(enc.url) + '</span></div></div>';
+            html += '<div class="encoder-detail-row">';
+            html += '<div class="encoder-detail"><span class="encoder-detail-label">Channel:</span><span class="encoder-detail-value">' + escapeHtml(enc.channel || '24.42') + '</span></div>';
+            html += '<div class="encoder-detail"><span class="encoder-detail-label">Audio:</span><span class="encoder-detail-value">' + escapeHtml(enc.audioDevice || 'Default') + '</span></div>';
+            html += '</div>';
+            html += '<div class="encoder-detail-row"><div class="encoder-detail"><span class="encoder-detail-label">Position:</span><span class="encoder-detail-value">' + (enc.width || 0) + ' x ' + (enc.height || 0) + '</span></div></div>';
+            html += '</div>';
+            html += '<div id="encoder-form-edit-' + index + '" class="encoder-form" style="margin-top:12px;border:none;padding:16px 0 0;"></div>';
+            html += '</div>';
+            return html;
+        }
+
+        function renderEncoderForm(enc, mode, index) {
+            const prefix = mode + (index !== undefined ? '-' + index : '');
+            enc = enc || { url: '', channel: '24.42', width: 0, height: 0, audioDevice: '' };
+
+            let html = '<h3>' + (mode === 'add' ? 'Add New Encoder' : 'Edit Encoder ' + (index + 1)) + '</h3>';
+
+            // URL
+            html += '<div class="form-row"><label class="form-label">Encoder URL *</label>';
+            html += '<input type="url" class="form-input" id="enc-url-' + prefix + '" value="' + escapeHtml(enc.url || '') + '" placeholder="http://192.168.1.50/live/stream0" required></div>';
+            html += '<div class="form-description">HTTP stream URL of the HDMI encoder</div>';
+
+            // Channel
+            html += '<div class="form-row"><label class="form-label">Channel Number</label>';
+            html += '<input type="text" class="form-input" id="enc-channel-' + prefix + '" value="' + escapeHtml(enc.channel || '24.42') + '" placeholder="24.42" pattern="[0-9]+\\\\.[0-9]+"></div>';
+            html += '<div class="form-description">Channels DVR channel in xx.xx format</div>';
+
+            // Position: X and Y on same row with Screens button
+            html += '<div class="form-row" style="gap:8px;">';
+            html += '<label class="form-label">Screen Offset</label>';
+            html += '<span style="font-size:13px;color:#718096;flex-shrink:0;">X</span>';
+            html += '<input type="number" class="form-input" style="flex:0 0 80px;max-width:80px;" id="enc-width-' + prefix + '" value="' + (enc.width || 0) + '">';
+            html += '<span style="font-size:13px;color:#718096;flex-shrink:0;">Y</span>';
+            html += '<input type="number" class="form-input" style="flex:0 0 80px;max-width:80px;" id="enc-height-' + prefix + '" value="' + (enc.height || 0) + '">';
+            if (displayData.length > 0) {
+                html += '<button type="button" class="btn btn-sm btn-primary" style="flex-shrink:0;padding:6px 14px;" onclick="openScreenPicker(\\'' + prefix + '\\')">Screens</button>';
+            }
+            html += '</div>';
+            html += '<div class="form-description">Screen position offsets for multi-monitor setups</div>';
+
+            // Audio device
+            html += '<div class="form-row"><label class="form-label">Audio Device</label>';
+            if (audioDevices.length > 0) {
+                html += '<select class="form-select" id="enc-audio-' + prefix + '">';
+                html += '<option value="">Default</option>';
+                audioDevices.forEach(function(dev) {
+                    const name = typeof dev === 'string' ? dev : (dev.name || dev.label || '');
+                    const selected = (enc.audioDevice && name.includes(enc.audioDevice)) ? ' selected' : '';
+                    html += '<option value="' + escapeHtml(name) + '"' + selected + '>' + escapeHtml(name) + '</option>';
+                });
+                html += '</select>';
+            } else {
+                html += '<input type="text" class="form-input" id="enc-audio-' + prefix + '" value="' + escapeHtml(enc.audioDevice || '') + '" placeholder="e.g., Encoder">';
+            }
+            html += '</div>';
+            html += '<div class="form-description">Audio output device name (or partial match)</div>';
+
+            // Buttons
+            html += '<div style="margin-top:16px;display:flex;gap:8px;">';
+            if (mode === 'add') {
+                html += '<button class="btn btn-primary" onclick="submitAddEncoder()">Add Encoder</button>';
+                html += '<button class="btn btn-secondary" onclick="hideAddEncoder()">Cancel</button>';
+            } else {
+                html += '<button class="btn btn-primary" onclick="submitEditEncoder(' + index + ')">Save</button>';
+                html += '<button class="btn btn-secondary" onclick="hideEditEncoder(' + index + ')">Cancel</button>';
+            }
+            html += '</div>';
+
+            return html;
+        }
+
+        function getEncoderFromForm(prefix) {
+            return {
+                url: document.getElementById('enc-url-' + prefix).value.trim(),
+                channel: document.getElementById('enc-channel-' + prefix).value.trim() || '24.42',
+                width: parseInt(document.getElementById('enc-width-' + prefix).value) || 0,
+                height: parseInt(document.getElementById('enc-height-' + prefix).value) || 0,
+                audioDevice: document.getElementById('enc-audio-' + prefix).value.trim() || null
+            };
+        }
+
+        function showAddEncoder() {
+            const container = document.getElementById('encoder-form-add');
+            container.innerHTML = renderEncoderForm(null, 'add');
+            container.classList.add('show');
+        }
+
+        function hideAddEncoder() {
+            const container = document.getElementById('encoder-form-add');
+            container.classList.remove('show');
+            container.innerHTML = '';
+        }
+
+        function showEditEncoder(index) {
+            const container = document.getElementById('encoder-form-edit-' + index);
+            container.innerHTML = renderEncoderForm(settingsData.encoders[index], 'edit', index);
+            container.classList.add('show');
+        }
+
+        function hideEditEncoder(index) {
+            const container = document.getElementById('encoder-form-edit-' + index);
+            container.classList.remove('show');
+            container.innerHTML = '';
+        }
+
+        // Preserve unsaved settings field values across page re-renders
+        function preserveAndReload() {
+            const savedValues = hasChanges ? collectSettingsValues() : null;
+            const hadChanges = hasChanges;
+            return async function() {
+                await loadSettings();
+                if (savedValues) {
+                    document.querySelectorAll('[data-path]').forEach(function(el) {
+                        const path = el.dataset.path;
+                        if (!(path in savedValues)) return;
+                        if (el.type === 'checkbox') {
+                            el.checked = !!savedValues[path];
+                        } else {
+                            el.value = savedValues[path] != null ? savedValues[path] : '';
+                        }
+                    });
+                    hasChanges = hadChanges;
+                    var btn = document.getElementById('save-btn');
+                    if (btn) btn.disabled = !hadChanges;
+                }
+            };
+        }
+
+        async function submitAddEncoder() {
+            const enc = getEncoderFromForm('add');
+            if (!enc.url) { showMessage('Encoder URL is required', 'error'); return; }
+            const reload = preserveAndReload();
+            try {
+                const res = await fetch('/api/encoders', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(enc)
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showMessage(data.message, 'success');
+                    await reload();
+                } else {
+                    showMessage(formatErrors(data.errors), 'error');
+                }
+            } catch (e) { showMessage('Failed to add encoder: ' + e.message, 'error'); }
+        }
+
+        async function submitEditEncoder(index) {
+            const enc = getEncoderFromForm('edit-' + index);
+            if (!enc.url) { showMessage('Encoder URL is required', 'error'); return; }
+            const reload = preserveAndReload();
+            try {
+                const res = await fetch('/api/encoders/' + index, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(enc)
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showMessage(data.message, 'success');
+                    await reload();
+                } else {
+                    showMessage(formatErrors(data.errors), 'error');
+                }
+            } catch (e) { showMessage('Failed to update encoder: ' + e.message, 'error'); }
+        }
+
+        async function deleteEncoder(index) {
+            if (!confirm('Delete Encoder ' + (index + 1) + '?')) return;
+            const reload = preserveAndReload();
+            try {
+                const res = await fetch('/api/encoders/' + index, { method: 'DELETE' });
+                const data = await res.json();
+                if (data.success) {
+                    showMessage(data.message, 'success');
+                    await reload();
+                } else {
+                    showMessage(data.error || 'Failed to delete', 'error');
+                }
+            } catch (e) { showMessage('Failed to delete encoder: ' + e.message, 'error'); }
+        }
+
+        function collectSettingsValues() {
+            const values = {};
+            document.querySelectorAll('[data-path]').forEach(function(el) {
+                if (el.disabled) return; // Skip CLI-overridden fields
+                const path = el.dataset.path;
+                if (el.type === 'checkbox') {
+                    values[path] = el.checked;
+                } else if (el.type === 'number') {
+                    values[path] = el.value !== '' ? Number(el.value) : null;
+                } else {
+                    values[path] = el.value || null;
+                }
+            });
+            return values;
+        }
+
+        async function saveSettings() {
+            const values = collectSettingsValues();
+
+            // Also include current encoders from the loaded data
+            const encoders = settingsData.encoders || [];
 
             try {
-                const response = await fetch('/api/settings');
-                if (!response.ok) {
-                    throw new Error('Failed to load settings');
+                const res = await fetch('/api/settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ values, encoders })
+                });
+                const data = await res.json();
+                if (!data.success) {
+                    showMessage(formatErrors(data.errors || { error: data.error }), 'error');
+                    return;
                 }
-                const settings = await response.json();
 
-                container.innerHTML = renderSettings(settings);
-            } catch (error) {
-                container.innerHTML = \`
-                    <div class="error-message">
-                        Error loading settings: \${error.message}
-                    </div>
-                \`;
+                var successMsg = 'Configuration saved!';
+                if (data.migratedFiles && data.migratedFiles.length > 0) {
+                    successMsg += ' Migrated ' + data.migratedFiles.join(', ') + ' to new data directory.';
+                }
+                successMsg += ' Please restart CH4C for changes to take effect.';
+                showMessage(successMsg, 'success');
+                hasChanges = false;
+                var btn = document.getElementById('save-btn');
+                if (btn) btn.disabled = true;
+            } catch (e) {
+                showMessage('Failed to save: ' + e.message, 'error');
             }
         }
 
-        function renderSettings(settings) {
-            return \`
-                <div class="section">
-                    <div class="section-header">Channels DVR</div>
-                    <div class="settings-table">
-                        <div class="settings-row">
-                            <div class="settings-label">Server URL</div>
-                            <div class="settings-value mono">\${settings.channelsUrl || 'Not configured'}</div>
-                        </div>
-                        <div class="settings-row">
-                            <div class="settings-label">Port</div>
-                            <div class="settings-value">\${settings.channelsPort || '8089'}</div>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="section">
-                    <div class="section-header">CH4C Server</div>
-                    <div class="settings-table">
-                        <div class="settings-row">
-                            <div class="settings-label">HTTP Port</div>
-                            <div class="settings-value">\${settings.ch4cPort || '2442'}</div>
-                        </div>
-                        <div class="settings-row">
-                            <div class="settings-label">HTTPS Port</div>
-                            <div class="settings-value">\${settings.ch4cSslPort || 'Disabled'}</div>
-                        </div>
-                        <div class="settings-row">
-                            <div class="settings-label">Data Directory</div>
-                            <div class="settings-value mono">\${settings.dataDir || 'data'}</div>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="section">
-                    <div class="section-header">Encoders</div>
-                    \${renderEncoders(settings.encoders || [])}
-                </div>
-
-                <div class="section">
-                    <div class="section-header">Monitoring</div>
-                    <div class="settings-table">
-                        <div class="settings-row">
-                            <div class="settings-label">Pause Monitor</div>
-                            <div class="settings-value">
-                                <span class="status-badge \${settings.enablePauseMonitor ? 'enabled' : 'disabled'}">
-                                    \${settings.enablePauseMonitor ? 'Enabled' : 'Disabled'}
-                                </span>
-                            </div>
-                        </div>
-                        <div class="settings-row">
-                            <div class="settings-label">Pause Check Interval</div>
-                            <div class="settings-value">\${settings.pauseMonitorInterval || 10} seconds</div>
-                        </div>
-                        <div class="settings-row">
-                            <div class="settings-label">Browser Health Check</div>
-                            <div class="settings-value">\${settings.browserHealthInterval || 6} hours</div>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="info-box">
-                    <div class="info-box-title">Configuration Source</div>
-                    <div class="info-box-text">
-                        \${settings.configSource === 'file'
-                            ? \`Loaded from: <code>\${settings.configPath}</code>\`
-                            : 'Loaded from command-line arguments'}
-                        <br><br>
-                        To modify settings, edit <code>config.json</code> in your data directory and restart CH4C.
-                    </div>
-                </div>
-            \`;
+        function markChanged() {
+            hasChanges = true;
+            var btn = document.getElementById('save-btn');
+            if (btn) btn.disabled = false;
         }
 
-        function renderEncoders(encoders) {
-            if (encoders.length === 0) {
-                return '<div class="settings-value">No encoders configured</div>';
+        function checkDataDirChange() {
+            var input = document.getElementById('field-dataDir');
+            var warning = document.getElementById('datadir-warning');
+            if (!input || !warning) return;
+            var currentVal = settingsData.values.dataDir || '';
+            var newVal = input.value.trim();
+            warning.style.display = (newVal && newVal !== currentVal) ? 'block' : 'none';
+        }
+
+        function toggleDependent(togglePath, depPath) {
+            var cb = document.getElementById('field-' + togglePath);
+            var wrap = document.getElementById('dep-wrap-' + depPath);
+            var input = document.getElementById('field-' + depPath);
+            if (!cb || !wrap || !input) return;
+            if (cb.checked) {
+                wrap.classList.remove('toggled-off');
+                input.disabled = false;
+            } else {
+                wrap.classList.add('toggled-off');
+                input.disabled = true;
             }
-
-            return encoders.map((encoder, index) => \`
-                <div class="encoder-card">
-                    <div class="encoder-header">Encoder \${index + 1}</div>
-                    <div class="encoder-details">
-                        <div class="encoder-detail">
-                            <span class="encoder-detail-label">URL: </span>
-                            <span class="encoder-detail-value">\${encoder.url}</span>
-                        </div>
-                        <div class="encoder-detail">
-                            <span class="encoder-detail-label">Channel: </span>
-                            <span class="encoder-detail-value">\${encoder.channel}</span>
-                        </div>
-                        <div class="encoder-detail">
-                            <span class="encoder-detail-label">Position: </span>
-                            <span class="encoder-detail-value">\${encoder.width} x \${encoder.height}</span>
-                        </div>
-                        <div class="encoder-detail">
-                            <span class="encoder-detail-label">Audio Device: </span>
-                            <span class="encoder-detail-value">\${encoder.audioDevice || 'Default'}</span>
-                        </div>
-                    </div>
-                </div>
-            \`).join('');
         }
 
-        // Load settings on page load
+        function openScreenPicker(prefix) {
+            screenPickerPrefix = prefix;
+            var layoutEl = document.getElementById('screen-layout');
+            if (!displayData || displayData.length === 0) {
+                layoutEl.innerHTML = '<div class="screen-modal-none">No displays detected.</div>';
+            } else {
+                var minX = Math.min.apply(null, displayData.map(function(d) { return d.x; }));
+                var minY = Math.min.apply(null, displayData.map(function(d) { return d.y; }));
+                var maxX = Math.max.apply(null, displayData.map(function(d) { return d.x + d.width; }));
+                var maxY = Math.max.apply(null, displayData.map(function(d) { return d.y + d.height; }));
+                var totalWidth = maxX - minX;
+                var totalHeight = maxY - minY;
+                var scale = Math.min(580 / totalWidth, 250 / totalHeight, 0.2);
+                var layoutWidth = totalWidth * scale;
+                var layoutHeight = totalHeight * scale;
+                var colors = ['#667eea', '#48bb78', '#ed8936', '#e53e3e', '#9f7aea'];
+                var html = '<div style="position:relative;width:' + layoutWidth + 'px;height:' + layoutHeight + 'px;background:#e2e8f0;border-radius:8px;margin:0 auto;">';
+                displayData.forEach(function(display, index) {
+                    var left = (display.x - minX) * scale;
+                    var top = (display.y - minY) * scale;
+                    var w = display.width * scale;
+                    var h = display.height * scale;
+                    var color = colors[index % colors.length];
+                    html += '<div class="screen-display" style="position:absolute;left:' + left + 'px;top:' + top + 'px;width:' + w + 'px;height:' + h + 'px;';
+                    html += 'background:' + color + ';border-radius:4px;display:flex;flex-direction:column;align-items:center;justify-content:center;';
+                    html += 'color:white;font-size:11px;box-shadow:0 2px 4px rgba(0,0,0,0.2);border:2px solid ' + (display.primary ? '#fff' : 'transparent') + ';"';
+                    html += ' data-x="' + display.x + '" data-y="' + display.y + '">';
+                    html += '<div style="font-weight:700;">' + escapeHtml(display.name) + '</div>';
+                    html += '<div style="opacity:0.9;">' + display.width + 'x' + display.height + '</div>';
+                    html += '<div style="opacity:0.8;font-size:10px;">Offset: ' + display.x + ':' + display.y + '</div>';
+                    if (display.primary) html += '<div style="font-size:9px;margin-top:2px;background:rgba(255,255,255,0.3);padding:1px 4px;border-radius:2px;">Primary</div>';
+                    html += '</div>';
+                });
+                html += '</div>';
+                layoutEl.innerHTML = html;
+                // Attach click handlers via event delegation
+                layoutEl.querySelectorAll('.screen-display').forEach(function(el) {
+                    el.addEventListener('click', function() {
+                        selectScreen(parseInt(el.getAttribute('data-x')), parseInt(el.getAttribute('data-y')));
+                    });
+                });
+            }
+            document.getElementById('screen-modal-overlay').classList.add('show');
+        }
+
+        function closeScreenPicker() {
+            document.getElementById('screen-modal-overlay').classList.remove('show');
+            screenPickerPrefix = null;
+        }
+
+        function selectScreen(x, y) {
+            if (!screenPickerPrefix) return;
+            var xInput = document.getElementById('enc-width-' + screenPickerPrefix);
+            var yInput = document.getElementById('enc-height-' + screenPickerPrefix);
+            if (xInput) xInput.value = x;
+            if (yInput) yInput.value = y;
+            markChanged();
+            closeScreenPicker();
+        }
+
+        function cancelSettings() {
+            if (hasChanges && !confirm('Discard unsaved changes?')) return;
+            hasChanges = false;
+            loadSettings();
+        }
+
+        function showMessage(text, type) {
+            const el = document.getElementById('message');
+            el.textContent = text;
+            el.className = 'message show ' + type;
+            setTimeout(function() { el.className = 'message'; }, 8000);
+        }
+
+        function formatErrors(errors) {
+            if (typeof errors === 'string') return errors;
+            return Object.entries(errors).map(function(e) { return e[0] + ': ' + (typeof e[1] === 'object' ? JSON.stringify(e[1]) : e[1]); }).join('; ');
+        }
+
+        function escapeHtml(str) {
+            if (!str) return '';
+            return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+        }
+
+        // Directory browser
+        var dirBrowserTarget = null;
+        var dirBrowserCurrent = '';
+        var dirBrowserDirs = [];
+
+        function openDirBrowser(fieldPath) {
+            dirBrowserTarget = fieldPath;
+            var currentVal = document.getElementById('field-' + fieldPath).value || '';
+            loadDirectory(currentVal || '');
+            document.getElementById('dir-modal-overlay').classList.add('show');
+        }
+
+        function closeDirBrowser() {
+            document.getElementById('dir-modal-overlay').classList.remove('show');
+            dirBrowserTarget = null;
+        }
+
+        async function loadDirectory(dirPath) {
+            var listEl = document.getElementById('dir-modal-list');
+            var pathEl = document.getElementById('dir-modal-path');
+            listEl.innerHTML = '<div class="dir-modal-empty">Loading...</div>';
+
+            try {
+                var url = '/api/directories' + (dirPath ? '?path=' + encodeURIComponent(dirPath) : '');
+                var res = await fetch(url);
+                var data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'Failed to load');
+
+                dirBrowserCurrent = data.current;
+                dirBrowserDirs = data.directories;
+                pathEl.textContent = data.current;
+
+                var html = '';
+                if (data.parent !== null) {
+                    html += '<div class="dir-item dir-item-parent" data-dir-path="' + escapeHtml(data.parent) + '">';
+                    html += '<span class="dir-item-icon">&#128194;</span> .. (parent directory)</div>';
+                }
+                if (data.directories.length === 0 && data.parent === null) {
+                    html += '<div class="dir-modal-empty">No subdirectories</div>';
+                }
+                var sep = data.current.includes('\\\\') ? '\\\\' : '/';
+                var trail = data.current.endsWith('/') || data.current.endsWith('\\\\') ? '' : sep;
+                data.directories.forEach(function(name) {
+                    var fullPath = data.current + trail + name;
+                    html += '<div class="dir-item" data-dir-path="' + escapeHtml(fullPath) + '">';
+                    html += '<span class="dir-item-icon">&#128193;</span> ' + escapeHtml(name) + '</div>';
+                });
+                listEl.innerHTML = html;
+            } catch (e) {
+                listEl.innerHTML = '<div class="dir-modal-empty">Error: ' + escapeHtml(e.message) + '</div>';
+            }
+        }
+
+        // Event delegation for directory clicks
+        document.addEventListener('click', function(e) {
+            var item = e.target.closest('[data-dir-path]');
+            if (item) {
+                loadDirectory(item.getAttribute('data-dir-path'));
+            }
+        });
+
+        function selectCurrentDir() {
+            if (dirBrowserTarget && dirBrowserCurrent) {
+                var input = document.getElementById('field-' + dirBrowserTarget);
+                input.value = dirBrowserCurrent;
+                markChanged();
+                if (dirBrowserTarget === 'dataDir') checkDataDirChange();
+            }
+            closeDirBrowser();
+        }
+
+        // Load on page load
         loadSettings();
+
+        // Warn before leaving with unsaved changes
+        window.addEventListener('beforeunload', function(e) {
+            if (hasChanges) { e.preventDefault(); e.returnValue = ''; }
+        });
     </script>
 </body>
 </html>
@@ -5226,5 +5977,6 @@ module.exports = {
   CHROME_USERDATA_DIRECTORIES,
   CHROME_EXECUTABLE_DIRECTORIES,
   CONFIG_FILE_PATH: configFilePath,
-  USING_CONFIG_FILE: usingConfigFile
+  USING_CONFIG_FILE: usingConfigFile,
+  CLI_OVERRIDES: cliOverrides
 };
