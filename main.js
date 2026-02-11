@@ -1,3 +1,9 @@
+// Handle service commands before loading the full application
+if (process.argv[2] === 'service') {
+  const { handleServiceCommand } = require('./service-manager');
+  handleServiceCommand(process.argv.slice(3));
+}
+
 const express = require('express');
 const puppeteer = require('rebrowser-puppeteer-core');
 const { existsSync } = require('fs');
@@ -4710,27 +4716,34 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
     });
   });
 
+  // Graceful shutdown helper - closes all browsers and exits
+  async function gracefulShutdown(label) {
+    logTS(`Shutting down (${label})...`);
+
+    for (const [encoderUrl, browser] of browsers) {
+      try {
+        await browser.close();
+        logTS(`Closed browser for encoder: ${encoderUrl}`);
+      } catch (e) {
+        logTS(`Error closing browser for ${encoderUrl}: ${e.message}`);
+      }
+    }
+
+    process.exit(0);
+  }
+
   // Restart endpoint - graceful shutdown for service manager to restart
   app.post('/api/settings/restart', async (_req, res) => {
     logTS('Restart requested via settings UI');
     res.json({ success: true, message: 'Server is shutting down...' });
+    setTimeout(() => gracefulShutdown('restart'), 500);
+  });
 
-    // Brief delay to allow response to be sent
-    setTimeout(async () => {
-      logTS('Shutting down for restart...');
-
-      // Close all browser instances gracefully
-      for (const [encoderUrl, browser] of browsers) {
-        try {
-          await browser.close();
-          logTS(`Closed browser for encoder: ${encoderUrl}`);
-        } catch (e) {
-          logTS(`Error closing browser for ${encoderUrl}: ${e.message}`);
-        }
-      }
-
-      process.exit(0);
-    }, 500);
+  // Shutdown endpoint - graceful shutdown for service stop command
+  app.post('/api/shutdown', async (_req, res) => {
+    logTS('Shutdown requested via service stop command');
+    res.json({ success: true, message: 'Server is shutting down...' });
+    setTimeout(() => gracefulShutdown('service stop'), 500);
   });
 
   // Encoder CRUD endpoints
@@ -5078,29 +5091,8 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
   }
 
   // Graceful shutdown with cleanup
-  process.on('SIGINT', async () => {
-    logTS('Shutting down gracefully...');
-    
-    // Stop monitoring
-    healthMonitor.healthStatus.clear();
-    streamMonitor.activeStreams.clear();
-    
-    // Close all browsers
-    for (const [encoderUrl, browser] of browsers) {
-      try {
-        if (browser && browser.isConnected()) {
-          await browser.close();
-        }
-      } catch (e) {
-        logTS(`Error closing browser during shutdown: ${e.message}`);
-      }
-    }
-    
-    server.close(() => {
-      logTS('Server closed');
-      process.exit(0);
-    });
-  });
+  process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 }
 
 // Helper function to consolidate site-specific fullscreen logic

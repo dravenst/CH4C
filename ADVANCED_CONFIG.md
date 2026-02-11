@@ -102,11 +102,67 @@ Position values depend on your display setup. For two 1920x1080 displays aligned
 
 ## Audio Device Setup
 
-For multi-encoder setups, you must identify and specify audio device names. The CH4C home page lists all detected audio devices, or you can find them using:
+For multi-encoder setups, each encoder needs its own audio device. The **Settings** page automatically discovers available audio devices and presents them in a dropdown when adding or editing an encoder. Simply select the correct device from the list.
 
-1. Windows Sound Settings, or
-2. PowerShell: `Get-AudioDevice -List`
+If automatic detection is unavailable, you can manually enter a partial device name (e.g., "Encoder" or "MACROSILICON") in the text field. The home page also lists all detected audio devices for reference. If not specified, CH4C uses the default audio device.
 
-Use the first portion of the device name (e.g., "Encoder" or "MACROSILICON"). If not specified, CH4C uses the default audio device.
+To find device names manually, use Windows Sound Settings or PowerShell: `Get-AudioDevice -List`
 
 ![Windows Sound Settings showing encoder audio devices](./assets/pcaudiodevices.jpg)
+
+## Manual M3U Configuration
+
+If you prefer not to use the M3U Manager, you can manually create a custom channel source in Channels DVR:
+
+1. Go to Channels DVR Settings → Sources
+2. Add a new custom channel
+3. Set Stream Format to `MPEG-TS`
+4. Add channel entries using M3U format (see [samples.m3u](./assets/samples.m3u))
+5. For linear channels (e.g., NFL Network), map the channel for guide data if needed
+
+> **Note**: In the example below, 192.168.50.71 is the encoder IP and 192.168.50.50 is the CH4C server IP.
+
+![Channel Setup in Channels DVR](./assets/channelsetup.jpg)
+
+## Manual Startup Configuration
+
+If you prefer not to use `ch4c service install`, you can manually configure auto-start using Windows Task Scheduler with a PowerShell script.
+
+### Using a batch file (Simplest)
+
+Create `ch4c.ps1` calling a `runme.bat` file:
+```powershell
+Start-Process -WindowStyle hidden -FilePath "(YOUR-PATH)\runme.bat"
+```
+
+Sample `runme.bat` with logging:
+```batch
+cd (YOUR-PATH)
+
+@echo ***Waiting 30 seconds for system to stabilize on startup...
+timeout /t 30
+
+@echo ***Running ch4c and capture logs in .\data\ch4c.log
+powershell -Command "ch4c.exe 2>&1 | Tee-Object -FilePath .\data\ch4c.log -Append"
+```
+
+### Using config.json
+
+Create `ch4c.ps1` with simple command assuming config.json in the default data directory:
+```powershell
+Start-Process -WindowStyle Minimized -FilePath "cmd.exe" -ArgumentList "/k", "(YOUR-PATH)\ch4c.exe" -WorkingDirectory "(YOUR-ROOT-PATH)"
+```
+
+### Using command-line arguments
+
+Create `ch4c.ps1` with all parameters on the command line:
+```powershell
+Start-Process -WindowStyle hidden -FilePath "(YOUR-PATH)\ch4c.exe" -ArgumentList "-t", "2443", "--channels-url", "http://192.168.50.50", "--encoder", "http://192.168.50.71/live/stream0:24.42:0:0:Encoder", "--encoder", "http://192.168.50.72/live/stream1:24.43:1920:0:MACROSILICON"
+```
+
+### Creating the Task Scheduler task
+
+1. Create a new task to run `ch4c.ps1`
+2. Leave "Run with highest privileges" **UNCHECKED** (Chrome security doesn't allow elevated privileges)
+3. Set trigger to "When the user logs on" (required to ensure browser has GPU access)
+4. Run the new task manually to test

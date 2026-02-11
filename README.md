@@ -18,14 +18,12 @@ This project merges elements of the excellent [Chrome Capture for Channels](http
 - [Installation](#installation)
 - [Getting Started](#getting-started)
 - [Advanced Configuration](#advanced-configuration)
-- [Running CH4C at PC Startup](#running-ch4c-at-pc-startup)
 - [Web Interface](#web-interface)
   - [Home Page / Status Dashboard](#home-page--status-dashboard)
   - [Settings](#settings)
   - [M3U Manager](#m3u-manager)
   - [Instant Recording](#instant-recording)
   - [Remote Access](#remote-access)
-- [Alternative: Manual M3U Configuration](#alternative-manual-m3u-configuration)
 - [Development](#development)
 - [Performance Notes](#performance-notes)
 - [License](#license)
@@ -65,6 +63,40 @@ npm install
 node main.js --help
 ```
 
+### Running CH4C at PC Startup
+
+Install CH4C as a Windows scheduled task that starts automatically at user logon:
+
+```bash
+ch4c service install
+```
+
+This creates a scheduled task that runs CH4C when you log in, with a 30-second startup delay for system stabilization. The task itself runs without elevated privileges (required for Chrome).
+
+> **Note**: The `install` and `uninstall` commands require **Administrator privileges**. Right-click Command Prompt and select "Run as administrator", or use PowerShell:
+> ```powershell
+> powershell -Command "Start-Process cmd -ArgumentList '/k cd /d C:\path\to\CH4C && ch4c service install' -Verb RunAs"
+> ```
+
+To use a custom data directory:
+
+```bash
+ch4c service install -d C:\ch4c-data
+```
+
+**Other service commands:**
+
+```bash
+ch4c service status      # Check if the task is installed and running
+ch4c service start       # Start CH4C
+ch4c service stop        # Stop CH4C gracefully
+ch4c service uninstall   # Remove the scheduled task (requires Administrator)
+```
+
+For manual startup configurations using PowerShell scripts or batch files, see [ADVANCED_CONFIG.md](ADVANCED_CONFIG.md).
+
+---
+
 ## Getting Started
 
 > **Important**: Do NOT run ch4c.exe or display/sound config-related commands in a Windows Remote Desktop session. Video and audio sources will change when using Remote Desktop. Use VNC instead (e.g., [TightVNC](https://www.tightvnc.com/)). See [Remote Access](#remote-access) for the built-in VNC viewer.
@@ -94,7 +126,7 @@ Launch CH4C and navigate to `http://<CH4C_IP>:2442/settings`:
 In Settings, click **+ Add Encoder** for each HDMI encoder:
 
 1. Set the **Encoder URL** (e.g., `http://192.168.50.71/live/stream0`)
-2. Set the **Audio Device** name — the Settings page displays available audio devices, and the home page lists all detected audio devices for reference. Use the first portion of the device name (e.g., "Encoder" or "MACROSILICON"). If not specified, CH4C uses the default audio device.
+2. Select the **Audio Device** from the dropdown — CH4C automatically discovers available audio devices and presents them for selection. Choose "Default" to use the system default audio device. If audio devices cannot be detected, a text field is shown instead where you can enter a partial device name (e.g., "Encoder" or "MACROSILICON").
 3. For multi-monitor setups, set the **Screen X/Y Position** — use the **Screens** button to visually select a display, or the home page shows a Display Configuration visual with offsets for each monitor. Display scale must be set to 100% for correct positioning.
 4. Click **Add Encoder**, then **Save Settings** and restart CH4C
 
@@ -135,51 +167,6 @@ After adding channels, refresh the custom channel source in Channels DVR to pick
 ## Advanced Configuration
 
 CH4C can also be configured via command-line parameters or a JSON configuration file for automated deployments or scripted setups. See [ADVANCED_CONFIG.md](ADVANCED_CONFIG.md) for details on CLI parameters, JSON configuration, display setup, and audio device setup.
-
----
-
-## Running CH4C at PC Startup
-
-### Windows Task Scheduler (Auto-Start) with a powershell `ch4c.ps1` file
-
-**Option 1: Using config.json**
-
-Create `ch4c.ps1` with simple ch4c.exe command line assuming config.json located in `WorkingDirectory` .\data directory:
-```powershell
-Start-Process -WindowStyle Minimized -FilePath "cmd.exe" -ArgumentList "/k", "(YOUR-PATH)\ch4c.exe" -WorkingDirectory "(YOUR-ROOT-PATH)"
-```
-
-**Option 2: Command-line arguments**
-
-Create `ch4c.ps1` with ch4c.exe command line parameters:
-```powershell
-Start-Process -WindowStyle hidden -FilePath "(YOUR-PATH)\ch4c.exe" -ArgumentList "-t", "2443", "--channels-url", "http://192.168.50.50", "--encoder", "http://192.168.50.71/live/stream0:24.42:0:0:Encoder", "--encoder", "http://192.168.50.72/live/stream1:24.43:1920:0:MACROSILICON"
-```
-
-**Option 3: Using a batch file e.g. runme.bat (Simplest)**
-
-Create `ch4c.ps1` calling the `runme.bat` file:
-```powershell
-Start-Process -WindowStyle hidden -FilePath "(YOUR-PATH)\runme.bat"
-```
-
-Sample `runme.bat` with logging:
-```batch
-cd (YOUR-PATH)
-
-@echo ***Waiting 30 seconds for system to stabilize on startup...
-timeout /t 30
-
-@echo ***Running ch4c and capture logs in .\data\ch4c.log
-powershell -Command "ch4c.exe 2>&1 | Tee-Object -FilePath .\data\ch4c.log -Append"
-```
-
-**Creating the Task Scheduler task:**
-
-1. Create a new task to run `ch4c.ps1`
-2. Leave "Run with highest privileges" **UNCHECKED** (Chrome security doesn't like the browser running with highest privileges)
-3. Set trigger to "When the user logs on" (required to ensure browser has GPU access)
-4. Run the new task manually to test
 
 ---
 
@@ -266,22 +253,6 @@ CH4C includes a built-in VNC viewer at `http://<CH4C_IP>:<CH4C_PORT>/remote-acce
 For better clipboard functionality and security, enable HTTPS in [Settings](#settings). See [HTTPS_SETUP.md](HTTPS_SETUP.md) and [REMOTE_ACCESS_SETUP.md](REMOTE_ACCESS_SETUP.md) for details.
 
 ![Remote Access with VNC](./assets/remoteaccess.jpg)
-
----
-
-## Alternative: Manual M3U Configuration
-
-If you prefer not to use the M3U Manager, you can manually create a custom channel source in Channels DVR:
-
-1. Go to Channels DVR Settings → Sources
-2. Add a new custom channel
-3. Set Stream Format to `MPEG-TS`
-4. Add channel entries using M3U format (see [samples.m3u](./assets/samples.m3u))
-5. For linear channels (e.g., NFL Network), map the channel for guide data if needed
-
-> **Note**: In the example below, 192.168.50.71 is the encoder IP and 192.168.50.50 is the CH4C server IP.
-
-![Channel Setup in Channels DVR](./assets/channelsetup.jpg)
 
 ---
 
