@@ -197,6 +197,7 @@ Navigate to `http://<CH4C_IP>:<CH4C_PORT>/settings` to configure:
 
 Navigate to `http://<CH4C_IP>:<CH4C_PORT>/m3u-manager` to:
 - Synchronize the channel guide from Sling TV (Favorites only recommended)
+- Add popular network channels (ESPN, FX, Disney, NBC, and more) from the Networks tab
 - Create custom channels for any streaming service with deep links
 - Search for station IDs by callsign or channel name
 
@@ -212,24 +213,9 @@ Navigate to `http://<CH4C_IP>:<CH4C_PORT>/m3u-manager` to:
 |:------------------:|:--------------:|
 | ![Add Custom Channel](./assets/addcustomchannel.jpg) | ![Station Lookup](./assets/stationlookup.jpg) |
 
-#### Sample Custom Channel URLs
+**Use the Networks tab to quickly add popular channels like ESPN, FX, Disney, NBC, TBS, TNT, Discovery, and more.** You can also add any custom channel URL using the Add Custom Channel button.
 
-| Channel | URL |
-|---------|-----|
-| ESPN | `https://www.espn.com/watch/player?network=espn` |
-| ESPN2 | `https://www.espn.com/watch/player?network=espn2` |
-| Disney | `https://disneynow.com/watch-live?brand=004` |
-| Disney XD | `https://disneynow.com/watch-live?brand=009` |
-| Disney Jr | `https://disneynow.com/watch-live?brand=008` |
-| FX | `https://fxnow.fxnetworks.com/watch-live/93256af4-5e80-4558-aa2e-2bdfffa119a0` |
-| FXX | `https://fxnow.fxnetworks.com/watch-live/49f4a471-8d36-4728-8457-ea65cbbc84ea` |
-| FXM | `https://fxnow.fxnetworks.com/watch-live/d298ab7e-c6b1-4efa-ac6e-a52dceed92ee` |
-| NGC | `https://www.nationalgeographic.com/tv/watch-live/0826a9a3-3384-4bb5-8841-91f01cb0e3a7` |
-| NGC Wild | `https://www.nationalgeographic.com/tv/watch-live/239b9590-583f-4955-a499-22e9eefff9cf` |
-| NBC KUSA | `https://www.nbc.com/live?brand=nbc&callsign=KUSA` |
-| NBC News Now | `https://nbc.com/live?brand=nbc-news&callsign=nbcnews` |
-| Bravo | `https://www.nbc.com/live?brand=bravo&callsign=BRAVOHD` |
-| FreeForm | `https://abc.com/watch-live/885c669e-fa9a-4039-b42e-6c85c90cc86d` |
+![Networks Tab](./assets/m3unetworks.jpg)
 
 See [samples.m3u](./assets/samples.m3u) for additional examples including Sling TV, NBC.com, Spectrum, and Peacock ([Peacock link format](https://community.getchannels.com/t/adbtuner-a-channel-tuning-application-for-networked-google-tv-android-tv-devices/36822/1895)).
 
@@ -291,6 +277,10 @@ This works surprisingly well, though streaming providers may have occasional gli
   Example M3U URL with customization parameters entered in Secondary Channels DVR as a new [Custom Channel](https://getchannels.com/docs/channels-dvr-server/how-to/custom-channels/) M3U Source:
   ```
   http://<TAILSCALE-CHANNELSDVR-IP>:8089/devices/<SOURCENAME>/channels.m3u?format=hls&bitrate=5000&codec=h264&acodec=copy
+  ```
+  Be sure to also setup the XMLTV Guide Data field too:
+  ```
+  http://<TAILSCALE-CHANNELSDVR-IP>:8089/devices/<SOURCENAME>/guide/xmltv?duration=1209600
   ```
 
 ---

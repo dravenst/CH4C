@@ -1148,6 +1148,44 @@ async function setupBrowserAudio(page, encoderConfig, targetUrl = null) {
     } finally {
       clearInterval(activityUpdateInterval);
     }
+  } else if (targetUrl && targetUrl.includes("tbs.com")) {
+    // TBS requires clicking the play button before video loads
+    logTS("TBS detected, clicking play button to start video");
+
+    for (let i = 0; i < 10; i++) {
+      const found = await page.evaluate(() => {
+        const btn = document.querySelector('span.tui-play.tui-btn');
+        if (btn) {
+          btn.click();
+          return true;
+        }
+        return false;
+      });
+      if (found) {
+        logTS("TBS play button clicked");
+        break;
+      }
+      await delay(500);
+    }
+
+    // Now wait for video to load after play was clicked
+    const activityUpdateInterval = setInterval(() => {
+      if (global.streamMonitor && encoderConfig && encoderConfig.url) {
+        const stream = global.streamMonitor.activeStreams.get(encoderConfig.url);
+        if (stream) {
+          global.streamMonitor.updateActivity(encoderConfig.url);
+        }
+      }
+    }, 10000);
+
+    try {
+      await page.waitForFunction(() => {
+        const videos = window.checkForVideos();
+        return videos.length > 0 && videos.some(v => v.readyState >= 2);
+      }, { timeout: 30000 });
+    } finally {
+      clearInterval(activityUpdateInterval);
+    }
   } else {
     // Other non-Sling sites use original logic
     const activityUpdateInterval = setInterval(() => {
@@ -2823,6 +2861,478 @@ async function fullScreenVideoNatGeo(page) {
 
   logTS(`NatGeo play status: ${playResult}`);
   logTS("finished NatGeo fullscreen setup");
+}
+
+async function fullScreenVideoDiscovery(page) {
+  logTS("URL contains Discovery, setting up fullscreen");
+
+  // Wait for video element to have enough data to play (readyState >= 3)
+  let videoReady = false;
+  for (let i = 0; i < 10; i++) {
+    try {
+      videoReady = await page.evaluate(() => {
+        const videos = document.querySelectorAll('video');
+        for (const video of videos) {
+          if (video.readyState >= 3) return true;
+        }
+        return false;
+      });
+      if (videoReady) {
+        logTS("Discovery video ready (readyState >= 3)");
+        break;
+      }
+    } catch (e) {
+      // Continue waiting
+    }
+    await delay(500);
+  }
+
+  if (!videoReady) {
+    logTS("Discovery video not ready after timeout, continuing anyway");
+  }
+
+  // Move mouse to center of viewport to trigger player controls
+  try {
+    const viewport = page.viewport();
+    const centerX = viewport ? viewport.width / 2 : 640;
+    const centerY = viewport ? viewport.height / 2 : 360;
+    await page.mouse.move(centerX, centerY);
+    await delay(500);
+  } catch (e) {
+    logTS("Could not move mouse to show controls: " + e.message);
+  }
+
+  // Get volume button position for hover, then handle volume slider
+  const result = await page.evaluate(() => {
+    const results = { volume: 'not found' };
+
+    const volumeBtn = document.querySelector('button[aria-label="Volume"]');
+    if (volumeBtn) {
+      const rect = volumeBtn.getBoundingClientRect();
+      results.volumeButtonRect = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+      results.volume = 'found';
+    }
+
+    return results;
+  });
+
+  // Hover over volume button to reveal vertical slider, then click at top
+  if (result.volumeButtonRect) {
+    const volBtnCenterX = result.volumeButtonRect.x + result.volumeButtonRect.width / 2;
+    const volBtnCenterY = result.volumeButtonRect.y + result.volumeButtonRect.height / 2;
+    await page.mouse.move(volBtnCenterX, volBtnCenterY);
+    await delay(500);
+
+    const volInfo = await page.evaluate(() => {
+      const slider = document.querySelector('div[aria-label="Volume Slider"]');
+      if (slider) {
+        const currentVolume = slider.getAttribute('aria-valuenow');
+        const rect = slider.getBoundingClientRect();
+        return { currentVolume, x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+      }
+      return null;
+    });
+
+    if (volInfo && volInfo.height > 0) {
+      // Vertical slider - click near the top for max volume
+      const clickX = volInfo.x + volInfo.width / 2;
+      const clickY = volInfo.y + 2;
+      await page.mouse.click(clickX, clickY);
+      logTS(`Discovery volume: clicked slider at top for max (was ${volInfo.currentVolume}%)`);
+    } else {
+      logTS(`Discovery volume: slider not visible`);
+    }
+  } else {
+    logTS(`Discovery volume: volume button not found`);
+  }
+
+  // Move mouse away then click fullscreen
+  try {
+    const viewport = page.viewport();
+    const centerX = viewport ? viewport.width / 2 : 640;
+    const centerY = viewport ? viewport.height / 2 : 360;
+    await page.mouse.move(centerX, centerY);
+    await delay(300);
+  } catch (e) {
+    // Continue
+  }
+
+  const fullscreenResult = await page.evaluate(() => {
+    const btn = document.querySelector('button[aria-label="Fullscreen"]');
+    if (btn) {
+      btn.click();
+      return 'clicked';
+    }
+    return 'not found';
+  });
+
+  logTS(`Discovery fullscreen status: ${fullscreenResult}`);
+  logTS("finished Discovery fullscreen setup");
+}
+
+async function fullScreenVideoCBS(page) {
+  logTS("URL contains CBS, setting up fullscreen");
+
+  // Wait for video element to have enough data to play (readyState >= 3)
+  let videoReady = false;
+  for (let i = 0; i < 10; i++) {
+    try {
+      videoReady = await page.evaluate(() => {
+        const videos = document.querySelectorAll('video');
+        for (const video of videos) {
+          if (video.readyState >= 3) return true;
+        }
+        return false;
+      });
+      if (videoReady) {
+        logTS("CBS video ready (readyState >= 3)");
+        break;
+      }
+    } catch (e) {
+      // Continue waiting
+    }
+    await delay(500);
+  }
+
+  if (!videoReady) {
+    logTS("CBS video not ready after timeout, continuing anyway");
+  }
+
+  // Move mouse to center of viewport to trigger player controls
+  try {
+    const viewport = page.viewport();
+    const centerX = viewport ? viewport.width / 2 : 640;
+    const centerY = viewport ? viewport.height / 2 : 360;
+    await page.mouse.move(centerX, centerY);
+    await delay(500);
+  } catch (e) {
+    logTS("Could not move mouse to show controls: " + e.message);
+  }
+
+  // Get volume button position for hover, then handle volume slider
+  const result = await page.evaluate(() => {
+    const results = { mute: 'not found', volume: 'not found' };
+
+    // Check mute state - if mute_cross is visible (aria-hidden="false"), audio is muted
+    const muteBtn = document.querySelector('button.btn-volume');
+    if (muteBtn) {
+      const muteCross = muteBtn.querySelector('.mute_cross');
+      if (muteCross && muteCross.getAttribute('aria-hidden') === 'false') {
+        // Currently muted, click to unmute
+        muteBtn.click();
+        results.mute = 'was muted, clicked unmute';
+      } else {
+        results.mute = 'already unmuted';
+      }
+      const rect = muteBtn.getBoundingClientRect();
+      results.volumeButtonRect = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+    }
+
+    return results;
+  });
+
+  logTS(`CBS mute status: ${result.mute}`);
+
+  // Hover over volume button to reveal vertical slider, then click at top for max
+  if (result.volumeButtonRect) {
+    const volBtnCenterX = result.volumeButtonRect.x + result.volumeButtonRect.width / 2;
+    const volBtnCenterY = result.volumeButtonRect.y + result.volumeButtonRect.height / 2;
+    await page.mouse.move(volBtnCenterX, volBtnCenterY);
+    await delay(500);
+
+    const volInfo = await page.evaluate(() => {
+      const slider = document.querySelector('.volume-slider-li-content-progress-content');
+      if (slider) {
+        // Get the parent container for the full slider area
+        const container = slider.parentElement;
+        if (container) {
+          const rect = container.getBoundingClientRect();
+          const currentHeight = slider.style.height || '0%';
+          return { currentVolume: currentHeight, x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+        }
+      }
+      return null;
+    });
+
+    if (volInfo && volInfo.height > 0) {
+      // Vertical slider - click near the top for max volume
+      const clickX = volInfo.x + volInfo.width / 2;
+      const clickY = volInfo.y + 2;
+      await page.mouse.click(clickX, clickY);
+      logTS(`CBS volume: clicked slider at top for max (was ${volInfo.currentVolume})`);
+    } else {
+      logTS(`CBS volume: slider not visible`);
+    }
+  } else {
+    logTS(`CBS volume: volume button not found`);
+  }
+
+  // Move mouse away then click fullscreen
+  try {
+    const viewport = page.viewport();
+    const centerX = viewport ? viewport.width / 2 : 640;
+    const centerY = viewport ? viewport.height / 2 : 360;
+    await page.mouse.move(centerX, centerY);
+    await delay(300);
+  } catch (e) {
+    // Continue
+  }
+
+  const fullscreenResult = await page.evaluate(() => {
+    const btn = document.querySelector('button.btn-fullscreen');
+    if (btn) {
+      btn.click();
+      return 'clicked';
+    }
+    return 'not found';
+  });
+
+  logTS(`CBS fullscreen status: ${fullscreenResult}`);
+  logTS("finished CBS fullscreen setup");
+}
+
+async function fullScreenVideoAETV(page) {
+  logTS("URL contains AETV, setting up fullscreen");
+
+  // Wait for video element to have enough data to play (readyState >= 3)
+  let videoReady = false;
+  for (let i = 0; i < 10; i++) {
+    try {
+      videoReady = await page.evaluate(() => {
+        const videos = document.querySelectorAll('video');
+        for (const video of videos) {
+          if (video.readyState >= 3) return true;
+        }
+        return false;
+      });
+      if (videoReady) {
+        logTS("AETV video ready (readyState >= 3)");
+        break;
+      }
+    } catch (e) {
+      // Continue waiting
+    }
+    await delay(500);
+  }
+
+  if (!videoReady) {
+    logTS("AETV video not ready after timeout, continuing anyway");
+  }
+
+  // Move mouse to center of viewport to trigger player controls
+  try {
+    const viewport = page.viewport();
+    const centerX = viewport ? viewport.width / 2 : 640;
+    const centerY = viewport ? viewport.height / 2 : 360;
+    await page.mouse.move(centerX, centerY);
+    await delay(300);
+    await page.mouse.click(centerX, centerY);
+    await delay(500);
+    await page.mouse.move(centerX, centerY - 100);
+    await delay(300);
+  } catch (e) {
+    logTS("Could not move mouse to show controls: " + e.message);
+  }
+
+  // Handle unmute - check aria-label on the volume icon
+  const result = await page.evaluate(() => {
+    const results = { mute: 'not found' };
+
+    const muteImg = document.querySelector('img[aria-label="Mute"], img[aria-label="Unmute"]');
+    if (muteImg) {
+      if (muteImg.getAttribute('aria-label') === 'Unmute') {
+        muteImg.click();
+        results.mute = 'was muted, clicked unmute';
+      } else {
+        results.mute = 'already unmuted';
+      }
+      // Get the parent button/container position for hover
+      const parent = muteImg.parentElement;
+      if (parent) {
+        const rect = parent.getBoundingClientRect();
+        results.muteButtonRect = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+      }
+    }
+
+    return results;
+  });
+
+  logTS(`AETV mute status: ${result.mute}`);
+
+  // Set volume to max: hover over mute button to reveal volume bar, then click far right
+  if (result.muteButtonRect) {
+    const muteCenterX = result.muteButtonRect.x + result.muteButtonRect.width / 2;
+    const muteCenterY = result.muteButtonRect.y + result.muteButtonRect.height / 2;
+    await page.mouse.move(muteCenterX, muteCenterY);
+    await delay(500);
+
+    const volInfo = await page.evaluate(() => {
+      const volumeLevel = document.querySelector('#volume-level');
+      if (volumeLevel) {
+        const currentWidth = volumeLevel.style.width;
+        // Get the parent container which represents the full volume bar track
+        const bar = volumeLevel.parentElement;
+        if (bar) {
+          const rect = bar.getBoundingClientRect();
+          return { currentVolume: currentWidth, x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+        }
+      }
+      return null;
+    });
+
+    if (volInfo && volInfo.width > 0) {
+      const clickX = volInfo.x + volInfo.width - 2;
+      const clickY = volInfo.y + volInfo.height / 2;
+      await page.mouse.click(clickX, clickY);
+      logTS(`AETV volume: clicked bar at max position (was ${volInfo.currentVolume})`);
+    } else {
+      logTS(`AETV volume: volume bar not visible`);
+    }
+  } else {
+    logTS(`AETV volume: mute button not found`);
+  }
+
+  // Move mouse away then click fullscreen
+  try {
+    const viewport = page.viewport();
+    const centerX = viewport ? viewport.width / 2 : 640;
+    const centerY = viewport ? viewport.height / 2 : 360;
+    await page.mouse.move(centerX, centerY);
+    await delay(300);
+  } catch (e) {
+    // Continue
+  }
+
+  const fullscreenResult = await page.evaluate(() => {
+    const btn = document.querySelector('img[aria-label="Show Fullscreen"]');
+    if (btn) {
+      btn.click();
+      return 'clicked';
+    }
+    return 'not found';
+  });
+
+  logTS(`AETV fullscreen status: ${fullscreenResult}`);
+  logTS("finished AETV fullscreen setup");
+}
+
+async function fullScreenVideoTBS(page) {
+  logTS("URL contains TBS, setting up fullscreen");
+
+  // Wait for video element to have enough data to play (readyState >= 3)
+  let videoReady = false;
+  for (let i = 0; i < 10; i++) {
+    try {
+      videoReady = await page.evaluate(() => {
+        const videos = document.querySelectorAll('video');
+        for (const video of videos) {
+          if (video.readyState >= 3) return true;
+        }
+        return false;
+      });
+      if (videoReady) {
+        logTS("TBS video ready (readyState >= 3)");
+        break;
+      }
+    } catch (e) {
+      // Continue waiting
+    }
+    await delay(500);
+  }
+
+  if (!videoReady) {
+    logTS("TBS video not ready after timeout, continuing anyway");
+  }
+
+  // Move mouse to center of viewport to trigger player controls
+  try {
+    const viewport = page.viewport();
+    const centerX = viewport ? viewport.width / 2 : 640;
+    const centerY = viewport ? viewport.height / 2 : 360;
+    await page.mouse.move(centerX, centerY);
+    await delay(300);
+    await page.mouse.click(centerX, centerY);
+    await delay(500);
+    await page.mouse.move(centerX, centerY - 100);
+    await delay(300);
+  } catch (e) {
+    logTS("Could not move mouse to show controls: " + e.message);
+  }
+
+  // Handle unmute - check aria-label to determine mute state
+  const result = await page.evaluate(() => {
+    const results = { mute: 'not found' };
+
+    const muteButton = document.querySelector('span.tui-volume__button.tui-btn');
+    if (muteButton) {
+      const label = muteButton.getAttribute('aria-label');
+      if (label === 'Unmute') {
+        muteButton.click();
+        results.mute = 'was muted, clicked unmute';
+      } else {
+        results.mute = 'already unmuted';
+      }
+      const rect = muteButton.getBoundingClientRect();
+      results.muteButtonRect = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+    }
+
+    return results;
+  });
+
+  logTS(`TBS mute status: ${result.mute}`);
+
+  // Set volume to max: hover over mute button to reveal volume bar, then click far right
+  if (result.muteButtonRect) {
+    const muteCenterX = result.muteButtonRect.x + result.muteButtonRect.width / 2;
+    const muteCenterY = result.muteButtonRect.y + result.muteButtonRect.height / 2;
+    await page.mouse.move(muteCenterX, muteCenterY);
+    await delay(500);
+
+    const volInfo = await page.evaluate(() => {
+      const bar = document.querySelector('.tui-volume__bar');
+      if (bar) {
+        const rect = bar.getBoundingClientRect();
+        const activeBar = document.querySelector('.tui-volume__active-bar');
+        const currentWidth = activeBar ? activeBar.style.width : 'unknown';
+        return { currentVolume: currentWidth, x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+      }
+      return null;
+    });
+
+    if (volInfo && volInfo.width > 0) {
+      const clickX = volInfo.x + volInfo.width - 2;
+      const clickY = volInfo.y + volInfo.height / 2;
+      await page.mouse.click(clickX, clickY);
+      logTS(`TBS volume: clicked bar at max position (was ${volInfo.currentVolume})`);
+    } else {
+      logTS(`TBS volume: volume bar not visible`);
+    }
+  } else {
+    logTS(`TBS volume: mute button not found`);
+  }
+
+  // Move mouse away then click fullscreen
+  try {
+    const viewport = page.viewport();
+    const centerX = viewport ? viewport.width / 2 : 640;
+    const centerY = viewport ? viewport.height / 2 : 360;
+    await page.mouse.move(centerX, centerY);
+    await delay(300);
+  } catch (e) {
+    // Continue
+  }
+
+  const fullscreenResult = await page.evaluate(() => {
+    const btn = document.querySelector('span.tui-fullscreen.tui-btn');
+    if (btn) {
+      btn.click();
+      return 'clicked';
+    }
+    return 'not found';
+  });
+
+  logTS(`TBS fullscreen status: ${fullscreenResult}`);
+  logTS("finished TBS fullscreen setup");
 }
 
 async function fullScreenVideoYouTube(page) {
@@ -5126,6 +5636,18 @@ async function handleSiteSpecificFullscreen(targetUrl, page, encoderConfig = nul
     } else if (targetUrl.includes("nationalgeographic.com")) {
       logTS("Handling National Geographic video");
       await fullScreenVideoNatGeo(page);
+    } else if (targetUrl.includes("tbs.com")) {
+      logTS("Handling TBS video");
+      await fullScreenVideoTBS(page);
+    } else if (targetUrl.includes("play.aetv.com")) {
+      logTS("Handling AETV video");
+      await fullScreenVideoAETV(page);
+    } else if (targetUrl.includes("go.discovery.com")) {
+      logTS("Handling Discovery video");
+      await fullScreenVideoDiscovery(page);
+    } else if (targetUrl.includes("cbs.com")) {
+      logTS("Handling CBS video");
+      await fullScreenVideoCBS(page);
     } else {
       logTS("Handling default video");
       await fullScreenVideo(page);

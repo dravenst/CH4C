@@ -3115,6 +3115,90 @@ const M3U_MANAGER_PAGE_HTML = `
             border-bottom-color: #667eea;
         }
 
+        .networks-panel {
+            display: none;
+        }
+
+        .networks-panel.active {
+            display: block;
+        }
+
+        .network-group {
+            margin-bottom: 24px;
+        }
+
+        .network-group h3 {
+            font-size: 16px;
+            color: #2d3748;
+            margin: 0 0 12px 0;
+            padding-bottom: 6px;
+            border-bottom: 1px solid #e2e8f0;
+        }
+
+        .network-cards {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+            gap: 12px;
+        }
+
+        .network-card {
+            background: #f7fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .network-card .network-name {
+            font-weight: 600;
+            color: #2d3748;
+            font-size: 15px;
+        }
+
+        .network-card .network-category {
+            font-size: 12px;
+            color: #718096;
+        }
+
+        .network-card .btn-add {
+            margin-top: auto;
+            padding: 6px 12px;
+            font-size: 13px;
+        }
+
+        .network-card .btn-added {
+            background: #c6f6d5;
+            color: #276749;
+            border: 1px solid #9ae6b4;
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: default;
+            margin-top: auto;
+        }
+
+        .network-card .callsign-input {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+        }
+
+        .network-card .callsign-input input {
+            width: 80px;
+            padding: 4px 8px;
+            font-size: 13px;
+            border: 1px solid #cbd5e0;
+            border-radius: 4px;
+        }
+
+        .network-card .callsign-input label {
+            font-size: 12px;
+            color: #718096;
+        }
+
         .m3u-url-box {
             background: #edf2f7;
             padding: 12px;
@@ -3376,6 +3460,7 @@ const M3U_MANAGER_PAGE_HTML = `
         <div class="service-tabs">
             <button class="tab active" data-service="all" onclick="switchTab('all')">All Channels</button>
             <button class="tab" data-service="sling" onclick="switchTab('sling')">Sling TV</button>
+            <button class="tab" data-service="networks" onclick="switchTab('networks')">Networks</button>
             <button class="tab" data-service="custom" onclick="switchTab('custom')">Custom Entries</button>
         </div>
 
@@ -3393,7 +3478,12 @@ const M3U_MANAGER_PAGE_HTML = `
             </label>
         </div>
 
-        <div class="table-container">
+        <div id="networksPanel" class="networks-panel">
+            <p style="color: #718096; margin-bottom: 16px;">Select network channels to add to your Custom Channels list. Channels already added will show as "Added".</p>
+            <div id="networksContent"></div>
+        </div>
+
+        <div class="table-container" id="channelsTableContainer">
             <table id="channelsTable">
                 <thead>
                     <tr>
@@ -3660,6 +3750,32 @@ const M3U_MANAGER_PAGE_HTML = `
         let currentSort = { field: null, direction: 'asc' };
         let showEnabledOnly = false;
 
+        const KNOWN_NETWORKS = [
+            { group: 'ESPN', name: 'ESPN', url: 'https://www.espn.com/watch/player?network=espn', category: 'Sports', callSign: 'ESPN' },
+            { group: 'ESPN', name: 'ESPN2', url: 'https://www.espn.com/watch/player?network=espn2', category: 'Sports', callSign: 'ESPN2HD' },
+            { group: 'ESPN', name: 'SEC Network', url: 'https://www.espn.com/watch/player?network=sec', category: 'Sports', callSign: 'SEC' },
+            { group: 'ESPN', name: 'ACC Network', url: 'https://www.espn.com/watch/player?network=acc', category: 'Sports', callSign: 'ACCN' },
+            { group: 'ESPN', name: 'ESPNU', url: 'https://www.espn.com/watch/player?network=espnu', category: 'Sports', callSign: 'ESPNUHD' },
+            { group: 'Disney', name: 'Disney', url: 'https://disneynow.com/watch-live?brand=004', category: 'Children', callSign: 'DISN' },
+            { group: 'Disney', name: 'Disney XD', url: 'https://disneynow.com/watch-live?brand=009', category: 'Children', callSign: 'DISNXD', stationId: '16563' },
+            { group: 'Disney', name: 'Disney Jr', url: 'https://disneynow.com/watch-live?brand=008', category: 'Children', callSign: 'DISJNR', stationId: '24761' },
+            { group: 'FX Networks', name: 'FX', url: 'https://fxnow.fxnetworks.com/watch-live/93256af4-5e80-4558-aa2e-2bdfffa119a0', category: 'Drama', callSign: 'FX' },
+            { group: 'FX Networks', name: 'FXX', url: 'https://fxnow.fxnetworks.com/watch-live/49f4a471-8d36-4728-8457-ea65cbbc84ea', category: 'Drama', callSign: 'FXX' },
+            { group: 'FX Networks', name: 'FXM', url: 'https://fxnow.fxnetworks.com/watch-live/d298ab7e-c6b1-4efa-ac6e-a52dceed92ee', category: 'Movies', callSign: 'FXM' },
+            { group: 'National Geographic', name: 'NGC', url: 'https://www.nationalgeographic.com/tv/watch-live/0826a9a3-3384-4bb5-8841-91f01cb0e3a7', category: 'Other', callSign: 'NGC' },
+            { group: 'National Geographic', name: 'NGC Wild', url: 'https://www.nationalgeographic.com/tv/watch-live/239b9590-583f-4955-a499-22e9eefff9cf', category: 'Other', callSign: 'NGWILD', stationId: '66804' },
+            { group: 'TBS/TNT', name: 'TBS', url: 'https://www.tbs.com/watchtbs/east', category: 'Other', callSign: 'TBS' },
+            { group: 'TBS/TNT', name: 'TNT', url: 'https://www.tntdrama.com/watchtnt/east', category: 'Drama', callSign: 'TNT' },
+            { group: 'NBC', name: 'NBC Local', url: 'https://www.nbc.com/live?brand=nbc&callsign=', category: 'Other', callSign: '', needsCallsign: true, callsignInUrl: true },
+            { group: 'NBC', name: 'NBC News Now', url: 'https://nbc.com/live?brand=nbc-news&callsign=nbcnews', category: 'News', callSign: 'NBCNEWS' },
+            { group: 'NBC', name: 'Bravo', url: 'https://www.nbc.com/live?brand=bravo&callsign=bravo_east', category: 'Drama', callSign: 'BRAVOHD' },
+            { group: 'ABC', name: 'FreeForm', url: 'https://abc.com/watch-live/885c669e-fa9a-4039-b42e-6c85c90cc86d', category: 'Drama', callSign: 'FREE' },
+            { group: 'A&E', name: 'A&E', url: 'https://play.aetv.com/live', category: 'Other', callSign: 'AETV' },
+            { group: 'Discovery', name: 'Discovery', url: 'https://go.discovery.com/channel/discovery', category: 'Other', callSign: 'DSC' },
+            { group: 'Discovery', name: 'Travel Channel', url: 'https://go.discovery.com/channel/travel-channel', category: 'Other', callSign: 'TRAV' },
+            { group: 'CBS', name: 'CBS Local', url: 'https://www.cbs.com/live-tv/stream/', category: 'Other', callSign: '', needsCallsign: true }
+        ];
+
         // Load channels on page load
         document.addEventListener('DOMContentLoaded', () => {
             loadChannels();
@@ -3773,12 +3889,129 @@ const M3U_MANAGER_PAGE_HTML = `
             document.querySelectorAll('.tab').forEach(tab => {
                 tab.classList.toggle('active', tab.dataset.service === service);
             });
-            renderChannels();
+
+            const networksPanel = document.getElementById('networksPanel');
+            const tableContainer = document.getElementById('channelsTableContainer');
+            const actionsBar = document.querySelector('.actions-bar');
+
+            if (service === 'networks') {
+                networksPanel.classList.add('active');
+                tableContainer.style.display = 'none';
+                actionsBar.style.display = 'none';
+                renderNetworksPanel();
+            } else {
+                networksPanel.classList.remove('active');
+                tableContainer.style.display = '';
+                actionsBar.style.display = '';
+                renderChannels();
+            }
         }
 
         function toggleEnabledFilter() {
             showEnabledOnly = document.getElementById('showEnabledOnly').checked;
             renderChannels();
+        }
+
+        function renderNetworksPanel() {
+            const container = document.getElementById('networksContent');
+            const groups = {};
+
+            KNOWN_NETWORKS.forEach((net, idx) => {
+                if (!groups[net.group]) groups[net.group] = [];
+                groups[net.group].push({ ...net, index: idx });
+            });
+
+            // Check which networks are already added (exact URL match against custom channels)
+            const addedUrls = allChannels
+                .filter(ch => ch.service === 'custom')
+                .map(ch => {
+                    try {
+                        const streamUrl = ch.streamUrl || '';
+                        const urlParam = new URLSearchParams(streamUrl.split('?').slice(1).join('?')).get('url');
+                        return urlParam ? decodeURIComponent(urlParam) : streamUrl;
+                    } catch { return ch.streamUrl || ''; }
+                });
+
+            let html = '';
+            for (const [groupName, channels] of Object.entries(groups)) {
+                html += \`<div class="network-group"><h3>\${groupName}</h3><div class="network-cards">\`;
+                channels.forEach(net => {
+                    const isAdded = !net.needsCallsign && addedUrls.some(u => u === net.url);
+                    html += \`<div class="network-card">
+                        <div class="network-name">\${net.name}</div>
+                        <div class="network-category">\${net.category}</div>\`;
+
+                    if (net.needsCallsign) {
+                        html += \`<div class="callsign-input">
+                            <label>Callsign:</label>
+                            <input type="text" id="networkCallsign_\${net.index}" placeholder="e.g., KUSA" style="text-transform: uppercase;">
+                        </div>
+                        <button class="btn btn-primary btn-add" onclick="addNetworkChannel(\${net.index})">Add to Channels</button>\`;
+                    } else if (isAdded) {
+                        html += \`<div class="btn-added">Added</div>\`;
+                    } else {
+                        html += \`<button class="btn btn-primary btn-add" onclick="addNetworkChannel(\${net.index})">Add to Channels</button>\`;
+                    }
+
+                    html += \`</div>\`;
+                });
+                html += \`</div></div>\`;
+            }
+
+            container.innerHTML = html;
+        }
+
+        async function addNetworkChannel(index) {
+            const net = KNOWN_NETWORKS[index];
+            let streamUrl = net.url;
+            let channelName = net.name;
+            let callSign = net.callSign;
+
+            if (net.needsCallsign) {
+                const input = document.getElementById('networkCallsign_' + index);
+                const callsign = (input ? input.value.trim().toUpperCase() : '');
+                if (!callsign) {
+                    alert('Please enter your local callsign (e.g., KUSA, WNBC, KNBC).');
+                    return;
+                }
+                streamUrl = net.callsignInUrl ? net.url + callsign : net.url;
+                channelName = net.name.replace(' Local', '') + ' ' + callsign;
+                callSign = callsign;
+            }
+
+            const ch4cAddress = window.location.hostname;
+            const fullStreamUrl = \`http://\${ch4cAddress}:${CH4C_PORT}/stream?url=\${encodeURIComponent(streamUrl)}\`;
+
+            const channelData = {
+                name: channelName,
+                streamUrl: fullStreamUrl,
+                channelNumber: null,
+                stationId: net.stationId || null,
+                duration: null,
+                category: net.category,
+                logo: null,
+                callSign: callSign
+            };
+
+            try {
+                const response = await fetch('/m3u-manager/custom', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(channelData)
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+                    throw new Error(errorData.error || 'Failed to add channel');
+                }
+
+                await loadChannels();
+                await loadStatus();
+                renderNetworksPanel();
+            } catch (error) {
+                console.error('Error adding network channel:', error);
+                alert('Error adding channel: ' + error.message);
+            }
         }
 
         let pendingRefreshService = null;
