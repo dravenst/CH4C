@@ -44,7 +44,7 @@ This project merges elements of the excellent [Chrome Capture for Channels](http
 Follow the guidelines in the [Channels community thread](https://community.getchannels.com/t/linkpi-encoder-family/38860/4) to configure the encoders:
 
 1. Connect your PC HDMI port(s) to the external encoder box
-2. Set the encoder to 30fps 1920x1080 (to match the streaming services), and test CBR/VBR/AVBR and bitrate (minimum 8,000 recommended) to your preference.  The LinkPi ENC1-v3 USB 2.0 input only supports 30fps so set your encoder appropriately.
+2. Set the encoder to 60fps or 30fps 1920x1080 (to match the streaming services), and test CBR/VBR/AVBR and bitrate (minimum 8,000 recommended) to your preference.  The secondary USB 2.0 LinkPi ENC1-v3 input only supports 30fps so set your encoder appropriately.
 3. Set PC display(s) to 1920x1080 @ 60Hz.  Optionally, in Intel Graphics Command Center, set Quantization Range to "Full" for better black levels
 
 See [example LinkPi encoder settings](./assets/linkpi-encoder-settings.jpg) for a recommended configuration.
