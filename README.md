@@ -20,6 +20,7 @@ This project merges elements of the excellent [Chrome Capture for Channels](http
 - [Advanced Configuration](#advanced-configuration)
 - [Web Interface](#web-interface)
   - [Home Page / Status Dashboard](#home-page--status-dashboard)
+  - [Login Manager](#login-manager)
   - [Settings](#settings)
   - [M3U Manager](#m3u-manager)
   - [Instant Recording](#instant-recording)
@@ -149,7 +150,9 @@ In Settings, click **+ Add Encoder** for each HDMI encoder:
 
 ### Step 6: Log In to Streaming Services
 
-Use [Remote Access](#remote-access) (`http://<CH4C_IP>:2442/remote-access`) to connect to the PC via the built-in VNC viewer. Log in to each streaming service (NBC, Sling, Disney+, etc.) in the encoder browser windows. Credentials are cached per encoder, but services may periodically require re-authentication.
+Use the **Login Manager** on the home page (`http://<CH4C_IP>:2442/`) to automatically log in to supported streaming services across all running encoder browsers at once. Select a service, enter credentials, and CH4C logs in to each encoder browser sequentially — skipping any that are already logged in.
+
+For services not listed in the Login Manager, use [Remote Access](#remote-access) (`http://<CH4C_IP>:2442/remote-access`) to log in manually via VNC. Credentials are cached per encoder in the browser profile but services may periodically require re-authentication.
 
 ![Remote Access VNC Viewer](./assets/remoteaccess.jpg)
 
@@ -182,6 +185,14 @@ Navigate to `http://<CH4C_IP>:<CH4C_PORT>/` to view:
 - How CH4C Works overview
 
 ![Status Dashboard](./assets/newstatuspage.jpg)
+
+### Login Manager
+
+The Login Manager is on the home page (`http://<CH4C_IP>:<CH4C_PORT>/`). It automates logging in to streaming services across all currently-running encoder browsers in sequence, skipping any that are already authenticated.
+
+Supported services include Sling TV, Peacock, Disney+, HBO Max, Prime Video, and TV Everywhere (TVE) services such as ABC, AMC, CBS, Discovery, Disney Now, ESPN, Fox, Fox Sports, FX, History Channel, NBC/Bravo, TBS, TNT, and USA Network. TVE services require your cable/satellite provider name (e.g. `Spectrum`, `Xfinity`, `DirecTV`) along with your provider credentials — the Login Manager searches for your provider and completes the authentication flow automatically.
+
+For services not listed, use [Remote Access](#remote-access) to log in manually via VNC.
 
 ### Settings
 

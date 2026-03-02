@@ -1037,8 +1037,13 @@ function setupBrowserCrashHandlers(browser, encoderUrl, recoveryManager, encoder
             }
           });
         }
-      } else if (target.type() === 'other' || target.type() === 'webworker' || target.type() === 'service_worker') {
-        logTS(`New ${target.type()} target created for ${encoderUrl}`);
+      } else if (target.type() === 'service_worker' || target.type() === 'webworker') {
+        // Log persistent workers (service workers, shared workers) — these are infrequent and
+        // can be useful for diagnosing streaming site auth/DRM issues.
+        // 'other' targets (transient background fetch/decode workers) are intentionally omitted:
+        // HLS players create and destroy them continuously for each segment download, producing
+        // dozens of log lines per second with no actionable information.
+        logTS(`New ${target.type()} [${target.url()}] for encoder ${encoderUrl}`);
       }
     } catch (err) {
       logTS(`Error setting up handlers for target in ${encoderUrl}: ${err.message}`);

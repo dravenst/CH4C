@@ -681,6 +681,8 @@ const START_PAGE_HTML = `
             border-bottom: 2px solid #e2e8f0;
         }
 
+        .lm-label { display: block; font-size: 12px; font-weight: 600; color: #4a5568; margin-bottom: 4px; }
+
         .status-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
@@ -837,6 +839,91 @@ const START_PAGE_HTML = `
         </div>
 
         <div class="section">
+            <h2 class="section-title">Login Manager</h2>
+            <p style="color:#718096;font-size:13px;margin-bottom:16px;">
+                Logs in to a streaming service across all currently-running encoder browsers in sequence.
+                Browsers that are already logged in are skipped automatically.
+            </p>
+
+            <!-- Service selector + direct credentials (direct sites only) -->
+            <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px;">
+                <div>
+                    <label class="lm-label">Service</label>
+                    <select id="lm-site" onchange="lmSiteChanged()" style="padding:7px 10px;border:1px solid #e2e8f0;border-radius:6px;font-size:13px;background:#fff;"><option value="">Loading...</option></select>
+                </div>
+                <div style="padding-bottom:8px;">
+                    <a id="lm-site-url" href="#" target="_blank" rel="noopener" style="display:none;font-size:12px;color:#667eea;text-decoration:none;"></a>
+                </div>
+            </div>
+            <div id="lm-direct-row" style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px;">
+                <div>
+                    <label class="lm-label">Username / Email</label>
+                    <input id="lm-username" type="text" placeholder="you@example.com" style="padding:7px 10px;border:1px solid #e2e8f0;border-radius:6px;font-size:13px;width:200px;">
+                </div>
+                <div style="position:relative;">
+                    <label class="lm-label">Password</label>
+                    <input id="lm-password" type="password" placeholder="password" style="padding:7px 36px 7px 10px;border:1px solid #e2e8f0;border-radius:6px;font-size:13px;width:180px;">
+                    <button onclick="lmTogglePwd('lm-password')" style="position:absolute;right:6px;bottom:6px;background:none;border:none;cursor:pointer;font-size:14px;padding:0;line-height:1;">👁</button>
+                </div>
+                <div>
+                    <label class="lm-label">Save Credential</label>
+                    <div style="display:flex;align-items:center;gap:8px;">
+                        <select id="lm-save-mode-direct" style="padding:5px 10px;border:1px solid #e2e8f0;border-radius:6px;font-size:13px;background:#fff;cursor:pointer;">
+                            <option value="no">No</option>
+                            <option value="site">This Service Only</option>
+                        </select>
+                        <span id="lm-saved-badge-direct" style="display:none;font-size:11px;background:#c6f6d5;color:#276749;padding:2px 8px;border-radius:10px;font-weight:600;">Saved</span>
+                        <button id="lm-clear-btn-direct" onclick="lmClearCredentials()" style="display:none;font-size:12px;background:none;border:1px solid #e53e3e;color:#e53e3e;border-radius:6px;padding:3px 10px;cursor:pointer;">Clear Saved</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- TV Provider fields (shown only for TVE sites) -->
+            <div id="lm-tve-row" style="display:none;background:#f7fafc;border-radius:8px;padding:12px;margin-bottom:12px;">
+                <p style="font-size:12px;color:#718096;margin:0 0 10px 0;">
+                    For TV Everywhere sites: enter your cable/satellite provider name as it appears in the service's provider search (e.g. "Spectrum", "Xfinity", "DirecTV").
+                </p>
+                <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;">
+                    <div>
+                        <label class="lm-label">TV Provider Name <span style="color:#718096;font-weight:400;">(search text)</span></label>
+                        <input id="lm-tve-provider" type="text" placeholder="e.g. Spectrum" style="padding:7px 10px;border:1px solid #e2e8f0;border-radius:6px;font-size:13px;width:180px;">
+                    </div>
+                    <div>
+                        <label class="lm-label">Provider Username</label>
+                        <input id="lm-tve-user" type="text" placeholder="cable provider login" style="padding:7px 10px;border:1px solid #e2e8f0;border-radius:6px;font-size:13px;width:180px;">
+                    </div>
+                    <div style="position:relative;">
+                        <label class="lm-label">Provider Password</label>
+                        <input id="lm-tve-pass" type="password" placeholder="password" style="padding:7px 36px 7px 10px;border:1px solid #e2e8f0;border-radius:6px;font-size:13px;width:180px;">
+                        <button onclick="lmTogglePwd('lm-tve-pass')" style="position:absolute;right:6px;bottom:6px;background:none;border:none;cursor:pointer;font-size:14px;padding:0;line-height:1;">👁</button>
+                    </div>
+                    <div>
+                        <label class="lm-label">Save Credential</label>
+                        <div style="display:flex;align-items:center;gap:8px;">
+                            <select id="lm-save-mode-tve" style="padding:5px 10px;border:1px solid #e2e8f0;border-radius:6px;font-size:13px;background:#fff;cursor:pointer;">
+                                <option value="no">No</option>
+                                <option value="site">This Service Only</option>
+                                <option value="tve">All TVE Services</option>
+                            </select>
+                            <span id="lm-saved-badge-tve" style="display:none;font-size:11px;background:#c6f6d5;color:#276749;padding:2px 8px;border-radius:10px;font-weight:600;">Saved</span>
+                            <button id="lm-clear-btn-tve" onclick="lmClearCredentials()" style="display:none;font-size:12px;background:none;border:1px solid #e53e3e;color:#e53e3e;border-radius:6px;padding:3px 10px;cursor:pointer;">Clear Saved</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <button id="lm-btn" onclick="startLoginManager()" style="background:linear-gradient(135deg,#667eea,#764ba2);color:white;border:none;border-radius:8px;padding:10px 20px;font-size:14px;font-weight:600;cursor:pointer;">
+                Login All Running Encoder Browsers
+            </button>
+
+            <!-- Progress log -->
+            <div id="lm-progress" style="display:none;margin-top:16px;">
+                <div style="font-weight:600;font-size:13px;margin-bottom:8px;">Progress:</div>
+                <div id="lm-log" style="font-family:monospace;font-size:12px;background:#f7fafc;border-radius:6px;padding:12px;max-height:220px;overflow-y:auto;"></div>
+            </div>
+        </div>
+
+        <div class="section">
             <h2 class="section-title">Display Configuration</h2>
             <p style="color: #718096; font-size: 13px; margin-bottom: 16px;">Use these positions when configuring encoder screen offsets (width_pos:height_pos). <strong>Note:</strong> If using DPI scaling above 100%, the reported offsets may be incorrect. Set displays to 100% scaling for accurate values.</p>
             <div id="display-layout">
@@ -983,7 +1070,7 @@ const START_PAGE_HTML = `
                     <div style="background: linear-gradient(135deg, #667eea, #764ba2); color: white; border-radius: 50%; min-width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 16px;">6</div>
                     <div style="flex: 1;">
                         <h3 style="margin: 0 0 6px 0; font-size: 16px;">Log In to Streaming Services</h3>
-                        <p style="margin: 0; color: #4a5568; font-size: 14px;">Use <a href="/remote-access" style="color: #667eea; font-weight: 600;">Remote Access</a> to connect to this PC via the built-in VNC viewer. Log in to each streaming service (NBC, Sling, Disney+, etc.) in the browser windows. Credentials are cached per encoder, but services may periodically require re-authentication.</p>
+                        <p style="margin: 0; color: #4a5568; font-size: 14px;">Use the <strong>Login Manager</strong> on this page to automatically log in to Sling TV, Peacock, Disney, NBC, and other services across all running encoder browsers. For services not listed, use <a href="/remote-access" style="color: #667eea; font-weight: 600;">Remote Access</a> to log in manually via VNC.</p>
                     </div>
                 </div>
 
@@ -1201,6 +1288,252 @@ const START_PAGE_HTML = `
 
         // Refresh status every 30 seconds
         setInterval(loadEncoderStatus, 30000);
+
+        // Login Manager — populate site dropdown on load
+        (async () => {
+            try {
+                const res = await fetch('/api/login/sites');
+                const { sites } = await res.json();
+                const sel = document.getElementById('lm-site');
+                sel.innerHTML = '';
+                sites.forEach(s => {
+                    const opt = document.createElement('option');
+                    opt.value = s.id;
+                    opt.textContent = s.name;
+                    opt.dataset.type = s.type;
+                    opt.dataset.checkUrl = s.checkUrl || '';
+                    sel.appendChild(opt);
+                });
+                lmSiteChanged();
+            } catch (e) {
+                document.getElementById('lm-site').innerHTML = '<option value="">Error loading sites</option>';
+            }
+        })();
+
+        function lmIsTve() {
+            const sel = document.getElementById('lm-site');
+            const opt = sel.options[sel.selectedIndex];
+            return !!(opt && opt.dataset.type === 'tve');
+        }
+        function lmSaveSelect() { return document.getElementById(lmIsTve() ? 'lm-save-mode-tve' : 'lm-save-mode-direct'); }
+        function lmBadge()      { return document.getElementById(lmIsTve() ? 'lm-saved-badge-tve' : 'lm-saved-badge-direct'); }
+        function lmClearBtn()   { return document.getElementById(lmIsTve() ? 'lm-clear-btn-tve' : 'lm-clear-btn-direct'); }
+
+        function lmSiteChanged() {
+            const sel = document.getElementById('lm-site');
+            const opt = sel.options[sel.selectedIndex];
+            const isTve = opt && opt.dataset.type === 'tve';
+            document.getElementById('lm-direct-row').style.display = isTve ? 'none' : 'flex';
+            document.getElementById('lm-tve-row').style.display = isTve ? 'block' : 'none';
+            const siteLink = document.getElementById('lm-site-url');
+            const checkUrl = opt && opt.dataset.checkUrl;
+            if (checkUrl) {
+                siteLink.href = checkUrl;
+                siteLink.textContent = checkUrl;
+                siteLink.style.display = '';
+            } else {
+                siteLink.style.display = 'none';
+            }
+            if (sel.value) lmLoadSavedCredentials(sel.value, isTve);
+        }
+
+        async function lmLoadSavedCredentials(siteId, isTve) {
+            const saveMode = lmSaveSelect();
+            const badge    = lmBadge();
+            const clearBtn = lmClearBtn();
+
+            // Reset UI first
+            document.getElementById('lm-username').value     = '';
+            document.getElementById('lm-password').value     = '';
+            document.getElementById('lm-tve-provider').value = '';
+            document.getElementById('lm-tve-user').value     = '';
+            document.getElementById('lm-tve-pass').value     = '';
+            badge.style.display    = 'none';
+            clearBtn.style.display = 'none';
+            saveMode.value         = 'no';
+
+            try {
+                // Try site-specific credentials first
+                const res = await fetch(\`/api/login/credentials/\${encodeURIComponent(siteId)}\`);
+                if (res.ok) {
+                    const { credentials: c } = await res.json();
+                    document.getElementById('lm-username').value     = c.username            || '';
+                    document.getElementById('lm-password').value     = c.password            || '';
+                    document.getElementById('lm-tve-provider').value = c.tveProviderName     || '';
+                    document.getElementById('lm-tve-user').value     = c.tveProviderUsername || '';
+                    document.getElementById('lm-tve-pass').value     = c.tveProviderPassword || '';
+                    saveMode.value         = 'site';
+                    badge.style.display    = 'inline';
+                    clearBtn.style.display = 'inline';
+                    return; // site-specific takes priority — done
+                }
+
+                // Fall back to shared TV Provider credentials for TVE sites
+                if (isTve) {
+                    const tveRes = await fetch('/api/login/credentials/_tve_provider');
+                    if (tveRes.ok) {
+                        const { credentials: c } = await tveRes.json();
+                        document.getElementById('lm-tve-provider').value = c.tveProviderName     || '';
+                        document.getElementById('lm-tve-user').value     = c.tveProviderUsername || '';
+                        document.getElementById('lm-tve-pass').value     = c.tveProviderPassword || '';
+                        saveMode.value         = 'tve';
+                        badge.style.display    = 'inline';
+                        clearBtn.style.display = 'inline';
+                    }
+                }
+            } catch (_) {}
+        }
+
+        async function lmClearCredentials() {
+            const siteId   = document.getElementById('lm-site').value;
+            const saveMode = lmSaveSelect().value;
+            if (!siteId) return;
+            try {
+                if (saveMode === 'site') {
+                    await fetch(\`/api/login/credentials/\${encodeURIComponent(siteId)}\`, { method: 'DELETE' });
+                } else if (saveMode === 'tve') {
+                    await fetch('/api/login/credentials/_tve_provider', { method: 'DELETE' });
+                }
+            } catch (_) {}
+            document.getElementById('lm-username').value    = '';
+            document.getElementById('lm-password').value    = '';
+            document.getElementById('lm-tve-provider').value = '';
+            document.getElementById('lm-tve-user').value    = '';
+            document.getElementById('lm-tve-pass').value    = '';
+            lmBadge().style.display    = 'none';
+            lmClearBtn().style.display = 'none';
+            lmSaveSelect().value       = 'no';
+        }
+
+        function lmTogglePwd(inputId) {
+            const inp = document.getElementById(inputId);
+            inp.type = inp.type === 'password' ? 'text' : 'password';
+        }
+
+        async function startLoginManager() {
+            const sel = document.getElementById('lm-site');
+            const opt = sel.options[sel.selectedIndex];
+            if (!sel.value) return;
+
+            const isTve = opt && opt.dataset.type === 'tve';
+            const username = document.getElementById('lm-username').value.trim();
+            const password = document.getElementById('lm-password').value;
+            const tveProviderName = document.getElementById('lm-tve-provider').value.trim();
+            const tveProviderUsername = document.getElementById('lm-tve-user').value.trim();
+            const tveProviderPassword = document.getElementById('lm-tve-pass').value;
+
+            if (!isTve && (!username || !password)) {
+                alert('Please enter username and password.');
+                return;
+            }
+            if (isTve && (!tveProviderName || !tveProviderUsername || !tveProviderPassword)) {
+                alert('Please enter TV Provider Name, Provider Username, and Provider Password.');
+                return;
+            }
+
+            // Save credentials according to the dropdown selection
+            const saveMode = lmSaveSelect().value;
+            if (saveMode === 'site') {
+                try {
+                    await fetch(\`/api/login/credentials/\${encodeURIComponent(sel.value)}\`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ username, password, tveProviderName, tveProviderUsername, tveProviderPassword })
+                    });
+                    lmBadge().style.display    = 'inline';
+                    lmClearBtn().style.display = 'inline';
+                } catch (_) {}
+            } else if (saveMode === 'tve' && isTve) {
+                try {
+                    await fetch('/api/login/credentials/_tve_provider', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ tveProviderName, tveProviderUsername, tveProviderPassword })
+                    });
+                    lmBadge().style.display    = 'inline';
+                    lmClearBtn().style.display = 'inline';
+                } catch (_) {}
+            }
+
+            const logEl = document.getElementById('lm-log');
+            logEl.innerHTML = '';
+            document.getElementById('lm-progress').style.display = 'block';
+            const btn = document.getElementById('lm-btn');
+            btn.disabled = true;
+            btn.style.opacity = '0.6';
+
+            const body = { siteId: sel.value, username, password };
+            if (isTve) {
+                body.tveProviderName = tveProviderName;
+                body.tveProviderUsername = tveProviderUsername;
+                body.tveProviderPassword = tveProviderPassword;
+            }
+
+            try {
+                const response = await fetch('/api/login/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buf = '';
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    buf += decoder.decode(value, { stream: true });
+                    const lines = buf.split('\\n');
+                    buf = lines.pop();
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            try { lmHandleEvent(JSON.parse(line.slice(6))); } catch (_) {}
+                        }
+                    }
+                }
+            } catch (e) {
+                lmAppendLog('red', 'Connection error: ' + e.message);
+            } finally {
+                btn.disabled = false;
+                btn.style.opacity = '1';
+            }
+        }
+
+        function lmHandleEvent(ev) {
+            const n = ev.encoderIndex !== undefined ? \`Encoder \${ev.encoderIndex + 1}\` : '';
+            switch (ev.type) {
+                case 'start':
+                    lmAppendLog('#718096', \`Starting login to \${ev.siteName} — \${ev.total} running browser(s)\`);
+                    break;
+                case 'checking':
+                    lmAppendLog('#718096', \`\${n}: Checking login status...\`);
+                    break;
+                case 'already_logged_in':
+                    lmAppendLog('#38a169', \`\${n}: Already logged in ✓\`);
+                    break;
+                case 'logging_in':
+                    lmAppendLog('#3182ce', \`\${n}: Logging in...\`);
+                    break;
+                case 'success':
+                    lmAppendLog('#38a169', \`\${n}: Login successful ✓\`);
+                    break;
+                case 'error':
+                    lmAppendLog('#e53e3e', \`\${n}: Error — \${ev.message}\`);
+                    break;
+                case 'complete':
+                    lmAppendLog('#2d3748', \`Done: \${ev.success} succeeded, \${ev.failed} failed\`, true);
+                    break;
+            }
+        }
+
+        function lmAppendLog(color, text, bold) {
+            const logEl = document.getElementById('lm-log');
+            const d = document.createElement('div');
+            d.style.color = color;
+            if (bold) d.style.fontWeight = '700';
+            d.textContent = text;
+            logEl.appendChild(d);
+            logEl.scrollTop = logEl.scrollHeight;
+        }
     </script>
 </body>
 </html>
@@ -3759,9 +4092,10 @@ const M3U_MANAGER_PAGE_HTML = `
             { group: 'Disney', name: 'Disney', url: 'https://disneynow.com/watch-live?brand=004', category: 'Children', callSign: 'DISN' },
             { group: 'Disney', name: 'Disney XD', url: 'https://disneynow.com/watch-live?brand=009', category: 'Children', callSign: 'DISNXD', stationId: '16563' },
             { group: 'Disney', name: 'Disney Jr', url: 'https://disneynow.com/watch-live?brand=008', category: 'Children', callSign: 'DISJNR', stationId: '24761' },
-            { group: 'FX Networks', name: 'FX', url: 'https://fxnow.fxnetworks.com/watch-live/93256af4-5e80-4558-aa2e-2bdfffa119a0', category: 'Drama', callSign: 'FX' },
-            { group: 'FX Networks', name: 'FXX', url: 'https://fxnow.fxnetworks.com/watch-live/49f4a471-8d36-4728-8457-ea65cbbc84ea', category: 'Drama', callSign: 'FXX' },
-            { group: 'FX Networks', name: 'FXM', url: 'https://fxnow.fxnetworks.com/watch-live/d298ab7e-c6b1-4efa-ac6e-a52dceed92ee', category: 'Movies', callSign: 'FXM' },
+            { group: 'Fox', name: 'FX', url: 'https://fxnow.fxnetworks.com/watch-live/93256af4-5e80-4558-aa2e-2bdfffa119a0', category: 'Drama', callSign: 'FX' },
+            { group: 'Fox', name: 'FXX', url: 'https://fxnow.fxnetworks.com/watch-live/49f4a471-8d36-4728-8457-ea65cbbc84ea', category: 'Drama', callSign: 'FXX' },
+            { group: 'Fox', name: 'FXM', url: 'https://fxnow.fxnetworks.com/watch-live/d298ab7e-c6b1-4efa-ac6e-a52dceed92ee', category: 'Movies', callSign: 'FXM' },
+            { group: 'Fox', name: 'FS1', url: 'https://www.foxsports.com/live/fs1', category: 'Sports', callSign: 'FS1', stationId: '82541' },
             { group: 'National Geographic', name: 'NGC', url: 'https://www.nationalgeographic.com/tv/watch-live/0826a9a3-3384-4bb5-8841-91f01cb0e3a7', category: 'Other', callSign: 'NGC' },
             { group: 'National Geographic', name: 'NGC Wild', url: 'https://www.nationalgeographic.com/tv/watch-live/239b9590-583f-4955-a499-22e9eefff9cf', category: 'Other', callSign: 'NGWILD', stationId: '66804' },
             { group: 'TBS/TNT', name: 'TBS', url: 'https://www.tbs.com/watchtbs/east', category: 'Other', callSign: 'TBS' },
@@ -3770,7 +4104,12 @@ const M3U_MANAGER_PAGE_HTML = `
             { group: 'NBC', name: 'NBC News Now', url: 'https://nbc.com/live?brand=nbc-news&callsign=nbcnews', category: 'News', callSign: 'NBCNEWS' },
             { group: 'NBC', name: 'Bravo', url: 'https://www.nbc.com/live?brand=bravo&callsign=bravo_east', category: 'Drama', callSign: 'BRAVOHD' },
             { group: 'ABC', name: 'FreeForm', url: 'https://abc.com/watch-live/885c669e-fa9a-4039-b42e-6c85c90cc86d', category: 'Drama', callSign: 'FREE' },
+            { group: 'USA Network', name: 'USA Network', url: 'https://www.usanetwork.com/live#USA_East', category: 'Drama', callSign: 'USAHD', stationId: '58452' },
+            { group: 'USA Network', name: 'SYFY', url: 'https://www.usanetwork.com/live#Syfy_East', category: 'Drama', callSign: 'SYFYHD', stationId: '58623' },
+            { group: 'USA Network', name: 'Oxygen', url: 'https://www.usanetwork.com/live#Oxygen_East', category: 'Crime', callSign: 'OXYGN' },
+            { group: 'USA Network', name: 'E!', url: 'https://www.usanetwork.com/live#E-_East', category: 'Entertainment', callSign: 'ELHD' },
             { group: 'A&E', name: 'A&E', url: 'https://play.aetv.com/live', category: 'Other', callSign: 'AETV' },
+            { group: 'A&E', name: 'History', url: 'https://play.history.com/live', category: 'Other', callSign: 'HISTORY', stationId: '14771' },
             { group: 'Discovery', name: 'Discovery', url: 'https://go.discovery.com/channel/discovery', category: 'Other', callSign: 'DSC' },
             { group: 'Discovery', name: 'Travel Channel', url: 'https://go.discovery.com/channel/travel-channel', category: 'Other', callSign: 'TRAV' },
             { group: 'CBS', name: 'CBS Local', url: 'https://www.cbs.com/live-tv/stream/', category: 'Other', callSign: '', needsCallsign: true }

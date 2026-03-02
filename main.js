@@ -34,6 +34,8 @@ const {
 
 const { AudioDeviceManager, DisplayManager } = require('./audio-device-manager');
 const { CONFIG_METADATA, ENCODER_FIELDS, validateAllSettings, validateEncoder, saveConfig, loadConfig, getDefaults } = require('./config-manager');
+const { LOGIN_SITES, loginEncoders } = require('./login-manager');
+const credentialsStore = require('./credentials-store');
 
 let chromeDataDir, chromePath;
 let browsers = new Map(); // key: encoderUrl, value: {browser, page}
@@ -1364,6 +1366,7 @@ async function launchBrowser(targetUrl, encoderConfig, startMinimized, applyStar
       '--disable-blink-features=AutomationControlled',
       '--disable-notifications',
       '--disable-session-crashed-bubble',
+      '--disable-save-password-bubble',
       '--noerrdialogs',
       '--no-default-browser-check',
       //'--hide-scrollbars',
@@ -1832,6 +1835,69 @@ async function setupAudioMonitor(frameHandle, videoHandle, audioDevice, encoderU
   } catch (error) {
     logTS(`[${encoderUrl}] Failed to setup audio monitor (non-fatal): ${error.message}`);
   }
+}
+
+/**
+ * Sets up an error recovery monitor for ESPN streams.
+ * Detects when the stream stops (e.g. "too many devices" error) and reloads the page to recover.
+ * Runs in Node.js context (not browser context) so it can trigger page navigation.
+ * @param {Object} page - The Puppeteer page object
+ */
+function setupESPNErrorMonitor(page) {
+  if (!Constants.ENABLE_PAUSE_MONITOR) {
+    return;
+  }
+
+  const url = page.url();
+  const CHECK_INTERVAL_MS = 30000;
+  const FAILURES_BEFORE_RECOVERY = 2;
+  const MAX_RECOVERY_ATTEMPTS = 3;
+
+  let consecutiveFailures = 0;
+  let recoveryAttempts = 0;
+
+  const intervalId = setInterval(async () => {
+    try {
+      const isPlaying = await page.evaluate(() => {
+        const videos = document.querySelectorAll('video');
+        return Array.from(videos).some(v => !v.paused && !v.ended && v.readyState >= 3);
+      });
+
+      if (isPlaying) {
+        consecutiveFailures = 0;
+      } else {
+        consecutiveFailures++;
+        logTS(`ESPN monitor: no active video (${consecutiveFailures}/${FAILURES_BEFORE_RECOVERY})`);
+
+        if (consecutiveFailures >= FAILURES_BEFORE_RECOVERY) {
+          if (recoveryAttempts >= MAX_RECOVERY_ATTEMPTS) {
+            logTS('ESPN monitor: max recovery attempts reached, stopping');
+            clearInterval(intervalId);
+            return;
+          }
+
+          consecutiveFailures = 0;
+          recoveryAttempts++;
+          logTS(`ESPN monitor: attempting page recovery (${recoveryAttempts}/${MAX_RECOVERY_ATTEMPTS})`);
+          clearInterval(intervalId);
+
+          await delay(5000);
+          try {
+            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+            await delay(3000);
+            await fullScreenVideoESPN(page);
+          } catch (e) {
+            logTS(`ESPN monitor: recovery failed - ${e.message}`);
+          }
+        }
+      }
+    } catch (e) {
+      logTS(`ESPN monitor: stopping due to error - ${e.message}`);
+      clearInterval(intervalId);
+    }
+  }, CHECK_INTERVAL_MS);
+
+  logTS(`ESPN error recovery monitor active (${CHECK_INTERVAL_MS / 1000}s interval, max ${MAX_RECOVERY_ATTEMPTS} recoveries)`);
 }
 
 /**
@@ -2362,6 +2428,18 @@ async function fullScreenVideoESPN(page) {
   });
 
   logTS(`ESPN play status: ${playResult}`);
+
+  // Setup pause monitor to catch simple unexpected pauses
+  const { frameHandle, videoHandle } = await findVideoElement(page);
+  if (frameHandle && videoHandle) {
+    await setupPauseMonitor(frameHandle, videoHandle, page);
+  } else {
+    logTS("ESPN: could not find video element for pause monitor");
+  }
+
+  // Setup error recovery monitor to handle hard errors (e.g. too many devices streaming)
+  setupESPNErrorMonitor(page);
+
   logTS("finished ESPN fullscreen setup");
 }
 
@@ -3216,6 +3294,169 @@ async function fullScreenVideoAETV(page) {
   logTS("finished AETV fullscreen setup");
 }
 
+async function fullScreenVideoUSA(page) {
+  logTS("URL contains usanetwork.com, setting up fullscreen");
+
+  // Extract the channel keyword from the URL hash (e.g., #Syfy_East → "Syfy_East")
+  const pageUrl = page.url();
+  const hashMatch = pageUrl.match(/#(.+)$/);
+  const channelKeyword = hashMatch ? hashMatch[1] : null;
+
+  // If a non-default channel is requested, switch to it via the EPG
+  if (channelKeyword) {
+    // Convert keyword to channel title: Syfy_East → Syfy-East, E-_East → E!-East
+    const channelTitle = channelKeyword.replace(/_/g, '-').replace(/^E-/, 'E!');
+    logTS(`USA Network: switching to "${channelTitle}"`);
+
+    // Wait for EPG tiles to load — the aria-label is on the inner .tile-info div
+    let epgLoaded = false;
+    for (let i = 0; i < 20; i++) {
+      try {
+        epgLoaded = await page.evaluate(() =>
+          document.querySelectorAll('.tile-info[aria-label]').length > 0
+        );
+        if (epgLoaded) break;
+      } catch (e) { /* continue */ }
+      await delay(500);
+    }
+
+    if (!epgLoaded) {
+      logTS("USA Network: EPG tiles did not appear, proceeding with default channel");
+    } else {
+      // Find the tile: aria-label is on .tile-info (inner div); clickable element is .epg-tile-container
+      // Prefer .selectable (currently-airing); fall back to any tile for this channel
+      const tileRect = await page.evaluate((title) => {
+        const selectableInfo = document.querySelector(
+          `.epg-tile-container.selectable .tile-info[aria-label^="${title} "]`
+        );
+        const anyInfo = selectableInfo
+          || document.querySelector(`.tile-info[aria-label^="${title} "]`);
+
+        if (!anyInfo) return { found: false };
+
+        const tile = anyInfo.closest('.epg-tile-container') || anyInfo;
+        tile.scrollIntoView({ block: 'center', behavior: 'instant' });
+        const r = tile.getBoundingClientRect();
+        const label = anyInfo.getAttribute('aria-label') || '';
+        return {
+          found: true,
+          x: Math.round(r.left + r.width / 2),
+          y: Math.round(r.top + r.height / 2),
+          label: label.substring(0, 70),
+          selectable: selectableInfo !== null,
+        };
+      }, channelTitle);
+
+      if (!tileRect.found) {
+        logTS(`USA Network: no EPG tile found for "${channelTitle}", proceeding with default`);
+      } else {
+        logTS(`USA Network: found${tileRect.selectable ? ' selectable' : ''} tile: "${tileRect.label}..."`);
+        await delay(300);
+        await page.mouse.move(tileRect.x, tileRect.y);
+        await delay(100);
+        await page.mouse.click(tileRect.x, tileRect.y);
+        logTS(`USA Network: clicked tile at (${tileRect.x}, ${tileRect.y})`);
+
+        // Wait up to 8s for the stream to switch (readyState drops below 3)
+        let channelSwitched = false;
+        for (let i = 0; i < 16; i++) {
+          await delay(500);
+          try {
+            const notReady = await page.evaluate(() => {
+              const videos = document.querySelectorAll('video');
+              for (const v of videos) { if (v.readyState < 3) return true; }
+              return false;
+            });
+            if (notReady) { channelSwitched = true; logTS("USA Network: stream switch detected"); break; }
+          } catch (e) { /* continue */ }
+        }
+        if (!channelSwitched) {
+          logTS("USA Network: stream switch not confirmed, proceeding anyway");
+          await delay(2000);
+        }
+      }
+    }
+  }
+
+  // Wait for video element to have enough data to play (readyState >= 3)
+  let videoReady = false;
+  for (let i = 0; i < 30; i++) {
+    try {
+      videoReady = await page.evaluate(() => {
+        const videos = document.querySelectorAll('video');
+        for (const video of videos) {
+          if (video.readyState >= 3) return true;
+        }
+        return false;
+      });
+      if (videoReady) {
+        logTS("USA Network video ready (readyState >= 3)");
+        break;
+      }
+    } catch (e) {
+      // Continue waiting
+    }
+    await delay(500);
+  }
+
+  if (!videoReady) {
+    logTS("USA Network video not ready after timeout, continuing anyway");
+  }
+
+  // Start playback: try the Video.js big play button first, then fall back to video.play()
+  const playResult = await page.evaluate(() => {
+    const btn = document.querySelector('button.vjs-big-play-button');
+    if (btn) {
+      btn.click();
+      return 'btn-clicked';
+    }
+    const video = document.querySelector('video');
+    if (video && video.paused) {
+      video.play().catch(() => {});
+      return 'video.play()';
+    }
+    return 'not needed';
+  });
+  logTS(`USA Network play: ${playResult}`);
+
+  if (playResult === 'btn-clicked' || playResult === 'video.play()') {
+    await delay(1000); // let playback start before going fullscreen
+  }
+
+  // Move mouse to center to reveal player controls (move only — no click to avoid pausing)
+  try {
+    const viewport = page.viewport();
+    const centerX = viewport ? viewport.width / 2 : 640;
+    const centerY = viewport ? viewport.height / 2 : 360;
+    await page.mouse.move(centerX, centerY);
+    await delay(500);
+  } catch (e) {
+    logTS("Could not move mouse to show controls: " + e.message);
+  }
+
+  // Click fullscreen button (Video.js standard control)
+  const fullscreenResult = await page.evaluate(() => {
+    const btn = document.querySelector('button.vjs-fullscreen-control');
+    if (btn) {
+      btn.click();
+      return 'clicked';
+    }
+    return 'not found';
+  });
+  logTS(`USA Network fullscreen status: ${fullscreenResult}`);
+
+  // After entering fullscreen the player sometimes pauses — ensure playback is running
+  if (fullscreenResult === 'clicked') {
+    await delay(800);
+    await page.evaluate(() => {
+      const video = document.querySelector('video');
+      if (video && video.paused) video.play().catch(() => {});
+    });
+  }
+
+  logTS("finished USA Network fullscreen setup");
+}
+
 async function fullScreenVideoTBS(page) {
   logTS("URL contains TBS, setting up fullscreen");
 
@@ -3242,6 +3483,21 @@ async function fullScreenVideoTBS(page) {
 
   if (!videoReady) {
     logTS("TBS video not ready after timeout, continuing anyway");
+  }
+
+  // Click the big play button if present (paused state)
+  // <span class="tui-play tui-btn" role="button" aria-label="Play">
+  const playResult = await page.evaluate(() => {
+    const btn = document.querySelector('span.tui-play.tui-btn[aria-label="Play"]');
+    if (btn && btn.offsetParent !== null) {
+      btn.click();
+      return 'clicked';
+    }
+    return 'not present';
+  });
+  logTS(`TBS play button: ${playResult}`);
+  if (playResult === 'clicked') {
+    await delay(1000); // let playback start before going fullscreen
   }
 
   // Move mouse to center of viewport to trigger player controls
@@ -4302,11 +4558,20 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
           const session = await page.createCDPSession();
           const {windowId} = await session.send('Browser.getWindowForTarget');
 
-          // First restore to normal state (from minimized)
-          await session.send('Browser.setWindowBounds', {windowId, bounds: {windowState: 'normal'}});
+          // First restore to normal state (from minimized), preserving the correct monitor position
+          await session.send('Browser.setWindowBounds', {
+            windowId,
+            bounds: {
+              windowState: 'normal',
+              left: availableEncoder.width,
+              top: availableEncoder.height,
+              width: 1280,
+              height: 720
+            }
+          });
           await delay(100); // Brief delay to let window restore
 
-          // Then set to fullscreen
+          // Then set to fullscreen (will fullscreen on the monitor the window is now on)
           await session.send('Browser.setWindowBounds', {windowId, bounds: {windowState: 'fullscreen'}});
           await session.detach();
           logTS(`[${availableEncoder.url}] Browser window restored and set to fullscreen via CDP`);
@@ -5385,6 +5650,70 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
     }
   });
 
+  // Login Manager API
+  app.get('/api/login/sites', (_req, res) => {
+    res.json({ sites: LOGIN_SITES });
+  });
+
+  // Initialise credential store with the app's data directory
+  credentialsStore.init(Constants.DATA_DIR);
+
+  // GET  /api/login/credentials/:siteId — return saved credentials (decrypted), or 404
+  app.get('/api/login/credentials/:siteId', (req, res) => {
+    const creds = credentialsStore.getCredentials(req.params.siteId);
+    if (!creds) return res.status(404).json({ saved: false });
+    res.json({ saved: true, credentials: creds });
+  });
+
+  // POST /api/login/credentials/:siteId — encrypt and save credentials
+  app.post('/api/login/credentials/:siteId', (req, res) => {
+    const { siteId } = req.params;
+    const { username, password, tveProviderName, tveProviderUsername, tveProviderPassword } = req.body;
+    try {
+      credentialsStore.saveCredentials(siteId, { username, password, tveProviderName, tveProviderUsername, tveProviderPassword });
+      res.json({ success: true });
+    } catch (e) {
+      res.status(500).json({ success: false, error: e.message });
+    }
+  });
+
+  // DELETE /api/login/credentials/:siteId — remove saved credentials
+  app.delete('/api/login/credentials/:siteId', (req, res) => {
+    try {
+      credentialsStore.clearCredentials(req.params.siteId);
+      res.json({ success: true });
+    } catch (e) {
+      res.status(500).json({ success: false, error: e.message });
+    }
+  });
+
+  app.post('/api/login/start', async (req, res) => {
+    const { siteId, username, password, tveProviderName, tveProviderUsername, tveProviderPassword } = req.body;
+    if (!siteId) return res.status(400).json({ error: 'siteId is required' });
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders();
+
+    const sendEvent = (data) => { if (!res.writableEnded) res.write(`data: ${JSON.stringify(data)}\n\n`); };
+
+    try {
+      await loginEncoders({
+        siteId, username, password,
+        tveProviderName, tveProviderUsername, tveProviderPassword,
+        encoders: Constants.ENCODERS,
+        browsers,
+        statusCallback: sendEvent
+      });
+    } catch (e) {
+      sendEvent({ type: 'error', message: e.message });
+    } finally {
+      res.end();
+    }
+  });
+
   // Serve SSL certificate for download
   app.get('/data/cert.pem', (req, res) => {
     const certPath = path.join(Constants.DATA_DIR, 'cert.pem');
@@ -5636,11 +5965,14 @@ async function handleSiteSpecificFullscreen(targetUrl, page, encoderConfig = nul
     } else if (targetUrl.includes("nationalgeographic.com")) {
       logTS("Handling National Geographic video");
       await fullScreenVideoNatGeo(page);
-    } else if (targetUrl.includes("tbs.com")) {
-      logTS("Handling TBS video");
+    } else if (targetUrl.includes("tbs.com") || targetUrl.includes("tntdrama.com")) {
+      logTS("Handling TBS/TNT video");
       await fullScreenVideoTBS(page);
-    } else if (targetUrl.includes("play.aetv.com")) {
-      logTS("Handling AETV video");
+    } else if (targetUrl.includes("usanetwork.com")) {
+      logTS("Handling USA Network video");
+      await fullScreenVideoUSA(page);
+    } else if (targetUrl.includes("play.aetv.com") || targetUrl.includes("play.history.com")) {
+      logTS("Handling AETV/History video");
       await fullScreenVideoAETV(page);
     } else if (targetUrl.includes("go.discovery.com")) {
       logTS("Handling Discovery video");
