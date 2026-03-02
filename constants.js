@@ -1516,6 +1516,9 @@ const START_PAGE_HTML = `
                 case 'success':
                     lmAppendLog('#38a169', \`\${n}: Login successful ✓\`);
                     break;
+                case 'skipped':
+                    lmAppendLog('#dd6b20', \`\${n}: Skipped — \${ev.message}\`);
+                    break;
                 case 'error':
                     lmAppendLog('#e53e3e', \`\${n}: Error — \${ev.message}\`);
                     break;

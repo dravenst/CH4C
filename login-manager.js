@@ -1928,6 +1928,7 @@ async function loginEncoders({
   tveProviderPassword,
   encoders,
   browsers,
+  activeStreams,
   statusCallback,
 }) {
   const siteConfig = LOGIN_SITES.find(s => s.id === siteId);
@@ -1960,6 +1961,14 @@ async function loginEncoders({
     const encoderConfig = encoderIndex >= 0 ? encoders[encoderIndex] : null;
     const encoderLeft = encoderConfig?.width || 0;
     const encoderTop  = encoderConfig?.height || 0;
+
+    // Skip encoders that are actively streaming to avoid disrupting the output
+    if (activeStreams && activeStreams.has(encoderUrl)) {
+      statusCallback({ type: 'skipped', encoderIndex, encoderUrl, message: 'Stream is active — stop the stream before logging in' });
+      failCount++;
+      continue;
+    }
+
     statusCallback({ type: 'checking', encoderIndex, encoderUrl });
 
     let page = null;

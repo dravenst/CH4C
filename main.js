@@ -5705,6 +5705,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
         tveProviderName, tveProviderUsername, tveProviderPassword,
         encoders: Constants.ENCODERS,
         browsers,
+        activeStreams: streamMonitor.activeStreams,
         statusCallback: sendEvent
       });
     } catch (e) {
