@@ -1613,6 +1613,7 @@ const INSTANT_PAGE_HTML = `
 
         .form-group input[type="text"],
         .form-group input[type="number"],
+        .form-group input[type="url"],
         .form-group select {
             width: 100%;
             padding: 12px 16px;
@@ -1625,6 +1626,7 @@ const INSTANT_PAGE_HTML = `
 
         .form-group input[type="text"]:focus,
         .form-group input[type="number"]:focus,
+        .form-group input[type="url"]:focus,
         .form-group select:focus {
             outline: none;
             border-color: #667eea;
@@ -1967,6 +1969,32 @@ const INSTANT_PAGE_HTML = `
                     placeholder="https://example.com/stream"
                     required
                 />
+                <div style="display:flex;gap:6px;margin-top:8px;align-items:flex-end;">
+                    <div style="display:flex;flex-direction:column;gap:3px;flex:0 0 115px;">
+                        <span style="font-size:11px;color:#718096;font-weight:600;">Show Search</span>
+                        <select id="search_service" style="padding:8px 6px;border:1px solid #e2e8f0;border-radius:8px;font-size:13px;background:#fff;cursor:pointer;">
+                            <option value="">Select Service</option>
+                            <option value="disney_plus">Disney+</option>
+                            <option value="hbomax">HBO Max</option>
+                            <option value="peacock">Peacock</option>
+                            <option value="prime_video">Prime Video</option>
+                        </select>
+                    </div>
+                    <div style="display:flex;flex-direction:column;gap:3px;flex:1;min-width:0;">
+                        <span style="font-size:11px;color:#718096;font-weight:600;">Title</span>
+                        <input type="text" id="search_query" placeholder="e.g. Young Sherlock" style="padding:8px 10px;border:1px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;" />
+                    </div>
+                    <div style="display:flex;flex-direction:column;gap:3px;flex:0 0 48px;">
+                        <span style="font-size:11px;color:#718096;font-weight:600;text-align:center;">Season</span>
+                        <input type="number" id="search_season" placeholder="S#" min="1" style="padding:8px 4px;border:1px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;text-align:center;" />
+                    </div>
+                    <div style="display:flex;flex-direction:column;gap:3px;flex:0 0 48px;">
+                        <span style="font-size:11px;color:#718096;font-weight:600;text-align:center;">Episode</span>
+                        <input type="number" id="search_episode" placeholder="E#" min="1" style="padding:8px 4px;border:1px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;text-align:center;" />
+                    </div>
+                    <button type="button" id="search_btn" onclick="searchContent()" style="flex:0 0 auto;padding:8px 14px;background:linear-gradient(135deg,#667eea,#764ba2);color:white;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap;font-family:inherit;">&#128269; Search</button>
+                </div>
+                <div id="search_status" style="margin-top:6px;font-size:12px;color:#718096;display:none;"></div>
             </div>
 
             <div class="form-row">
@@ -1999,17 +2027,31 @@ const INSTANT_PAGE_HTML = `
                 </div>
             </div>
 
-            <div class="form-group">
-                <label>
-                    Recording Name
-                    <span class="label-hint">(optional)</span>
-                </label>
-                <input
-                    type="text"
-                    name="recording_name"
-                    id="recording_name"
-                    placeholder="e.g., NFL Game, Concert Stream"
-                />
+            <div class="form-row">
+                <div class="form-group">
+                    <label>
+                        Recording Name
+                        <span class="label-hint">(optional)</span>
+                    </label>
+                    <input
+                        type="text"
+                        name="recording_name"
+                        id="recording_name"
+                        placeholder="e.g., NFL Game, Concert Stream"
+                    />
+                </div>
+                <div class="form-group">
+                    <label>
+                        Recording Image URL
+                        <span class="label-hint">(optional)</span>
+                    </label>
+                    <input
+                        type="url"
+                        name="recording_image"
+                        id="recording_image"
+                        placeholder="https://..."
+                    />
+                </div>
             </div>
 
             <div class="form-row">
@@ -2132,6 +2174,80 @@ const INSTANT_PAGE_HTML = `
         updateTuneButtonText();
         encoderSelect.addEventListener('change', updateTuneButtonText);
 
+        // Content Search — allow pressing Enter in the search query field
+        document.getElementById('search_query').addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') { e.preventDefault(); searchContent(); }
+        });
+
+        async function searchContent() {
+            const service = document.getElementById('search_service').value;
+            const baseQuery = document.getElementById('search_query').value.trim();
+            const season = document.getElementById('search_season').value.trim();
+            const episode = document.getElementById('search_episode').value.trim();
+            const searchBtn = document.getElementById('search_btn');
+            const searchStatus = document.getElementById('search_status');
+
+            if (!service) {
+                searchStatus.textContent = 'Please select a service.';
+                searchStatus.style.color = '#e53e3e';
+                searchStatus.style.display = 'block';
+                return;
+            }
+            if (!baseQuery) {
+                searchStatus.textContent = 'Please enter a search title.';
+                searchStatus.style.color = '#e53e3e';
+                searchStatus.style.display = 'block';
+                return;
+            }
+
+            // Build full query: append s#e# suffix if season/episode fields are filled
+            let query = baseQuery;
+            if (season && episode) query += ' s' + season + 'e' + episode;
+            else if (season)       query += ' s' + season;
+            else if (episode)      query += ' e' + episode;
+
+            searchBtn.disabled = true;
+            searchBtn.textContent = 'Searching\u2026';
+            searchStatus.textContent = 'Opening browser and searching, please wait\u2026';
+            searchStatus.style.color = '#718096';
+            searchStatus.style.display = 'block';
+
+            try {
+                const encoderUrl = document.getElementById('selected_encoder').value;
+                const body = new URLSearchParams({ service, query });
+                if (encoderUrl) body.append('encoderUrl', encoderUrl);
+
+                const response = await fetch('/api/search-content', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body
+                });
+                const result = await response.json();
+
+                if (result.success && result.url) {
+                    document.getElementById('recording_url').value        = result.url;
+                    document.getElementById('recording_name').value       = result.title           || '';
+                    document.getElementById('recording_image').value      = result.imageUrl        || '';
+                    document.getElementById('episode_title').value        = result.episodeTitle    || '';
+                    document.getElementById('season_number').value        = result.seasonNumber    || '';
+                    document.getElementById('episode_number').value       = result.episodeNumber   || '';
+                    document.getElementById('recording_duration').value   = result.durationMinutes || '';
+                    document.getElementById('recording_summary').value    = result.summary         || '';
+                    searchStatus.textContent = '\u2713 URL and metadata found and populated!';
+                    searchStatus.style.color = '#38a169';
+                } else {
+                    searchStatus.textContent = '\u2717 ' + (result.error || 'No results found');
+                    searchStatus.style.color = '#e53e3e';
+                }
+            } catch (err) {
+                searchStatus.textContent = '\u2717 Search failed: ' + err.message;
+                searchStatus.style.color = '#e53e3e';
+            } finally {
+                searchBtn.disabled = false;
+                searchBtn.textContent = '\uD83D\uDD0D Search';
+            }
+        }
+
         // Modal functions
         function showModal(type, icon, title, message, detail, buttons) {
             const overlay = document.getElementById('modal-overlay');
@@ -2227,6 +2343,7 @@ const INSTANT_PAGE_HTML = `
                     // Clear form
                     document.getElementById('recording_url').value = '';
                     document.getElementById('recording_name').value = '';
+                    document.getElementById('recording_image').value = '';
                     document.getElementById('episode_title').value = '';
                     document.getElementById('recording_summary').value = '';
                     document.getElementById('season_number').value = '';

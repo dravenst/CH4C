@@ -40,6 +40,21 @@ const credentialsStore = require('./credentials-store');
 let chromeDataDir, chromePath;
 let browsers = new Map(); // key: encoderUrl, value: {browser, page}
 let launchMutex = new Map(); // key: encoderUrl, value: promise to prevent concurrent launches
+const encoderDurationTimers = new Map(); // key: encoderUrl, value: setTimeout handle
+
+function setEncoderDurationTimer(encoderUrl, fn, ms) {
+  clearEncoderDurationTimer(encoderUrl);
+  const handle = setTimeout(fn, ms);
+  encoderDurationTimers.set(encoderUrl, handle);
+}
+
+function clearEncoderDurationTimer(encoderUrl) {
+  const handle = encoderDurationTimers.get(encoderUrl);
+  if (handle !== undefined) {
+    clearTimeout(handle);
+    encoderDurationTimers.delete(encoderUrl);
+  }
+}
 
 /**
  * Cleanup all browsers on exit - prevents orphaned Chrome processes
@@ -80,6 +95,926 @@ process.on('unhandledRejection', async (reason, promise) => {
 
 function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Search Prime Video for content and return the detail page URL.
+ * Opens a new tab in the provided browser instance, navigates to the Prime Video
+ * storefront, performs the search, clicks the first content result, and returns
+ * the resulting page URL.
+ */
+/**
+ * Parse a human-readable duration string (e.g. "53min", "1hr 30min") into minutes.
+ */
+function parseDurationMinutes(str) {
+  if (!str) return null;
+  // ISO 8601: PT2H30M, PT1H48M44S
+  const isoMatch = str.match(/PT(?:(\d+)H)?(?:(\d+)M)?/i);
+  if (isoMatch && (isoMatch[1] || isoMatch[2])) {
+    return (parseInt(isoMatch[1] || '0', 10) * 60 + parseInt(isoMatch[2] || '0', 10)) || null;
+  }
+  const hrMatch  = str.match(/(\d+)\s*h(?:r|our)?s?\b/i);
+  const minMatch = str.match(/(\d+)\s*m(?:in|inutes?)?\b/i);
+  const hours = hrMatch  ? parseInt(hrMatch[1],  10) : 0;
+  const mins  = minMatch ? parseInt(minMatch[1], 10) : 0;
+  return (hours * 60 + mins) || null;
+}
+
+async function searchPrimeVideo(page, query) {
+  // Parse optional S#E# episode specifier from the query (e.g. "young sherlock s1 e1")
+  const episodeMatch = query.match(/\bs(\d+)\s*e(\d+)\b/i);
+  const targetSeason  = episodeMatch ? parseInt(episodeMatch[1], 10) : null;
+  const targetEpisode = episodeMatch ? parseInt(episodeMatch[2], 10) : null;
+  // Strip the S#E# token from the search term sent to Prime Video
+  const searchTerm = query.replace(/\bs\d+\s*e\d+\b/i, '').trim();
+
+  logTS(`Searching Prime Video for: "${searchTerm}"${targetSeason !== null ? ` (S${targetSeason} E${targetEpisode})` : ''}`);
+
+  await page.goto('https://www.amazon.com/gp/video/storefront', { waitUntil: 'domcontentloaded', timeout: 30000 });
+  await delay(2000);
+
+  // Open the search dropdown
+  await page.waitForSelector('[data-testid="pv-nav-search-dropdown-trigger"]', { timeout: 10000 });
+  await page.click('[data-testid="pv-nav-search-dropdown-trigger"]');
+
+  // Wait for the search input to appear
+  await page.waitForSelector('#pv-search-nav', { timeout: 5000 });
+  await delay(300);
+
+  // Type the query and submit
+  await page.type('#pv-search-nav', searchTerm, { delay: 40 });
+  await page.keyboard.press('Enter');
+
+  // Wait for the search results main container
+  await page.waitForSelector('[data-testid="search"]', { timeout: 20000 });
+  await delay(1000);
+
+  // Find the first content result link scoped to search results container, avoiding promotional banners
+  const firstResultLink = await page.$('[data-testid="search"] a[href*="/gp/video/detail/"]');
+  if (!firstResultLink) {
+    logTS(`No Prime Video results found for: "${searchTerm}"`);
+    return null;
+  }
+
+  // Capture image from the first search result card's JPEG srcset (highest-res entry)
+  const searchResultImageUrl = await page.evaluate(() => {
+    const article = document.querySelector('[data-testid="search"] article');
+    const srcSet = article?.querySelector('picture source[type="image/jpeg"]')?.srcset;
+    if (!srcSet) return null;
+    const entries = srcSet.trim().split(/,\s+/);
+    const last = entries[entries.length - 1];
+    return last ? last.split(' ')[0] : null;
+  });
+
+  const resultHref = await page.evaluate(el => el.href, firstResultLink);
+  logTS(`Navigating to Prime Video detail page: ${resultHref}`);
+
+  // Navigate to the detail page
+  await page.goto(resultHref, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  await delay(2000);
+
+  // If a specific season/episode was requested, find it in the episode list
+  if (targetSeason !== null) {
+    // Check for a season selector and navigate to the correct season if needed.
+    // Season links reliably use href pattern "season_select_sN" regardless of the
+    // dropdown element's ID, which varies across shows.
+    const targetSeasonLink = await page.$(`a[href*="season_select_s${targetSeason}"]`);
+    if (targetSeasonLink) {
+      const seasonHref = await page.evaluate(el => el.href, targetSeasonLink);
+      logTS(`Season selector found — navigating to Season ${targetSeason}`);
+      await page.goto(seasonHref, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await delay(2000);
+    }
+
+    // Episode labels in the DOM look like "S1 E1" inside h3 > span > span
+    const episodeData = await page.evaluate((season, episode) => {
+      const label = `S${season} E${episode}`;
+      for (const item of document.querySelectorAll('li[data-testid="episode-list-item"]')) {
+        const h3 = item.querySelector('h3');
+        if (h3 && h3.textContent.includes(label)) {
+          const btn         = item.querySelector('a[data-testid="episodes-playbutton"]');
+          const epTitleEl   = item.querySelector('span.TuMJlk');
+          const durationEl  = item.querySelector('[data-testid="episode-runtime"]');
+          const synopsisEl  = item.querySelector('[data-automation-id^="synopsis-"] div[dir="auto"]');
+          // Extract highest-res JPEG from episode thumbnail srcset
+          let imageUrl = null;
+          const srcSet = item.querySelector('[data-testid="episode-packshot"] picture source[type="image/jpeg"]')?.srcset;
+          if (srcSet) {
+            const entries = srcSet.trim().split(/,\s+/);
+            const last = entries[entries.length - 1];
+            imageUrl = last ? last.split(' ')[0] : null;
+          }
+          return {
+            href:         btn         ? btn.href                        : null,
+            episodeTitle: epTitleEl   ? epTitleEl.textContent.trim()    : null,
+            durationStr:  durationEl  ? durationEl.textContent.trim()   : null,
+            summary:      synopsisEl  ? synopsisEl.textContent.trim()   : null,
+            imageUrl,
+          };
+        }
+      }
+      return null;
+    }, targetSeason, targetEpisode);
+
+    if (episodeData && episodeData.href) {
+      // Grab show title from the detail page
+      const epShowTitle = await page.evaluate(() => {
+        const raw = document.querySelector('meta[property="og:title"]')?.content
+          || document.querySelector('h1[data-automation-id="title"]')?.textContent?.trim()
+          || document.title || '';
+        return raw.replace(/^Watch\s+/i, '')
+                  .replace(/\s*[-|]\s*(Amazon|Prime\s*Video|Watch|Stream).*$/i, '')
+                  .replace(/\s*[-–]\s*Season\s+\d+\s*$/i, '')
+                  .trim() || null;
+      });
+      logTS(`Found Prime Video episode S${targetSeason} E${targetEpisode} URL: ${episodeData.href} | showTitle: "${epShowTitle}" | durationStr: "${episodeData.durationStr}" | durationMinutes: ${parseDurationMinutes(episodeData.durationStr)}`);
+      return {
+        url:             episodeData.href,
+        title:           epShowTitle,
+        episodeTitle:    episodeData.episodeTitle,
+        seasonNumber:    targetSeason,
+        episodeNumber:   targetEpisode,
+        durationMinutes: parseDurationMinutes(episodeData.durationStr),
+        summary:         episodeData.summary,
+        imageUrl:        episodeData.imageUrl || searchResultImageUrl,
+      };
+    }
+    logTS(`Episode S${targetSeason} E${targetEpisode} not found in episode list, falling back to ATF play button`);
+  }
+
+  // No episode specified (or episode not found) — use the ATF play button or circular watch button
+  // Covers Watch Now, Continue Watching, Resume, and live event buttons
+  const watchLink = await page.$(
+    'a[data-testid="dp-atf-play-button"], a[data-testid="circular-playbutton"], ' +
+    'a[href*="atv_plr_detail_play"], a[href*="atv_plr_detail"]'
+  );
+  if (watchLink) {
+    // Grab page metadata before clicking (still visible behind any modal)
+    const { rawTitle, durationStr, summary } = await page.evaluate(() => {
+      return {
+        rawTitle:    document.querySelector('meta[property="og:title"]')?.content
+                     || document.querySelector('h1[data-automation-id="title"]')?.textContent?.trim()
+                     || document.title || '',
+        durationStr: document.querySelector('[data-automation-id="runtime-badge"]')?.textContent?.trim()
+                     || document.querySelector('[data-testid="runtime"]')?.textContent?.trim() || null,
+        summary:     document.querySelector('.dv-dp-node-synopsis span._1H6ABQ')?.textContent?.trim()
+                     || document.querySelector('.dv-dp-node-synopsis')?.textContent?.trim()
+                     || document.querySelector('span._1H6ABQ')?.textContent?.trim()
+                     || null,
+      };
+    });
+    const showTitle = rawTitle.replace(/^Watch\s+/i, '')
+                              .replace(/\s*[-|]\s*(Amazon|Prime\s*Video|Watch|Stream).*$/i, '')
+                              .trim() || null;
+
+    // Get raw href (null if button has no href, e.g. circular-playbutton)
+    const watchHref = await page.evaluate(el => el.getAttribute('href')
+      ? el.href  // full resolved URL
+      : null, watchLink);
+
+    // Click the button and check if a live event modal appears
+    const preClickUrl = page.url();
+    await watchLink.click();
+    await page.waitForSelector('[data-testid="stream-selector-content"]', { timeout: 3000 }).catch(() => {});
+
+    const liveHref = await page.evaluate(() => {
+      // Prefer "Watch from beginning" (t=0); fall back to any play link in the modal
+      const wfbLink = document.querySelector('[data-testid="stream-selector-content"] a[href*="t=0"]')
+        || document.querySelector('[data-testid="stream-selector-content"] a[data-testid="play"]');
+      return wfbLink?.href || null;
+    });
+
+    // If no modal and no href, check if clicking navigated us to a playback page
+    const postClickUrl = page.url();
+    const navigatedUrl = (postClickUrl !== preClickUrl) ? postClickUrl : null;
+
+    const finalUrl = liveHref || watchHref || navigatedUrl || preClickUrl;
+    logTS(`Found Prime Video Watch URL: ${finalUrl} | showTitle: "${showTitle}" | live modal: ${!!liveHref}`);
+    return {
+      url:             finalUrl,
+      title:           showTitle,
+      episodeTitle:    null,
+      seasonNumber:    null,
+      episodeNumber:   null,
+      durationMinutes: parseDurationMinutes(durationStr),
+      summary,
+      imageUrl:        searchResultImageUrl,
+    };
+  }
+
+  // Fallback: return the detail page URL itself with whatever title we can get
+  const fallbackTitle = await page.evaluate(() => document.querySelector('meta[property="og:title"]')?.content || null);
+  logTS(`Watch Now button not found, returning detail page URL: ${page.url()}`);
+  return { url: page.url(), title: fallbackTitle, episodeTitle: null, seasonNumber: null, episodeNumber: null, durationMinutes: null, imageUrl: searchResultImageUrl };
+}
+
+/**
+ * Search Disney+ for content and return the watch URL.
+ */
+async function searchDisneyPlus(page, query) {
+  const episodeMatch  = query.match(/\bs(\d+)\s*e(\d+)\b/i);
+  const targetSeason  = episodeMatch ? parseInt(episodeMatch[1], 10) : null;
+  const targetEpisode = episodeMatch ? parseInt(episodeMatch[2], 10) : null;
+  const searchTerm    = query.replace(/\bs\d+\s*e\d+\b/i, '').trim();
+
+  logTS('Navigating to Disney+');
+  await page.goto('https://www.disneyplus.com/home', { waitUntil: 'networkidle2', timeout: 30000 });
+
+  // Click the search icon in the nav
+  await page.waitForSelector('a[data-testid="navigation-item-search"]', { timeout: 10000 });
+  await page.click('a[data-testid="navigation-item-search"]');
+
+  // Type search query
+  logTS(`Disney+: searching for "${searchTerm}"`);
+  const searchInput = await page.waitForSelector('input#searchInput, input[name="search input"]', { timeout: 10000 });
+  await searchInput.click({ clickCount: 3 });
+  // Grab the current first result so we can wait for it to change after typing
+  const initialFirstItemId = await page.evaluate(() =>
+    document.querySelector('a[data-testid="set-item"]')?.getAttribute('data-item-id') || ''
+  );
+
+  await searchInput.type(searchTerm, { delay: 60 });
+
+  // Wait for search debounce + network round-trip, then confirm results updated
+  await delay(3000);
+  await page.waitForFunction(
+    (prevId) => {
+      const el = document.querySelector('a[data-testid="set-item"]');
+      return el && el.getAttribute('data-item-id') !== prevId;
+    },
+    { timeout: 10000 },
+    initialFirstItemId
+  ).catch(() => { /* proceed anyway if still timed out */ });
+
+  // Capture first result title and image before clicking
+  const { firstResultTitle, searchResultImageUrl } = await page.evaluate(() => {
+    const el = document.querySelector('a[data-testid="set-item"]');
+    if (!el) return { firstResultTitle: null, searchResultImageUrl: null };
+    const ariaLabel = el.getAttribute('aria-label') || '';
+    // Strip leading badge prefixes ("Season Finale Badge ", "New Episode Badge ", etc.)
+    const cleaned = ariaLabel.replace(/^(?:[\w\s]+?\s+Badge\s+)+/i, '');
+    const title = cleaned.replace(/\s+(Disney\+?|FOX|ABC|ESPN|Hulu|FX|Nat\s*Geo|Rated|Released|Select|Unrated).*$/i, '').trim() || null;
+    const imgEl = el.querySelector('img');
+    let imageUrl = null;
+    const srcset = imgEl?.getAttribute('srcset') || '';
+    if (srcset) {
+      const entries = srcset.trim().split(/,\s+/);
+      const last = entries[entries.length - 1];
+      imageUrl = last ? last.split(' ')[0] : null;
+    }
+    if (!imageUrl) imageUrl = imgEl?.getAttribute('src') || null;
+    return { firstResultTitle: title, searchResultImageUrl: imageUrl };
+  });
+  logTS(`Disney+: first result: "${firstResultTitle}"`);
+
+  // Click first result and navigate to detail page
+  await Promise.all([
+    page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 20000 }),
+    page.click('a[data-testid="set-item"]'),
+  ]);
+
+  const detailUrl = page.url();
+  logTS(`Disney+ navigated to detail page: ${detailUrl}`);
+
+  // Extract show title — prefer h1 on the page, fall back to firstResultTitle
+  // og:title on Disney+ entity pages returns the generic "Disney+ | Movies and Shows"
+  const showTitle = await page.evaluate(() => {
+    // Title treatment image alt is most reliable (e.g. alt="The Beauty"), avoids badge text
+    const titleImg = document.querySelector('[data-testid="details-title-treatment"] img[alt]')?.getAttribute('alt')?.trim();
+    if (titleImg) return titleImg;
+    const h1 = document.querySelector('h1')?.textContent?.trim() || null;
+    if (h1 && !h1.toLowerCase().includes('disney')) return h1;
+    return null;
+  }) || firstResultTitle;
+
+  if (targetSeason && targetEpisode) {
+    // Wait for episode items to load (they have /play/ hrefs)
+    await page.waitForSelector('a[data-testid="set-item"][href^="/play/"]', { timeout: 10000 })
+              .catch(() => logTS('Disney+: timed out waiting for episode list'));
+
+    // Switch to the correct season if needed
+    const currentSeason = await page.evaluate(() => {
+      const btn = document.querySelector('[data-testid="dropdown-button"]');
+      return btn ? parseInt(btn.textContent?.match(/Season\s+(\d+)/i)?.[1] || '1', 10) : 1;
+    });
+
+    if (currentSeason !== targetSeason) {
+      logTS(`Disney+: switching from Season ${currentSeason} to Season ${targetSeason}`);
+      await page.click('[data-testid="dropdown-button"]');
+      await page.waitForSelector('[role="option"]', { timeout: 5000 });
+      const clicked = await page.evaluate((season) => {
+        const options = document.querySelectorAll('[role="option"]');
+        for (const opt of options) {
+          if (opt.textContent?.includes(`Season ${season}`)) {
+            opt.click();
+            return true;
+          }
+        }
+        return false;
+      }, targetSeason);
+      if (!clicked) {
+        logTS(`Disney+: Season ${targetSeason} not found in dropdown`);
+      } else {
+        // Wait for the episode list to reload after season change
+        await delay(2000);
+        await page.waitForSelector('a[data-testid="set-item"][href^="/play/"]', { timeout: 8000 })
+                  .catch(() => {});
+      }
+    }
+
+    logTS(`Disney+: looking for S${targetSeason}E${targetEpisode} in episode list`);
+
+    // Find the target episode
+    const episodeData = await page.evaluate((season, episode) => {
+      const label = `Season ${season} Episode ${episode}`;
+      const items = document.querySelectorAll('a[data-testid="set-item"]');
+      for (const item of items) {
+        const ariaLabel = item.getAttribute('aria-label') || '';
+        if (!ariaLabel.includes(label)) continue;
+        const href = item.getAttribute('href') || '';
+        const uuid = href.replace('/play/', '') || null;
+        // Episode title: strip leading "N. " number prefix
+        const rawTitle = item.querySelector('[data-testid="standard-regular-list-item-title"] div')
+                             ?.textContent?.trim() || null;
+        const episodeTitle = rawTitle?.replace(/^\d+\.\s*/, '') || null;
+        const description = item.querySelector('[data-testid="standard-regular-list-item-description"]')
+                                ?.textContent?.trim() || null;
+        // Duration: accessible span "24 Minutes,57s"
+        const durText = item.querySelector('span.ldzmls0')?.textContent?.trim() || null;
+        const imgEl = item.querySelector('img');
+        let imageUrl = null;
+        const srcset = imgEl?.getAttribute('srcset') || '';
+        if (srcset) {
+          const entries = srcset.trim().split(/,\s+/);
+          const last = entries[entries.length - 1];
+          imageUrl = last ? last.split(' ')[0] : null;
+        }
+        if (!imageUrl) imageUrl = imgEl?.getAttribute('src') || null;
+        return { uuid, episodeTitle, description, durText, imageUrl };
+      }
+      return null;
+    }, targetSeason, targetEpisode);
+
+    if (episodeData?.uuid) {
+      const watchUrl = `https://www.disneyplus.com/play/${episodeData.uuid}`;
+      // Parse "24 Minutes,57s" or "1 Hours,24 Minutes,30s" using existing helper
+      const durationMinutes = parseDurationMinutes(episodeData.durText);
+      logTS(`Disney+: found S${targetSeason}E${targetEpisode} uuid="${episodeData.uuid}"`);
+      return {
+        url:             watchUrl,
+        title:           showTitle || firstResultTitle,
+        episodeTitle:    episodeData.episodeTitle,
+        seasonNumber:    targetSeason,
+        episodeNumber:   targetEpisode,
+        durationMinutes,
+        summary:         episodeData.description,
+        imageUrl:        episodeData.imageUrl || searchResultImageUrl,
+      };
+    }
+    logTS(`Disney+: episode S${targetSeason} E${targetEpisode} not found`);
+  }
+
+  // No episode specified — wait for masthead to load, then grab play URL and duration
+  await page.waitForSelector('[data-testid="masthead-metadata"]', { timeout: 8000 }).catch(() => {});
+
+  const { playHref, movieDurText, movieSummary } = await page.evaluate(() => {
+    const btn = document.querySelector('a[data-testid="playback-action-button"][href^="/play/"]');
+    // Duration is in span.ldzmls0 inside masthead-metadata, e.g. "2 Hours,34s • Action..."
+    const durRaw = document.querySelector('[data-testid="masthead-metadata"] span.ldzmls0')
+                           ?.textContent?.trim() || null;
+    const durText = durRaw ? durRaw.split('•')[0].trim() : null;
+    const summary = document.querySelector('[data-testid="details-featured-description"]')
+                             ?.textContent?.trim() || null;
+    return { playHref: btn?.getAttribute('href') || null, movieDurText: durText, movieSummary: summary };
+  });
+
+  const playUrl = playHref ? `https://www.disneyplus.com${playHref}` : detailUrl;
+  const durationMinutes = parseDurationMinutes(movieDurText);
+  logTS(`Disney+ movie: url="${playUrl}" duration="${movieDurText}" (${durationMinutes} min)`);
+
+  return {
+    url:             playUrl,
+    title:           showTitle || firstResultTitle,
+    episodeTitle:    null,
+    seasonNumber:    targetSeason,
+    episodeNumber:   targetEpisode,
+    durationMinutes,
+    summary:         movieSummary,
+    imageUrl:        searchResultImageUrl,
+  };
+}
+
+/**
+ * Search Max (HBO Max) for content and return the watch URL.
+ */
+async function searchMax(page, query) {
+  const episodeMatch  = query.match(/\bs(\d+)\s*e(\d+)\b/i);
+  const targetSeason  = episodeMatch ? parseInt(episodeMatch[1], 10) : null;
+  const targetEpisode = episodeMatch ? parseInt(episodeMatch[2], 10) : null;
+  const searchTerm    = query.replace(/\bs\d+\s*e\d+\b/i, '').trim();
+
+  logTS(`Searching Max for: "${searchTerm}"${targetSeason !== null ? ` (S${targetSeason} E${targetEpisode})` : ''}`);
+
+  // Navigate to Max/HBO Max home, click search, type query
+  await page.goto('https://play.hbomax.com', { waitUntil: 'networkidle2', timeout: 30000 });
+  await page.waitForSelector('[data-testid="search_button"]', { timeout: 10000 });
+  await page.click('[data-testid="search_button"]');
+
+  const searchInput = await page.waitForSelector('[data-testid="searchBar_field"]', { timeout: 8000 });
+  await searchInput.click({ clickCount: 3 });
+  await searchInput.type(searchTerm, { delay: 60 });
+
+  // Wait for search results — tiles use data-testid ending in "_tile"
+  await page.waitForSelector('a[data-testid$="_tile"]', { timeout: 15000 }).catch(() => {});
+  await delay(1000);
+
+  // Capture first result title, image, and href
+  const { firstResultTitle, searchResultImageUrl, firstResultHref } = await page.evaluate(() => {
+    const tile = document.querySelector('a[data-testid$="_tile"]');
+    if (!tile) return { firstResultTitle: null, searchResultImageUrl: null, firstResultHref: null };
+    // Use aria-label for title (more reliable than span which may contain badge text)
+    // Fall back to last span[dir="auto"] that isn't a known badge phrase
+    // aria-label format: "Industry. Row 1 of 13, Column 1 of 4. New Episode. Rated TV-MA. 4 Seasons"
+    // Strip Unicode chars then take everything before the ". Row " grid position suffix
+    let title = tile.getAttribute('aria-label')?.replace(/[\u2066-\u2069]/g, '').replace(/\.\s*Row\s+\d+.*$/i, '').trim() || null;
+    const href = tile.getAttribute('href') || null;
+    const imgEl = tile.querySelector('img');
+    let imageUrl = null;
+    const srcset = imgEl?.getAttribute('srcset') || '';
+    if (srcset) {
+      // Max srcset entries are comma-separated without spaces: "url 200w,url 250w,..."
+      const entries = srcset.trim().split(',');
+      const last = entries[entries.length - 1].trim();
+      imageUrl = last ? last.split(' ')[0] : null;
+    }
+    if (!imageUrl) imageUrl = imgEl?.getAttribute('src') || null;
+    return { firstResultTitle: title, searchResultImageUrl: imageUrl, firstResultHref: href };
+  });
+  logTS(`Max: first result: "${firstResultTitle}"`);
+
+  if (!firstResultHref) {
+    throw new Error(`No Max results found for: "${searchTerm}"`);
+  }
+
+  // Normalize URL — always use play.hbomax.com (the active streaming domain)
+  const normalizeMaxUrl = (href) => {
+    let url = href.startsWith('http') ? href : `https://play.hbomax.com${href}`;
+    return url.replace(/\/\/(?:www\.)?(?:hbomax|max)\.com/, '//play.hbomax.com');
+  };
+
+  const detailUrl = normalizeMaxUrl(firstResultHref);
+  await page.goto(detailUrl, { waitUntil: 'networkidle2', timeout: 30000 });
+
+  // Extract show title from page
+  const showTitle = await page.evaluate(() => {
+    return document.querySelector('h1[data-testid="title"], h1[class*="Title"], h1')?.textContent?.trim() || null;
+  }) || firstResultTitle;
+
+  // If a specific season/episode was requested, find it in the episode list
+  if (targetSeason !== null) {
+    // Scroll down to trigger lazy-load of episode tiles (only needed for shows)
+    await page.evaluate(() => window.scrollBy(0, 800));
+    await delay(1500);
+    await page.waitForSelector('a[data-testid$="_tile"][data-sonic-type="video"]', { timeout: 10000 }).catch(() => {});
+    // Use the specific episodes tab season dropdown (not tile action menu dropdowns)
+    const seasonDropdownSel = '[data-testid="generic-show-page-rail-episodes-tabbed-content_dropdown"] button[aria-haspopup]';
+
+    // Read currently displayed season
+    const currentSeason = await page.evaluate((sel) => {
+      const btn = document.querySelector(sel);
+      const text = btn?.querySelector('span')?.textContent?.trim() || '';
+      return parseInt(text.match(/\d+/)?.[0] || '1', 10);
+    }, seasonDropdownSel);
+
+    logTS(`Max: page is on Season ${currentSeason}, target is Season ${targetSeason}`);
+
+    if (currentSeason !== targetSeason) {
+      logTS(`Max: switching to Season ${targetSeason}`);
+      // Click the season dropdown to open it
+      await page.click(seasonDropdownSel).catch(() => {});
+      await delay(1000);
+      // Click the matching season option — options may use role="option", li, or button
+      const clicked = await page.evaluate((season) => {
+        const candidates = document.querySelectorAll('[role="option"], [role="listbox"] li, [role="listbox"] button, ul[role="menu"] li, ul[role="menu"] button');
+        for (const opt of candidates) {
+          if (opt.textContent?.trim().includes(`Season ${season}`)) {
+            opt.click();
+            return true;
+          }
+        }
+        return false;
+      }, targetSeason);
+      if (clicked) {
+        // Scroll and wait for new season tiles to load
+        await delay(1000);
+        await page.evaluate(() => window.scrollBy(0, 800));
+        await delay(1000);
+        await page.waitForSelector('a[data-testid$="_tile"][data-sonic-type="video"]', { timeout: 10000 }).catch(() => {});
+      }
+    }
+
+    // Log how many episode tiles are visible for debugging
+    const tileCount = await page.evaluate(() =>
+      document.querySelectorAll('a[data-testid$="_tile"][data-sonic-type="video"]').length
+    );
+    logTS(`Max: found ${tileCount} episode tile(s) on page`);
+
+    // Find target episode tile using aria-label matching
+    const episodeData = await page.evaluate((season, episode) => {
+      const matchLabel = `Season ${season}, Episode ${episode}:`;
+      const tiles = document.querySelectorAll('a[data-testid$="_tile"][data-sonic-type="video"]');
+      for (const tile of tiles) {
+        const ariaLabel = tile.getAttribute('aria-label') || '';
+        // Strip Unicode directional embedding chars for matching
+        const cleanLabel = ariaLabel.replace(/[\u2066-\u2069]/g, '');
+        if (!cleanLabel.includes(matchLabel)) continue;
+
+        const href = tile.getAttribute('href') || null;
+
+        // Title: strip "E{N}: " prefix and Unicode embedding chars
+        let episodeTitle = null;
+        const titleSpan = tile.querySelector('span[dir="auto"]');
+        if (titleSpan) {
+          episodeTitle = titleSpan.textContent
+            .replace(/[\u2066-\u2069]/g, '')
+            .replace(/^E\d+:\s*/, '')
+            .trim() || null;
+        }
+
+        // Duration from metadata_duration span
+        const durationStr = tile.querySelector('span[data-testid="metadata_duration"]')?.textContent?.trim() || null;
+
+        // Description from last p[dir="auto"]
+        const descEls = tile.querySelectorAll('p[dir="auto"]');
+        const summary = descEls.length ? descEls[descEls.length - 1].textContent?.trim() || null : null;
+
+        // Image from srcset (Max: comma-separated without spaces)
+        const imgEl = tile.querySelector('img');
+        let imageUrl = null;
+        const srcset = imgEl?.getAttribute('srcset') || '';
+        if (srcset) {
+          const entries = srcset.trim().split(',');
+          const last = entries[entries.length - 1].trim();
+          imageUrl = last ? last.split(' ')[0] : null;
+        }
+        if (!imageUrl) imageUrl = imgEl?.getAttribute('src') || null;
+
+        return { href, episodeTitle, durationStr, summary, imageUrl };
+      }
+      return null;
+    }, targetSeason, targetEpisode);
+
+    if (episodeData?.href) {
+      const watchUrl = normalizeMaxUrl(episodeData.href);
+      logTS(`Max: found S${targetSeason}E${targetEpisode} url="${watchUrl}"`);
+      return {
+        url:             watchUrl,
+        title:           showTitle,
+        episodeTitle:    episodeData.episodeTitle,
+        seasonNumber:    targetSeason,
+        episodeNumber:   targetEpisode,
+        durationMinutes: parseDurationMinutes(episodeData.durationStr),
+        summary:         episodeData.summary,
+        imageUrl:        episodeData.imageUrl || searchResultImageUrl,
+      };
+    }
+    logTS(`Max: episode S${targetSeason}E${targetEpisode} not found in episode list`);
+  }
+
+  // Movie or show without episode — extract metadata and click the main play button
+  const { durationStr, movieSummary } = await page.evaluate(() => {
+    // Duration uses same testid as episode tiles
+    const durEl = document.querySelector('span[data-testid="metadata_duration"]');
+    // Description is a direct child p[dir="auto"] of the info block (not the hidden metadata label)
+    const descEl = document.querySelector('[data-testid="infoBlockFullContent"] > p[dir="auto"]');
+    return {
+      durationStr:  durEl?.textContent?.trim() || null,
+      movieSummary: descEl?.textContent?.trim() || null,
+    };
+  });
+
+  // Click the main watch button (not the trailer button) and capture the resulting URL.
+  // The main button is inside div[data-capability="default"], the trailer button is not.
+  let playUrl = detailUrl;
+  const playBtnExists = await page.$('div[data-capability="default"] button[data-testid="play_button"]').then(el => !!el).catch(() => false);
+  if (playBtnExists) {
+    await Promise.all([
+      page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {}),
+      page.click('div[data-capability="default"] button[data-testid="play_button"]').catch(() => {}),
+    ]);
+    playUrl = page.url();
+    if (!playUrl || playUrl === 'about:blank') playUrl = detailUrl;
+  } else {
+    // Fallback: look for a direct video anchor link
+    const videoHref = await page.evaluate(() => {
+      const a = document.querySelector('a[href*="/video/watch/"]');
+      return a?.getAttribute('href') || null;
+    });
+    if (videoHref) playUrl = videoHref.startsWith('http') ? videoHref : `https://www.max.com${videoHref}`;
+  }
+
+  logTS(`Max: url="${playUrl}" duration="${durationStr}"`);
+
+  return {
+    url:             playUrl,
+    title:           showTitle,
+    episodeTitle:    null,
+    seasonNumber:    targetSeason,
+    episodeNumber:   targetEpisode,
+    durationMinutes: parseDurationMinutes(durationStr),
+    summary:         movieSummary,
+    imageUrl:        searchResultImageUrl,
+  };
+}
+
+/**
+ * Search Peacock TV for content and return the watch URL.
+ */
+async function searchPeacock(page, query) {
+  const episodeMatch  = query.match(/\bs(\d+)\s*e(\d+)\b/i);
+  const targetSeason  = episodeMatch ? parseInt(episodeMatch[1], 10) : null;
+  const targetEpisode = episodeMatch ? parseInt(episodeMatch[2], 10) : null;
+  const searchTerm    = query.replace(/\bs\d+\s*e\d+\b/i, '').trim();
+
+  // Navigate to Peacock home
+  logTS('Navigating to Peacock TV');
+  await page.goto('https://www.peacocktv.com', { waitUntil: 'networkidle2', timeout: 30000 });
+
+  // Handle profile selection page if redirected (URL contains /watch/profiles)
+  if (page.url().includes('/watch/profiles')) {
+    logTS('Peacock profile selection page detected — selecting first profile');
+    // The profile avatar is a div.profiles__avatar--image[role="button"]
+    const profileSel = '.profiles__avatar--image[role="button"]';
+    try {
+      const profileEl = await page.waitForSelector(profileSel, { timeout: 8000 });
+      await profileEl.click();
+      await page.waitForFunction(() => !window.location.href.includes('/watch/profiles'), { timeout: 15000 });
+      logTS(`Peacock profile selected — now at: ${page.url()}`);
+    } catch (e) {
+      logTS(`Peacock: could not click profile — ${e.message}`);
+      throw new Error('Peacock profile selection failed. Check that a profile is set up in the browser.');
+    }
+  }
+
+  // Navigate to search page and type query
+  logTS(`Peacock: searching for "${searchTerm}"`);
+  await page.goto(`https://www.peacocktv.com/watch/search`, { waitUntil: 'networkidle2', timeout: 20000 });
+
+  // If redirected to profiles again, something went wrong
+  if (page.url().includes('/watch/profiles')) {
+    throw new Error('Peacock redirected to profile page after selection — login may have been lost.');
+  }
+
+  // Find the search input and type the query
+  const searchInput = await page.waitForSelector(
+    'input[type="search"], input[aria-label*="search" i], input[placeholder*="search" i], input[data-testid*="search" i]',
+    { timeout: 10000 }
+  );
+  await searchInput.click({ clickCount: 3 });
+  await delay(500); // ensure input is focused and ready
+
+  // Capture the initial first result title (default/trending results) so we can detect the update
+  const initialFirstTitle = await page.evaluate(() => {
+    const el = document.querySelector('ul[data-testid="search-results-grid"] li[data-testid="collection-tile"] h4[data-testid="title"]');
+    return el ? el.textContent.trim() : '__none__';
+  });
+
+  await searchInput.type(searchTerm, { delay: 60 });
+
+  // Wait for results to update away from the initial default results
+  await page.waitForFunction(
+    (prev) => {
+      const el = document.querySelector('ul[data-testid="search-results-grid"] li[data-testid="collection-tile"] h4[data-testid="title"]');
+      return el && el.textContent.trim() !== prev;
+    },
+    { timeout: 15000 },
+    initialFirstTitle
+  ).catch(() => {});
+
+  // Wait for results grid (in case it wasn't present initially)
+  await page.waitForSelector('ul[data-testid="search-results-grid"] li[data-testid="collection-tile"]', { timeout: 5000 }).catch(() => {});
+
+  // Get the title and image of the first result
+  const { firstTitle, searchResultImageUrl } = await page.evaluate(() => {
+    const tile = document.querySelector('ul[data-testid="search-results-grid"] li[data-testid="collection-tile"]');
+    const titleEl = tile?.querySelector('h4[data-testid="title"]');
+    const imgEl = tile?.querySelector('img');
+    // Prefer srcset (pick highest-res entry) over src
+    let imageUrl = null;
+    const srcset = imgEl?.srcset;
+    if (srcset) {
+      const entries = srcset.trim().split(/,\s+/);
+      const last = entries[entries.length - 1];
+      imageUrl = last ? last.split(' ')[0] : null;
+    }
+    if (!imageUrl && imgEl?.src) imageUrl = imgEl.src;
+    return { firstTitle: titleEl ? titleEl.textContent.trim() : null, searchResultImageUrl: imageUrl };
+  });
+  logTS(`Peacock search results loaded — first result: "${firstTitle}"`);
+
+  // Intercept key Peacock API responses — set up BEFORE clicking first result
+  const capturedApiResponses = [];
+  const captureHandler = async (response) => {
+    try {
+      const url = response.url();
+      if (!url.includes('atom.peacocktv.com') &&
+          !url.includes('bff-ext.clients.peacocktv.com')) return;
+      const ct = response.headers()['content-type'] || '';
+      if (!ct.includes('json')) return;
+      const json = await response.json().catch(() => null);
+      if (!json) return;
+      logTS(`Peacock API captured: ${url.substring(0, 100)}`);
+      capturedApiResponses.push({ url, json });
+    } catch (e) { /* ignore */ }
+  };
+  page.on('response', captureHandler);
+
+  // Click the first result and navigate to the detail page
+  const firstResult = await page.$('ul[data-testid="search-results-grid"] li[data-testid="collection-tile"] [role="link"]');
+  if (!firstResult) {
+    page.off('response', captureHandler);
+    throw new Error('No search results found on Peacock');
+  }
+
+  await Promise.all([
+    page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 20000 }),
+    firstResult.click(),
+  ]);
+
+  const detailUrl = page.url();
+  logTS(`Peacock navigated to detail page: ${detailUrl}`);
+
+  // Live events navigate directly to a playback URL — skip episode tab wait
+  const isPlaybackUrl = detailUrl.includes('/watch/playback/');
+
+  // Click Episodes tab to trigger BFF rails API calls for episode list
+  if (!isPlaybackUrl) {
+    try {
+      const episodesBtn = await page.waitForSelector('[data-testid="episodes-button"]', { timeout: 8000 });
+      await episodesBtn.click();
+      await delay(3000);
+      logTS('Peacock: clicked Episodes tab, waiting for API responses');
+    } catch (e) {
+      logTS(`Peacock: episodes button not found — ${e.message}`);
+    }
+  } else {
+    logTS('Peacock: live event — waiting for playback overlay to render');
+    await page.waitForSelector(
+      'h1[data-testid="metadata-title"], span[data-testid="header-title"], p[data-testid="metadata-description"]',
+      { timeout: 10000 }
+    ).catch(() => {});
+    await delay(1000);
+  }
+
+  page.off('response', captureHandler);
+  logTS(`Peacock: captured ${capturedApiResponses.length} API responses total`);
+
+  // Extract show title — prefer title logo alt (detail pages) or metadata-title (live playback overlay)
+  const showTitle = await page.evaluate(() => {
+    const logoAlt = document.querySelector('img[data-shared-id="title-logo"]')?.getAttribute('alt')?.trim();
+    if (logoAlt && logoAlt.length > 0) return logoAlt;
+    const liveTitle = document.querySelector('h1[data-testid="metadata-title"]')?.textContent?.trim();
+    if (liveTitle) return liveTitle;
+    const headerTitle = document.querySelector('span[data-testid="header-title"]')?.textContent?.trim();
+    if (headerTitle) return headerTitle;
+    const raw = document.querySelector('meta[property="og:title"]')?.content
+      || document.querySelector('h1[data-testid="title"]')?.textContent?.trim()
+      || document.querySelector('h1')?.textContent?.trim()
+      || document.title || '';
+    return raw.replace(/\s*[|\-–]\s*Peacock.*$/i, '')
+               .replace(/\s*[-–]\s*Season\s+\d+\s*$/i, '')
+               .trim() || null;
+  });
+
+  // If a specific episode was requested, search captured API responses for it
+  if (targetSeason && targetEpisode) {
+    const findEpisode = (obj, depth = 0) => {
+      if (!obj || typeof obj !== 'object' || depth > 10) return null;
+      if (Array.isArray(obj)) {
+        for (const item of obj) {
+          const r = findEpisode(item, depth + 1);
+          if (r) return r;
+        }
+      } else {
+        const sn = parseInt(obj.seasonNumber ?? obj.season_number ?? obj.season ?? -1, 10);
+        const en = parseInt(obj.episodeNumber ?? obj.episode_number ?? obj.episodeNum
+                         ?? obj.number ?? obj.order ?? -1, 10);
+        if (sn === targetSeason && en === targetEpisode) return obj;
+        // Match on episode number alone if object has title + id/slug (episode-like)
+        if (sn === -1 && en === targetEpisode && (obj.title || obj.name || obj.episodeName)
+            && (obj.id || obj.guid || obj.slug || obj.programmeUuid)) return obj;
+        for (const val of Object.values(obj)) {
+          const r = findEpisode(val, depth + 1);
+          if (r) return r;
+        }
+      }
+      return null;
+    };
+
+    // Scan the episode tile DOM for the matching episode's thumbnail image
+    const episodeTileImageUrl = await page.evaluate((season, episode) => {
+      const label = `S${season} E${episode}`;
+      for (const tile of document.querySelectorAll('[data-testid="episode-tile"]')) {
+        const seLabel = tile.querySelector('span[aria-label]');
+        const seText  = tile.querySelector('span.PR1Lg1st5k');
+        const matched = (seLabel && seLabel.getAttribute('aria-label').includes(`Season ${season}, Episode ${episode}`))
+                     || (seText  && seText.textContent.trim() === label);
+        if (!matched) continue;
+        const imgEl = tile.querySelector('img');
+        const srcset = imgEl?.srcset;
+        if (srcset) {
+          const entries = srcset.trim().split(/,\s+/);
+          const last = entries[entries.length - 1];
+          return last ? last.split(' ')[0] : null;
+        }
+        return imgEl?.src || null;
+      }
+      return null;
+    }, targetSeason, targetEpisode);
+
+    for (const { json } of capturedApiResponses) {
+      const ep = findEpisode(json);
+      if (!ep) continue;
+      // Extract UUID: prefer the last path segment of the slug (= boundId used in playback URLs)
+      // Fall back to known UUID-like fields
+      let uuid = null;
+      if (ep.slug) {
+        const lastSeg = ep.slug.split('/').filter(Boolean).pop() || '';
+        if (lastSeg.includes('-') && lastSeg.length > 20) uuid = lastSeg;
+      }
+      if (!uuid) {
+        uuid = ep.id || ep.guid || ep.programmeUuid || ep.contentId || ep.episodeId
+            || ep.assetId || ep.providerVariantId || ep.merlinId || ep.mediaId || null;
+      }
+      logTS(`Peacock: found S${targetSeason}E${targetEpisode} uuid="${uuid}"`);
+      if (uuid) {
+        const watchUrl = `https://www.peacocktv.com/watch/playback/vod/_/${uuid}`;
+        const durationMinutes = ep.durationMilliseconds
+          ? Math.round(ep.durationMilliseconds / 60000)
+          : (ep.durationSeconds ? Math.round(ep.durationSeconds / 60)
+          : (ep.durationMinutes || ep.runtime || null));
+        const epImageUrl = ep.imageUrl || ep.image || ep.thumbnailUrl || ep.posterUrl
+                         || ep.thumbnail || ep.imageHref || ep.artworkUrl || null;
+        return {
+          url:             watchUrl,
+          title:           showTitle || firstTitle,
+          episodeTitle:    ep.episodeName || ep.title || ep.name || ep.episodeTitle || null,
+          seasonNumber:    targetSeason,
+          episodeNumber:   targetEpisode,
+          durationMinutes: durationMinutes ? parseInt(durationMinutes, 10) : null,
+          summary:         ep.synopsis || ep.synopsisShort || ep.description || ep.summary || null,
+          imageUrl:        episodeTileImageUrl || epImageUrl || searchResultImageUrl,
+        };
+      }
+    }
+
+    logTS(`Peacock: episode S${targetSeason} E${targetEpisode} not found in ${capturedApiResponses.length} captured responses`);
+  }
+
+  // No episode specified (or not found) — movie or live event direct playback
+  // If already on a playback URL (live event), use it as-is; otherwise build VOD playback URL
+  let moviePlayUrl;
+  if (isPlaybackUrl) {
+    moviePlayUrl = detailUrl;
+  } else {
+    const urlUuid = detailUrl.split('/').filter(Boolean).pop() || '';
+    moviePlayUrl = (urlUuid.includes('-') && urlUuid.length > 20)
+      ? `https://www.peacocktv.com/watch/playback/vod/_/${urlUuid}`
+      : detailUrl;
+  }
+
+  // Get synopsis, duration, and image from page DOM (detail page or live playback overlay)
+  const { movieSummary, durationStr, pageImageUrl } = await page.evaluate(() => {
+    const synopsis = document.querySelector('p[data-testid="synopsis"]')?.textContent?.trim()
+      || document.querySelector('p[data-testid="metadata-description"]')?.textContent?.trim()
+      || null;
+    // Detail pages: span[aria-label] with "1 Hour 58 Minutes"; live: time[data-testid="duration-time"] datetime="PT2H30M"
+    const durationDatetime = document.querySelector('time[data-testid="duration-time"]')?.getAttribute('datetime') || null;
+    let durLabel = null;
+    if (!durationDatetime) {
+      for (const span of document.querySelectorAll('span[aria-label]')) {
+        if (/\d+\s*(Hour|Minute)/i.test(span.getAttribute('aria-label'))) {
+          durLabel = span.getAttribute('aria-label').trim();
+          break;
+        }
+      }
+    }
+    // Try page-level poster/thumbnail image
+    const imgEl = document.querySelector('img[data-testid="show-image"], img[data-testid="poster-image"], img[data-testid="hero-image"]');
+    const pageImageUrl = imgEl?.src || null;
+    return { movieSummary: synopsis, durationStr: durationDatetime || durLabel, pageImageUrl };
+  });
+
+  return {
+    url:             moviePlayUrl,
+    title:           showTitle || firstTitle,
+    episodeTitle:    null,
+    seasonNumber:    targetSeason,
+    episodeNumber:   targetEpisode,
+    durationMinutes: parseDurationMinutes(durationStr),
+    summary:         movieSummary,
+    imageUrl:        searchResultImageUrl || pageImageUrl,
+  };
 }
 
 /**
@@ -1843,7 +2778,7 @@ async function setupAudioMonitor(frameHandle, videoHandle, audioDevice, encoderU
  * Runs in Node.js context (not browser context) so it can trigger page navigation.
  * @param {Object} page - The Puppeteer page object
  */
-function setupESPNErrorMonitor(page) {
+function setupESPNErrorMonitor(page, encoderConfig = null) {
   if (!Constants.ENABLE_PAUSE_MONITOR) {
     return;
   }
@@ -1884,8 +2819,25 @@ function setupESPNErrorMonitor(page) {
           await delay(5000);
           try {
             await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-            await delay(3000);
-            await fullScreenVideoESPN(page);
+            await delay(6000);
+            await fullScreenVideoESPN(page, encoderConfig);
+            // Re-apply audio device since page reload resets video element sinkIds
+            if (encoderConfig && encoderConfig.audioDevice) {
+              try {
+                await page.evaluate(async (audioDevice) => {
+                  const devices = await navigator.mediaDevices.enumerateDevices();
+                  const targetDevice = devices.filter(d => d.kind === 'audiooutput').find(d => d.label.includes(audioDevice));
+                  if (!targetDevice) return;
+                  const allVideos = document.querySelectorAll('video');
+                  for (const video of allVideos) {
+                    if (video.setSinkId) await video.setSinkId(targetDevice.deviceId).catch(() => {});
+                  }
+                }, encoderConfig.audioDevice);
+                logTS(`ESPN monitor: re-applied audio device after recovery: ${encoderConfig.audioDevice}`);
+              } catch (audioErr) {
+                logTS(`ESPN monitor: failed to re-apply audio device - ${audioErr.message}`);
+              }
+            }
           } catch (e) {
             logTS(`ESPN monitor: recovery failed - ${e.message}`);
           }
@@ -2234,7 +3186,7 @@ async function fullScreenVideoGooglePhotos(page) {
   logTS("changed to fullscreen and max volume");
 }
 
-async function fullScreenVideoESPN(page) {
+async function fullScreenVideoESPN(page, encoderConfig = null) {
   logTS("URL contains ESPN, setting up fullscreen and unmuting");
 
   // Wait for video element to have enough data to play (readyState >= 3)
@@ -2438,7 +3390,7 @@ async function fullScreenVideoESPN(page) {
   }
 
   // Setup error recovery monitor to handle hard errors (e.g. too many devices streaming)
-  setupESPNErrorMonitor(page);
+  setupESPNErrorMonitor(page, encoderConfig);
 
   logTS("finished ESPN fullscreen setup");
 }
@@ -3797,7 +4749,7 @@ function getExecutablePath() {
   }
 }
 
-function buildRecordingJson(name, duration, encoderChannel, episodeTitle, summary, seasonNumber, episodeNumber) {
+function buildRecordingJson(name, duration, encoderChannel, episodeTitle, summary, seasonNumber, episodeNumber, imageUrl) {
   const startTime = Math.round(Date.now() / 1000);
 
   const data = {
@@ -3813,7 +4765,7 @@ function buildRecordingJson(name, duration, encoderChannel, episodeTitle, summar
       "Title": name,
       "EpisodeTitle": episodeTitle || name,
       "Summary": summary || `Manual recording: ${name}`,
-      "Image": "https://tmsimg.fancybits.co/assets/p9467679_st_h6_aa.jpg",
+      "Image": imageUrl || "https://tmsimg.fancybits.co/assets/p9467679_st_h6_aa.jpg",
       "SeriesID": "MANUAL",
     }
   }
@@ -3835,7 +4787,7 @@ function buildRecordingJson(name, duration, encoderChannel, episodeTitle, summar
   return JSON.stringify(data)
 }
 
-async function startRecording(name, duration, encoderChannel, episodeTitle, summary, seasonNumber, episodeNumber) {
+async function startRecording(name, duration, encoderChannel, episodeTitle, summary, seasonNumber, episodeNumber, imageUrl) {
   let response
   try {
     response = await fetch(Constants.CHANNELS_POST_URL, {
@@ -3843,7 +4795,7 @@ async function startRecording(name, duration, encoderChannel, episodeTitle, summ
       headers: {
         'Content-type': 'application/json',
       },
-      body: buildRecordingJson(name, duration, encoderChannel, episodeTitle, summary, seasonNumber, episodeNumber),
+      body: buildRecordingJson(name, duration, encoderChannel, episodeTitle, summary, seasonNumber, episodeNumber, imageUrl),
     })
   } catch (error) {
     console.log('Unable to schedule recording', error)
@@ -3861,9 +4813,10 @@ function getFullUrl (req) {
   //Create URL object to validate and format the URL
   const urlObj = new URL(req.query.url);
   
-  // Add any additional query parameters
+  // Add any additional query parameters (exclude CH4C routing params that shouldn't go to the target site)
+  const internalParams = new Set(['url', 'encoder']);
   Object.entries(req.query).forEach(([key, value]) => {
-    if (key !== 'url') {
+    if (!internalParams.has(key)) {
       urlObj.searchParams.append(key, value);
     }
   });
@@ -4847,7 +5800,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
 
   // POST /instant - Handle instant recording or tuning
   app.post('/instant', async (req, res) => {
-    const { recording_name, recording_url, recording_duration, button_record, button_tune, episode_title, recording_summary, season_number, episode_number, selected_encoder } = req.body;
+    const { recording_name, recording_url, recording_duration, button_record, button_tune, episode_title, recording_summary, season_number, episode_number, selected_encoder, recording_image } = req.body;
 
     // Check if client wants JSON response
     const wantsJson = req.headers.accept && req.headers.accept.includes('application/json');
@@ -4963,7 +5916,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
       logTS(`Starting instant recording: ${recordingName} for ${duration} minutes`);
 
       // Start the recording in Channels DVR
-      const recordingStarted = await startRecording(recordingName, duration, availableEncoder.channel, episode_title, recording_summary, season_number, episode_number);
+      const recordingStarted = await startRecording(recordingName, duration, availableEncoder.channel, episode_title, recording_summary, season_number, episode_number, recording_image);
 
       if (recordingStarted) {
         // Start monitoring for display purposes, but skip health checks since Channels DVR
@@ -4977,8 +5930,9 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
         const bufferSeconds = 15;
         const totalDurationMs = (duration * 60 + bufferSeconds) * 1000;
         logTS(`Setting timer to stop stream after ${duration} minutes (+ ${bufferSeconds}s buffer)`);
-        setTimeout(async () => {
+        setEncoderDurationTimer(availableEncoder.url, async () => {
           logTS(`Recording duration expired for ${recordingName}, stopping stream on ${availableEncoder.channel}...`);
+          clearEncoderDurationTimer(availableEncoder.url);
           try {
             await cleanupManager.cleanup(availableEncoder.url, null);
           } catch (cleanupError) {
@@ -5020,8 +5974,9 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
         logTS(`Tuning encoder ${availableEncoder.channel} to ${targetUrl} for ${duration} minutes`);
 
         // Set a timer to stop the stream after the specified duration
-        setTimeout(async () => {
+        setEncoderDurationTimer(availableEncoder.url, async () => {
           logTS(`Duration expired for tuned stream on ${availableEncoder.channel}, stopping...`);
+          clearEncoderDurationTimer(availableEncoder.url);
           try {
             await cleanupManager.cleanup(availableEncoder.url, null);
           } catch (cleanupError) {
@@ -5192,6 +6147,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
     logTS(`Stopping ${activeStreams.length} active stream(s)...`);
 
     for (const encoderUrl of activeStreams) {
+      clearEncoderDurationTimer(encoderUrl);
       try {
         await cleanupManager.cleanup(encoderUrl, null);
         logTS(`Stopped stream on ${encoderUrl}`);
@@ -5299,6 +6255,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
     const targetUrl = streamInfo?.targetUrl || 'Unknown URL';
 
     logTS(`Stopping stream on encoder ${encoderIndex} (${encoderUrl})...`);
+    clearEncoderDurationTimer(encoderUrl);
 
     try {
       await cleanupManager.cleanup(encoderUrl, null);
@@ -5715,6 +6672,80 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
     }
   });
 
+  // Content Search API — uses an existing encoder browser to search a streaming service
+  // and return the watch URL for the first matching result.
+  app.post('/api/search-content', async (req, res) => {
+    const { service, query, encoderUrl } = req.body;
+
+    if (!service || !query) {
+      return res.status(400).json({ success: false, error: 'Service and search query are required' });
+    }
+
+    // Find a browser instance to use — prefer the specified encoder, else any available
+    // Note: browsers map stores the browser object directly (not wrapped in {browser, page})
+    let browser;
+    if (encoderUrl) {
+      browser = browsers.get(encoderUrl);
+    } else {
+      for (const [, b] of browsers) {
+        if (b) {
+          browser = b;
+          break;
+        }
+      }
+    }
+
+    if (!browser) {
+      return res.status(503).json({ success: false, error: 'No browser instance available. Make sure at least one encoder is running.' });
+    }
+
+    let searchPage = null;
+    try {
+      searchPage = await browser.newPage();
+
+      let result = null;
+      if (service === 'prime_video') {
+        result = await searchPrimeVideo(searchPage, query);
+      } else if (service === 'peacock') {
+        result = await searchPeacock(searchPage, query);
+      } else if (service === 'disney_plus') {
+        result = await searchDisneyPlus(searchPage, query);
+      } else if (service === 'hbomax') {
+        result = await searchMax(searchPage, query);
+      } else {
+        return res.status(400).json({ success: false, error: `Service "${service}" is not yet supported` });
+      }
+
+      if (result && result.url) {
+        // Add buffer: 2 extra minutes per 10 minutes of content
+        if (result.durationMinutes) {
+          result.durationMinutes += Math.floor(result.durationMinutes / 10) * 2;
+        }
+        return res.json({ success: true, ...result });
+      } else {
+        return res.status(404).json({ success: false, error: 'No results found for your search' });
+      }
+    } catch (err) {
+      logTS(`Content search error for "${query}" on ${service}: ${err.message}`);
+      return res.status(500).json({ success: false, error: `Search failed: ${err.message}` });
+    } finally {
+      if (searchPage) {
+        try { await searchPage.close(); } catch (e) { /* ignore */ }
+      }
+      // Minimize the browser window so it doesn't remain visible after search
+      try {
+        const pages = await browser.pages();
+        const targetPage = pages.length > 0 ? pages[0] : null;
+        if (targetPage) {
+          const session = await targetPage.createCDPSession();
+          const { windowId } = await session.send('Browser.getWindowForTarget');
+          await session.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'minimized' } });
+          await session.detach();
+        }
+      } catch (e) { logTS(`Could not minimize browser window after search: ${e.message}`); }
+    }
+  });
+
   // Serve SSL certificate for download
   app.get('/data/cert.pem', (req, res) => {
     const certPath = path.join(Constants.DATA_DIR, 'cert.pem');
@@ -5956,7 +6987,7 @@ async function handleSiteSpecificFullscreen(targetUrl, page, encoderConfig = nul
       await fullScreenVideoGooglePhotos(page);
     } else if (targetUrl.includes("espn.com")) {
       logTS("Handling ESPN video");
-      await fullScreenVideoESPN(page);
+      await fullScreenVideoESPN(page, encoderConfig);
     } else if (targetUrl.includes("disneynow.com")) {
       logTS("Handling DisneyNow video");
       await fullScreenVideoDisneyNow(page);

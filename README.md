@@ -8,7 +8,7 @@ This project merges elements of the excellent [Chrome Capture for Channels](http
 
 **Why I made this:**
 
-- Recovering channels lost from TV Everywhere (e.g., NFL Network)
+- Recovering channels lost from TV Everywhere
 - Recording web-only content (e.g., high school sports streaming websites without apps)
 - Running on a low-cost PC (including Celeron-based machines running Channels DVR) with a relatively inexpensive external HDMI encoder like the Link Pi ENC1-V3 (~$120)
 
@@ -190,8 +190,6 @@ Navigate to `http://<CH4C_IP>:<CH4C_PORT>/` to view:
 
 The Login Manager is on the home page (`http://<CH4C_IP>:<CH4C_PORT>/`). It automates logging in to streaming services across all currently-running encoder browsers in sequence, skipping any that are already authenticated.
 
-Supported services include Sling TV, Peacock, Disney+, HBO Max, Prime Video, and TV Everywhere (TVE) services such as ABC, AMC, CBS, Discovery, Disney Now, ESPN, Fox, Fox Sports, FX, History Channel, NBC/Bravo, TBS, TNT, and USA Network. TVE services require your cable/satellite provider name (e.g. `Spectrum`, `Xfinity`, `DirecTV`) along with your provider credentials — the Login Manager searches for your provider and completes the authentication flow automatically.
-
 For services not listed, use [Remote Access](#remote-access) to log in manually via VNC.
 
 ### Settings
@@ -208,7 +206,7 @@ Navigate to `http://<CH4C_IP>:<CH4C_PORT>/settings` to configure:
 
 Navigate to `http://<CH4C_IP>:<CH4C_PORT>/m3u-manager` to:
 - Synchronize the channel guide from Sling TV (Favorites only recommended)
-- Add popular network channels (ESPN, FX, Disney, NBC, and more) from the Networks tab
+- Add popular network channels from the Networks tab
 - Create custom channels for any streaming service with deep links
 - Search for station IDs by callsign or channel name
 
@@ -224,7 +222,7 @@ Navigate to `http://<CH4C_IP>:<CH4C_PORT>/m3u-manager` to:
 |:------------------:|:--------------:|
 | ![Add Custom Channel](./assets/addcustomchannel.jpg) | ![Station Lookup](./assets/stationlookup.jpg) |
 
-**Use the Networks tab to quickly add popular channels like ESPN, FX, Disney, NBC, TBS, TNT, Discovery, and more.** You can also add any custom channel URL using the Add Custom Channel button.
+**Use the Networks tab to quickly add popular channels** You can also add any custom channel URL using the Add Custom Channel button.
 
 ![Networks Tab](./assets/m3unetworks.jpg)
 
@@ -240,6 +238,9 @@ Navigate to `http://<CH4C_IP>:<CH4C_PORT>/instant` to:
 - Instantly start recording any URL and it will automatically try to enable full screen video
 - Tune your encoder to a URL without recording (watch in Channels on the encoder's channel number)
 - Add your own show metadata that will be visible in the Channels DVR Recordings
+- **Show Search**: automatically look up a specific episode or movie from a supported streaming service and pre-fill all recording metadata (title, episode, duration, artwork, and direct watch URL)
+
+Enter the show name and optionally an episode in the Show Search field, select a service, and click **Search**. The matching episode or movie details will be populated automatically — just select an encoder and start the recording.
 
 ![Instant Recording Page](./assets/instantpage.jpg)
 
