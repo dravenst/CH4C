@@ -171,10 +171,15 @@ async function searchPrimeVideo(page, query) {
 
   // Navigate to the detail page
   await page.goto(resultHref, { waitUntil: 'domcontentloaded', timeout: 30000 });
-  await delay(2000);
+
+  // Holds episode metadata if found in list but play URL unavailable (used in ATF fallback)
+  let foundEpisodeMeta = null;
 
   // If a specific season/episode was requested, find it in the episode list
   if (targetSeason !== null) {
+    // Wait for episode list to appear before checking season selector
+    await page.waitForSelector('li[data-testid="episode-list-item"]', { timeout: 10000 }).catch(() => {});
+
     // Check for a season selector and navigate to the correct season if needed.
     // Season links reliably use href pattern "season_select_sN" regardless of the
     // dropdown element's ID, which varies across shows.
@@ -183,38 +188,78 @@ async function searchPrimeVideo(page, query) {
       const seasonHref = await page.evaluate(el => el.href, targetSeasonLink);
       logTS(`Season selector found — navigating to Season ${targetSeason}`);
       await page.goto(seasonHref, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      await delay(2000);
+      await page.waitForSelector('li[data-testid="episode-list-item"]', { timeout: 10000 }).catch(() => {});
     }
 
-    // Episode labels in the DOM look like "S1 E1" inside h3 > span > span
-    const episodeData = await page.evaluate((season, episode) => {
-      const label = `S${season} E${episode}`;
-      for (const item of document.querySelectorAll('li[data-testid="episode-list-item"]')) {
-        const h3 = item.querySelector('h3');
-        if (h3 && h3.textContent.includes(label)) {
-          const btn         = item.querySelector('a[data-testid="episodes-playbutton"]');
-          const epTitleEl   = item.querySelector('span.TuMJlk');
-          const durationEl  = item.querySelector('[data-testid="episode-runtime"]');
-          const synopsisEl  = item.querySelector('[data-automation-id^="synopsis-"] div[dir="auto"]');
-          // Extract highest-res JPEG from episode thumbnail srcset
-          let imageUrl = null;
-          const srcSet = item.querySelector('[data-testid="episode-packshot"] picture source[type="image/jpeg"]')?.srcset;
-          if (srcSet) {
-            const entries = srcSet.trim().split(/,\s+/);
-            const last = entries[entries.length - 1];
-            imageUrl = last ? last.split(' ')[0] : null;
-          }
-          return {
-            href:         btn         ? btn.href                        : null,
-            episodeTitle: epTitleEl   ? epTitleEl.textContent.trim()    : null,
-            durationStr:  durationEl  ? durationEl.textContent.trim()   : null,
-            summary:      synopsisEl  ? synopsisEl.textContent.trim()   : null,
-            imageUrl,
-          };
+    // Scroll to reveal later episodes that may be lazy-loaded
+    await page.evaluate(() => window.scrollBy(0, 800));
+
+    // Episode list uses 0-based IDs: av-ep-episode-0 = E1, av-ep-episode-5 = E6, etc.
+    const episodeItemId = `av-ep-episode-${targetEpisode - 1}`;
+    await page.waitForSelector(`li[id="${episodeItemId}"]`, { timeout: 8000 }).catch(() => {});
+
+    const episodeData = await page.evaluate((itemId) => {
+      const item = document.querySelector(`li[id="${itemId}"]`);
+      if (!item) return null;
+      const allItemLinks = [...item.querySelectorAll('a[href]')];
+      const allPlayBtns  = allItemLinks.filter(a =>
+        a.dataset.testid === 'episodes-playbutton' || a.dataset.testid === 'episode-play-button'
+      );
+      // Prefer a /gp/video/detail/ play link that is not a download
+      const btn = allPlayBtns.find(a => a.href.includes('/gp/video/detail/') && !a.href.includes('action=download'))
+               || allPlayBtns.find(a => a.href.startsWith('https://') && !a.href.includes('action=download'))
+               || allItemLinks.find(a => a.href.includes('/gp/video/detail/') && !a.href.includes('action=download'));
+      const epTitleEl   = item.querySelector('span.TuMJlk');
+      const durationEl  = item.querySelector('[data-testid="episode-runtime"]');
+      const synopsisEl  = item.querySelector('[data-automation-id^="synopsis-"] div[dir="auto"]');
+      let imageUrl = null;
+      const srcSet = item.querySelector('[data-testid="episode-packshot"] picture source[type="image/jpeg"]')?.srcset;
+      if (srcSet) {
+        const entries = srcSet.trim().split(/,\s+/);
+        const last = entries[entries.length - 1];
+        imageUrl = last ? last.split(' ')[0] : null;
+      }
+      return {
+        href:         btn ? btn.href : null,
+        episodeTitle: epTitleEl   ? epTitleEl.textContent.trim()    : null,
+        durationStr:  durationEl  ? durationEl.textContent.trim()   : null,
+        summary:      synopsisEl  ? synopsisEl.textContent.trim()   : null,
+        imageUrl,
+      };
+    }, episodeItemId);
+
+    logTS(`Prime Video episode lookup: itemId="${episodeItemId}" found=${episodeData !== null} href=${episodeData?.href || 'null'} title="${episodeData?.episodeTitle || ''}" duration="${episodeData?.durationStr || ''}"`);
+
+    // Stash metadata for use in ATF fallback if we can't get a direct play URL
+    if (episodeData) {
+      foundEpisodeMeta = {
+        episodeTitle:    episodeData.episodeTitle,
+        durationStr:     episodeData.durationStr,
+        summary:         episodeData.summary,
+        imageUrl:        episodeData.imageUrl,
+      };
+    }
+
+    // If no direct play URL found, click the episode packshot to navigate to the episode detail page
+    // and use the ATF play button from there (same approach as the committed fallback)
+    if (episodeData && !episodeData.href) {
+      const packshot = await page.$(`li[id="${episodeItemId}"] [data-testid="episode-packshot"]`)
+                    || await page.$(`li[id="${episodeItemId}"] h3`);
+      if (packshot) {
+        logTS(`Prime Video: no direct play URL — clicking episode to navigate to detail page`);
+        const preClickUrl = page.url();
+        await packshot.click().catch(() => {});
+        await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {});
+        const episodePage = page.url();
+        if (episodePage !== preClickUrl && episodePage.includes('/gp/video/detail/')) {
+          logTS(`Prime Video: navigated to episode detail page: ${episodePage}`);
+          const atfBtn = await page.$('a[data-testid="dp-atf-play-button"]');
+          episodeData.href = atfBtn
+            ? await page.evaluate(el => el.href, atfBtn)
+            : episodePage + (episodePage.includes('?') ? '&' : '?') + 'autoplay=1&t=0';
         }
       }
-      return null;
-    }, targetSeason, targetEpisode);
+    }
 
     if (episodeData && episodeData.href) {
       // Grab show title from the detail page
@@ -244,6 +289,10 @@ async function searchPrimeVideo(page, query) {
 
   // No episode specified (or episode not found) — use the ATF play button or circular watch button
   // Covers Watch Now, Continue Watching, Resume, and live event buttons
+  await page.waitForSelector(
+    'a[data-testid="dp-atf-play-button"], a[data-testid="circular-playbutton"], a[href*="atv_plr_detail"]',
+    { timeout: 8000 }
+  ).catch(() => {});
   const watchLink = await page.$(
     'a[data-testid="dp-atf-play-button"], a[data-testid="circular-playbutton"], ' +
     'a[href*="atv_plr_detail_play"], a[href*="atv_plr_detail"]'
@@ -293,12 +342,12 @@ async function searchPrimeVideo(page, query) {
     return {
       url:             finalUrl,
       title:           showTitle,
-      episodeTitle:    null,
-      seasonNumber:    null,
-      episodeNumber:   null,
-      durationMinutes: parseDurationMinutes(durationStr),
-      summary,
-      imageUrl:        searchResultImageUrl,
+      episodeTitle:    foundEpisodeMeta?.episodeTitle    || null,
+      seasonNumber:    foundEpisodeMeta ? targetSeason   : null,
+      episodeNumber:   foundEpisodeMeta ? targetEpisode  : null,
+      durationMinutes: parseDurationMinutes(foundEpisodeMeta?.durationStr || durationStr),
+      summary:         foundEpisodeMeta?.summary         || summary,
+      imageUrl:        foundEpisodeMeta?.imageUrl        || searchResultImageUrl,
     };
   }
 
@@ -416,7 +465,6 @@ async function searchDisneyPlus(page, query) {
         logTS(`Disney+: Season ${targetSeason} not found in dropdown`);
       } else {
         // Wait for the episode list to reload after season change
-        await delay(2000);
         await page.waitForSelector('a[data-testid="set-item"][href^="/play/"]', { timeout: 8000 })
                   .catch(() => {});
       }
@@ -852,7 +900,8 @@ async function searchPeacock(page, query) {
     try {
       const episodesBtn = await page.waitForSelector('[data-testid="episodes-button"]', { timeout: 8000 });
       await episodesBtn.click();
-      await delay(3000);
+      // Wait for episode tiles to appear in the DOM rather than a fixed delay
+      await page.waitForSelector('[data-testid="episode-tile"]', { timeout: 10000 }).catch(() => {});
       logTS('Peacock: clicked Episodes tab, waiting for API responses');
     } catch (e) {
       logTS(`Peacock: episodes button not found — ${e.message}`);
