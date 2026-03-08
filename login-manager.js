@@ -139,13 +139,19 @@ const LOGIN_SITES = [
     id: 'disney',
     name: 'Disney+',
     type: 'direct',
-    // Navigate to disney.com; logged in when "My Account" nav link is present.
-    // <a href="#" class="login-dropdown-title-link" role="button"><u class="title">My Account</u></a>
-    // Using loggedInIndicator (positive) rather than loggedOutIndicator (absence of a.login-link)
-    // because a.login-link can linger hidden in the DOM after login, causing false negatives.
-    checkUrl: 'https://www.disney.com/',
-    loggedInIndicator: 'a.login-dropdown-title-link',
-    // SPA takes several seconds to swap "Log In" → "My Account" after cookie auth settles
+    // Navigate to disneyplus.com/home. Two "not logged in" signals are checked each poll:
+    // 1. URL redirect: unauthenticated browsers are JS-redirected to disney.com (~5s).
+    //    'www.disney.com' does NOT match 'www.disneyplus.com', so this is unambiguous.
+    // 2. Element: LOG IN button in DOM while still on disneyplus.com.
+    //    <a href="/identity/login" data-testid="log_in">LOG IN</a>
+    //    page.$() detects DOM presence regardless of modal overlays.
+    checkUrl: 'https://www.disneyplus.com/home',
+    loggedOutIndicator: 'a[data-testid="log_in"]',
+    loggedOutUrlFragment: 'www.disney.com',
+    // Unauthenticated users may see a sign-up offer modal — dismiss it each polling cycle.
+    // <button aria-label="Close modal">...</button>
+    dismissPopup: 'button[aria-label="Close modal"]',
+    // SPA takes several seconds to hydrate; redirect to disney.com takes ~5s
     checkLoginWaitMs: 8000,
   },
   {
@@ -483,6 +489,15 @@ async function checkLogin(page, siteConfig) {
     //     the absence of auth is stable and consistent once confirmed.
     //   loggedInIndicator sites (ABC, Disney): never exit early — the element may appear
     //     after several seconds as the SPA hydrates and reads auth cookies.
+    // Helper: try to dismiss a popup/modal if configured (non-destructive no-op when absent)
+    const tryDismissPopup = async () => {
+      if (!siteConfig.dismissPopup) return;
+      try {
+        const el = await page.$(siteConfig.dismissPopup);
+        if (el) { await el.click(); await delay(400); }
+      } catch (_) {}
+    };
+
     if (waitMs > 3000 && (siteConfig.loggedInIndicator || siteConfig.loggedOutIndicator)) {
       // For loggedInIndicator sites, hover a trigger element first so the SPA has a chance
       // to initialise the nav bar before we check. E.g. ABC's Login button opens the dropdown
@@ -497,6 +512,14 @@ async function checkLogin(page, siteConfig) {
       await delay(1500);
       let notLoggedInStreak = 0;
       while (Date.now() < deadline) {
+        // If the page has been redirected to a known "not logged in" URL, bail out immediately.
+        // This handles cases where a modal or other interstitial prevents normal element detection
+        // but the site ultimately redirects unauthenticated users to a different domain/path.
+        if (siteConfig.loggedOutUrlFragment && page.url().includes(siteConfig.loggedOutUrlFragment)) {
+          logTS(`checkLogin: redirected to logged-out URL (${page.url()}) — not logged in`);
+          return false;
+        }
+        await tryDismissPopup();
         if (siteConfig.loggedInIndicator) {
           const el = await page.$(siteConfig.loggedInIndicator).catch(() => null);
           if (el !== null) return true;
@@ -513,6 +536,12 @@ async function checkLogin(page, siteConfig) {
       if (siteConfig.checkLoginPreHover) {
         try { await page.hover(siteConfig.checkLoginPreHover); await delay(500); } catch (_) {}
       }
+      // Final URL check before element check
+      if (siteConfig.loggedOutUrlFragment && page.url().includes(siteConfig.loggedOutUrlFragment)) {
+        logTS(`checkLogin: final URL check — redirected to logged-out URL (${page.url()})`);
+        return false;
+      }
+      await tryDismissPopup();
       if (siteConfig.loggedInIndicator) {
         const el = await page.$(siteConfig.loggedInIndicator).catch(() => null);
         return el !== null;
@@ -523,6 +552,9 @@ async function checkLogin(page, siteConfig) {
 
     // Standard single-check mode
     await delay(waitMs);
+
+    // Dismiss any modal that may have appeared during the wait
+    await tryDismissPopup();
 
     // Pre-hover for loggedInIndicator sites that need it (e.g. ABC's Login button)
     if (siteConfig.checkLoginPreHover) {
@@ -681,70 +713,66 @@ async function findFrameContaining(page, selector, timeoutMs = 15000) {
 
 async function loginDisney(page, username, password) {
   try {
-    await page.goto('https://www.disney.com/', { waitUntil: 'domcontentloaded', timeout: 25000 });
-    await delay(3000); // allow SPA to hydrate
+    // Navigate to disneyplus.com/home and let the SPA settle
+    await page.goto('https://www.disneyplus.com/home', { waitUntil: 'domcontentloaded', timeout: 25000 });
+    await delay(3000);
 
-    // Check if already logged in: My Account link present = logged in.
-    // Don't rely on absence of a.login-link — it can linger hidden in the DOM after login.
-    const myAccount = await page.$('a.login-dropdown-title-link');
-    if (myAccount) return { success: true };
+    // Dismiss any offer/promo modal that may be blocking the nav
+    try {
+      const modal = await page.$('button[aria-label="Close modal"]');
+      if (modal) { await modal.click(); await delay(500); }
+    } catch (_) {}
 
-    // Find the Log In link and verify it's actually visible before clicking.
-    // If login-link exists but has no bounding box it's hidden — treat as logged in.
-    const loginLink = await page.$('a.login-link');
-    if (!loginLink) return { success: true };
-    const loginBox = await loginLink.boundingBox();
-    if (!loginBox || loginBox.width === 0) return { success: true };
-
-    // Click the Log In nav link — opens a modal whose form is in a cross-origin iframe
-    // from Disney's identity service (disneyid.disney.com or similar)
-    await loginLink.click();
-    await delay(2000); // wait for modal + iframe to load
-
-    // Step 1: email — find whichever frame contains the email input
-    const emailSelector = 'input#InputIdentityFlowValue';
-    const emailFrame = await findFrameContaining(page, emailSelector, 15000);
-    if (!emailFrame) throw new Error('Disney login form not found — modal may not have opened');
-
-    await emailFrame.waitForSelector(emailSelector, { timeout: 5000, visible: true });
-    await emailFrame.click(emailSelector, { clickCount: 3 });
-    await emailFrame.type(emailSelector, username, { delay: 50 });
-    await delay(300);
-    await emailFrame.click('button#BtnSubmit');
-    await delay(2000); // wait for password step to load within the iframe
-
-    // Step 2: password — iframe may navigate internally; re-search all frames
-    const passwordSelector = 'input#InputPassword';
-    let passwordFrame = await emailFrame.$(passwordSelector).then(
-      el => el ? emailFrame : null
-    ).catch(() => null);
-    if (!passwordFrame) {
-      passwordFrame = await findFrameContaining(page, passwordSelector, 15000);
+    // Check if already logged in — LOG IN button absent means logged in
+    const loginBtn = await page.$('a[data-testid="log_in"]');
+    if (!loginBtn) {
+      logTS('Disney+: already logged in');
+      return { success: true };
     }
-    if (!passwordFrame) throw new Error('Disney password field not found');
 
-    await passwordFrame.waitForSelector(passwordSelector, { timeout: 5000, visible: true });
-    await passwordFrame.click(passwordSelector, { clickCount: 3 });
-    await passwordFrame.type(passwordSelector, password, { delay: 50 });
+    // Click the LOG IN button — navigates to /identity/login/enter-email (full page, no iframe)
+    logTS('Disney+: clicking LOG IN button');
+    await loginBtn.click();
+    await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+    await delay(1000);
+
+    if (!page.url().includes('/identity/login')) {
+      throw new Error(`Expected Disney+ login page, got: ${page.url()}`);
+    }
+
+    // Step 1: email
+    // <input id="email" type="email"> + <button data-testid="continue-btn">Continue</button>
+    await page.waitForSelector('input#email', { timeout: 10000, visible: true });
+    await page.click('input#email', { clickCount: 3 });
+    await page.type('input#email', username, { delay: 50 });
     await delay(300);
-    await passwordFrame.click('button#BtnSubmit');
+    await page.click('button[data-testid="continue-btn"]');
+    await delay(2000);
 
-    // After submit the identity service sets auth cookies and the main disney.com page
-    // reflects the logged-in state. Wait for any navigation or the SPA to update.
+    // Step 2: password
+    // <form class="password-form"><input id="password"><button type="submit">Log In</button></form>
+    await page.waitForSelector('input#password', { timeout: 10000, visible: true });
+    await page.click('input#password', { clickCount: 3 });
+    await page.type('input#password', password, { delay: 50 });
+    await delay(300);
+    await page.click('form.password-form button[type="submit"]');
+
+    // Wait for redirect back to disneyplus.com after successful login
     await Promise.race([
       page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {}),
-      delay(8000),
+      delay(10000),
     ]);
 
-    // Poll for up to 10 s — the Disney SPA takes several seconds after the identity
-    // service sets auth cookies before it replaces "Log In" with "My Account".
-    // Success: a.login-link disappears OR a.login-dropdown-title-link (My Account) appears.
+    // Poll for up to 10s — success when no longer on the identity/login page
+    // and LOG IN button is gone from the disneyplus.com nav
     let loggedIn = false;
     const verifyDeadline = Date.now() + 10000;
     while (Date.now() < verifyDeadline) {
-      const loginLinkGone  = !(await page.$('a.login-link').catch(() => null));
-      const myAccountFound =  !!(await page.$('a.login-dropdown-title-link').catch(() => null));
-      if (loginLinkGone || myAccountFound) { loggedIn = true; break; }
+      const url = page.url();
+      if (!url.includes('/identity/login') && !url.includes('disney.com/')) {
+        const loginGone = !(await page.$('a[data-testid="log_in"]').catch(() => null));
+        if (loginGone) { loggedIn = true; break; }
+      }
       await delay(1000);
     }
 
@@ -753,8 +781,10 @@ async function loginDisney(page, username, password) {
         const el = document.querySelector('[role="alert"], [id$="-error"], [class*="error" i]');
         return el ? el.textContent.trim() : null;
       });
-      return { success: false, message: errorMsg || 'Login failed — check credentials' };
+      return { success: false, message: errorMsg || 'Login failed — check credentials or 2FA required' };
     }
+
+    logTS('Disney+: login succeeded');
     return { success: true };
   } catch (e) {
     return { success: false, message: e.message };
