@@ -197,6 +197,8 @@ async function searchPrimeVideo(page, query) {
     // Episode list uses 0-based IDs: av-ep-episode-0 = E1, av-ep-episode-5 = E6, etc.
     const episodeItemId = `av-ep-episode-${targetEpisode - 1}`;
     await page.waitForSelector(`li[id="${episodeItemId}"]`, { timeout: 8000 }).catch(() => {});
+    // Also wait for a proper play link to appear inside the episode item (JS may render it after the item)
+    await page.waitForSelector(`li[id="${episodeItemId}"] a[href*="/gp/video/detail/"]`, { timeout: 5000 }).catch(() => {});
 
     const episodeData = await page.evaluate((itemId) => {
       const item = document.querySelector(`li[id="${itemId}"]`);
@@ -1659,7 +1661,32 @@ async function navigatePeacockLikeHuman(page, streamUrl, encoderUrl = 'unknown')
   }
 
   try {
-    // Navigate directly to the stream URL
+    // Navigate to homepage first to establish a normal browsing session
+    logTS(`[${encoderUrl}] Navigating to Peacock homepage`);
+    await page.goto('https://www.peacocktv.com', {
+      waitUntil: 'networkidle2',
+      timeout: 30000
+    });
+
+    // Handle profile selection if redirected on homepage load
+    if (page.url().includes('/watch/profiles')) {
+      logTS(`[${encoderUrl}] Profile selection page detected on homepage — selecting first profile`);
+      const profileSel = '.profiles__avatar--image[role="button"]';
+      try {
+        const profileEl = await page.waitForSelector(profileSel, { timeout: 8000 });
+        await profileEl.click();
+        await page.waitForFunction(() => !window.location.href.includes('/watch/profiles'), { timeout: 15000 });
+        logTS(`[${encoderUrl}] Profile selected — now at: ${page.url()}`);
+      } catch (e) {
+        logTS(`[${encoderUrl}] Profile selector click failed, trying keyboard fallback: ${e.message}`);
+        await handleProfileSelection();
+      }
+    }
+
+    // Brief pause on homepage to appear human before navigating to stream
+    await delay(1500 + Math.random() * 1000);
+
+    // Navigate to the stream URL
     logTS(`[${encoderUrl}] Navigating to streaming URL: ${streamUrl}`);
     await page.goto(streamUrl, {
       waitUntil: 'load',
@@ -5573,10 +5600,13 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
           });
           await delay(100); // Brief delay to let window restore
 
-          // Then set to fullscreen (will fullscreen on the monitor the window is now on)
-          await session.send('Browser.setWindowBounds', {windowId, bounds: {windowState: 'fullscreen'}});
+          // Peacock works better with a maximized (not OS-fullscreen) browser window;
+          // its player will handle fullscreen internally via the 'f' key.
+          // All other sites use OS-level fullscreen.
+          const windowState = targetUrl.includes('peacocktv.com') ? 'maximized' : 'fullscreen';
+          await session.send('Browser.setWindowBounds', {windowId, bounds: {windowState}});
           await session.detach();
-          logTS(`[${availableEncoder.url}] Browser window restored and set to fullscreen via CDP`);
+          logTS(`[${availableEncoder.url}] Browser window restored and set to ${windowState} via CDP`);
         } catch (cdpError) {
           logTS(`CDP fullscreen error (non-fatal): ${cdpError.message}`);
         }
