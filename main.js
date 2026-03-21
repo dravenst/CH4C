@@ -1683,8 +1683,12 @@ async function navigatePeacockLikeHuman(page, streamUrl, encoderUrl = 'unknown')
       }
     }
 
-    // Brief pause on homepage to appear human before navigating to stream
-    await delay(1500 + Math.random() * 1000);
+    // Simulate human browsing on homepage before navigating to stream
+    await delay(1000);
+    await page.mouse.move(300 + Math.random() * 400, 200 + Math.random() * 200);
+    await delay(800 + Math.random() * 600);
+    await page.mouse.move(400 + Math.random() * 300, 350 + Math.random() * 200);
+    await delay(1500 + Math.random() * 1500); // 1.5-3s additional dwell time
 
     // Navigate to the stream URL
     logTS(`[${encoderUrl}] Navigating to streaming URL: ${streamUrl}`);
@@ -3145,7 +3149,70 @@ async function fullScreenVideoSling(page, encoderConfig = null) {
   }
 }
 
-async function fullScreenVideoPeacock(page, encoderConfig = null) {
+async function selectPeacockClosedCaptions(page, ccOption) {
+  // Returns true if successfully selected, false if button/menu not available yet
+  try {
+    const viewport = page.viewport();
+    const cx = Math.floor((viewport ? viewport.width : 1280) / 2);
+    const cy = Math.floor((viewport ? viewport.height : 720) / 2);
+    await page.mouse.move(cx, cy);
+    await delay(500);
+
+    const settingsBtn = await page.waitForSelector('button[data-testid="language-settings-button"]', { timeout: 5000 }).catch(() => null);
+    if (!settingsBtn) {
+      return false; // Not available yet (ads or player not ready)
+    }
+    await settingsBtn.click();
+    await delay(300);
+
+    const ccLabel = ccOption === 'English' ? 'English' : 'Off';
+    const clicked = await page.evaluate((label) => {
+      const drawer = document.querySelector('[data-testid="subtitles-drawer"]');
+      if (!drawer) return false;
+      for (const btn of drawer.querySelectorAll('button')) {
+        const span = btn.querySelector('span.label');
+        if (span && span.textContent.trim() === label) {
+          btn.click();
+          return true;
+        }
+      }
+      return false;
+    }, ccLabel);
+
+    if (clicked) {
+      logTS(`Peacock CC: Selected "${ccLabel}"`);
+      await page.mouse.move(0, 0);
+      return true;
+    }
+
+    // Option not found — close menu and signal not ready
+    logTS(`Peacock CC: "${ccLabel}" not found in subtitles drawer`);
+    await settingsBtn.click(); // toggle closed
+    return false;
+  } catch (err) {
+    logTS(`Peacock CC selection error (non-fatal): ${err.message}`);
+    return false;
+  }
+}
+
+async function selectPeacockClosedCaptionsWithRetry(page, ccOption) {
+  const maxAttempts = 6;
+  const retryDelay = 30000; // 30s — covers typical pre-roll ad breaks
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    logTS(`Peacock CC: Attempt ${attempt}/${maxAttempts} for "${ccOption}"`);
+    const success = await selectPeacockClosedCaptions(page, ccOption);
+    if (success) return;
+
+    if (attempt < maxAttempts) {
+      logTS(`Peacock CC: Not available yet, retrying in 30s...`);
+      await delay(retryDelay);
+    }
+  }
+  logTS(`Peacock CC: Could not select after ${maxAttempts} attempts`);
+}
+
+async function fullScreenVideoPeacock(page, encoderConfig = null, closedCaptions = '') {
   logTS("URL contains peacocktv.com, setting up video fullscreen");
 
   // Add minimal mouse movement to simulate human presence
@@ -3220,6 +3287,12 @@ async function fullScreenVideoPeacock(page, encoderConfig = null) {
     }
   } else {
     logTS("Warning: Could not find Peacock video element for pause monitoring");
+  }
+
+  // Fire CC selection in background with retries — ads may block the button initially
+  if (closedCaptions) {
+    selectPeacockClosedCaptionsWithRetry(page, closedCaptions)
+      .catch(err => logTS(`Peacock CC background error: ${err.message}`));
   }
 
   logTS("finished fullscreen setup");
@@ -4701,7 +4774,384 @@ async function fullScreenVideoYouTube(page) {
   logTS("YouTube fullscreen setup complete");
 }
 
-async function fullScreenVideoAmazon(page) {
+async function selectMaxClosedCaptions(page, ccOption) {
+  logTS(`Selecting Max (HBO Max) subtitles: ${ccOption}`);
+  try {
+    // Move mouse to center to make player controls visible
+    const viewport = page.viewport();
+    const cx = Math.floor((viewport ? viewport.width : 1280) / 2);
+    const cy = Math.floor((viewport ? viewport.height : 720) / 2);
+    await page.mouse.move(cx, cy);
+    await delay(500);
+
+    // Click the CC/subtitle settings button
+    const trackBtn = await page.waitForSelector('button[data-testid="player-ux-track-selector-button"]', { timeout: 5000 }).catch(() => null);
+    if (!trackBtn) {
+      logTS('Max CC: Track selector button not found, skipping');
+      return false;
+    }
+    await trackBtn.click();
+    await delay(500);
+
+    // Click the matching track button by aria-label
+    // "English" maps to "English CC"; "Off" is exact "Off"
+    const clicked = await page.evaluate((ccOpt) => {
+      const buttons = document.querySelectorAll('button[data-testid="player-ux-text-track-button"]');
+      for (const btn of buttons) {
+        const label = (btn.getAttribute('aria-label') || '').toLowerCase();
+        if (ccOpt === 'Off' && label === 'off') {
+          btn.click();
+          return true;
+        }
+        if (ccOpt !== 'Off' && label.startsWith(ccOpt.toLowerCase())) {
+          btn.click();
+          return true;
+        }
+      }
+      return false;
+    }, ccOption);
+
+    if (clicked) {
+      logTS(`Max CC: Selected "${ccOption}"`);
+    } else {
+      logTS(`Max CC: Option "${ccOption}" not found in menu`);
+    }
+
+    // Close the menu via its dismiss button
+    const dismissBtn = await page.$('button[data-testid="player-ux-track-dismiss-button"]');
+    if (dismissBtn) await dismissBtn.click();
+    await delay(200);
+    await page.mouse.move(0, 0);
+    return clicked;
+  } catch (err) {
+    logTS(`Max CC selection error (non-fatal): ${err.message}`);
+    return false;
+  }
+}
+
+async function selectMaxClosedCaptionsWithRetry(page, ccOption) {
+  const maxAttempts = 6;
+  const retryDelay = 30000; // 30s — covers typical pre-roll ad breaks
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    logTS(`Max CC: Attempt ${attempt}/${maxAttempts} for "${ccOption}"`);
+    const success = await selectMaxClosedCaptions(page, ccOption);
+    if (success) return;
+
+    if (attempt < maxAttempts) {
+      logTS(`Max CC: Not available yet, retrying in 30s...`);
+      await delay(retryDelay);
+    }
+  }
+  logTS(`Max CC: Could not select after ${maxAttempts} attempts`);
+}
+
+async function fullScreenVideoMax(page, closedCaptions = '') {
+  logTS("URL contains hbomax.com/max.com, setting up Max video");
+
+  let frameHandle, videoHandle;
+  try {
+    frameHandle = page;
+    videoHandle = await frameHandle.waitForSelector('video', { timeout: 15000 }).catch(() => null);
+
+    if (videoHandle) {
+      // Unmute and ensure playing
+      await page.evaluate((video) => {
+        video.muted = false;
+        if (video.paused) video.play().catch(err => console.log('Play failed:', err));
+      }, videoHandle);
+
+      // Select closed captions BEFORE fullscreen (controls accessible in normal view)
+      logTS(`Max CC param received: "${closedCaptions}"`);
+      if (closedCaptions) {
+        selectMaxClosedCaptionsWithRetry(page, closedCaptions)
+          .catch(err => logTS(`Max CC background error: ${err.message}`));
+      }
+
+      // Go fullscreen via 'f' key (player handles it internally)
+      logTS("Max: pressing F key for fullscreen");
+      const vp = page.viewport();
+      const cx = Math.floor((vp ? vp.width : 1280) / 2);
+      const cy = Math.floor((vp ? vp.height : 720) / 2);
+      await page.mouse.move(cx, cy);
+      await delay(300);
+      await page.keyboard.press('f');
+
+      await setupPauseMonitor(frameHandle, videoHandle, page);
+    } else {
+      logTS('Could not find Max video element');
+    }
+  } catch (err) {
+    logTS(`Max fullscreen setup error (non-fatal): ${err.message}`);
+  }
+
+  await hideCursor(page);
+  await page.mouse.move(0, 0);
+  logTS("Max fullscreen setup complete");
+}
+
+async function selectDisneyPlusClosedCaptions(page, ccOption) {
+  logTS(`Selecting Disney+ subtitles: ${ccOption}`);
+  try {
+    // Move mouse to center to make player controls visible
+    const viewport = page.viewport();
+    const cx = Math.floor((viewport ? viewport.width : 1280) / 2);
+    const cy = Math.floor((viewport ? viewport.height : 720) / 2);
+    await page.mouse.move(cx, cy);
+    await delay(500);
+
+    // Click the Audio and subtitles settings button
+    const settingsBtn = await page.waitForSelector('button[aria-label="Audio and subtitles menu"]', { timeout: 5000 }).catch(() => null);
+    if (!settingsBtn) {
+      logTS('Disney+ CC: Settings button not found, skipping');
+      return false;
+    }
+    await settingsBtn.click();
+    await delay(300);
+
+    // Match by label text — value is just a track index and varies by content
+    const clicked = await page.evaluate((ccOpt) => {
+      const inputs = document.querySelectorAll('input[name="subtitleTrackPicker"]');
+      for (const input of inputs) {
+        // Check aria-label on input, or text of associated <label>
+        const ariaLabel = input.getAttribute('aria-label') || '';
+        const labelEl = input.id ? document.querySelector(`label[for="${input.id}"]`) : null;
+        const labelText = labelEl ? labelEl.textContent : '';
+        const text = (ariaLabel + ' ' + labelText).toLowerCase();
+
+        if (ccOpt === 'Off' && (input.value === 'off' || text.includes('off') || text.includes('none'))) {
+          input.click();
+          return true;
+        }
+        if (ccOpt !== 'Off' && text.includes(ccOpt.toLowerCase())) {
+          input.click();
+          return true;
+        }
+      }
+      return false;
+    }, ccOption);
+
+    if (clicked) {
+      logTS(`Disney+ CC: Selected "${ccOption}"`);
+    } else {
+      logTS(`Disney+ CC: Option "${ccOption}" not found in menu`);
+    }
+
+    // Close the drawer using its dedicated close button
+    const closeBtn = await page.$('button[aria-label="Press back on your remote to close the audio and subtitles menu."]');
+    if (closeBtn) {
+      await closeBtn.click();
+    }
+    await delay(200);
+
+    // Move mouse to corner so player controls fade out
+    await page.mouse.move(0, 0);
+    return clicked;
+  } catch (err) {
+    logTS(`Disney+ CC selection error (non-fatal): ${err.message}`);
+    return false;
+  }
+}
+
+async function selectDisneyPlusClosedCaptionsWithRetry(page, ccOption) {
+  const maxAttempts = 6;
+  const retryDelay = 30000; // 30s — covers typical pre-roll ad breaks
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    logTS(`Disney+ CC: Attempt ${attempt}/${maxAttempts} for "${ccOption}"`);
+    const success = await selectDisneyPlusClosedCaptions(page, ccOption);
+    if (success) return;
+
+    if (attempt < maxAttempts) {
+      logTS(`Disney+ CC: Not available yet, retrying in 30s...`);
+      await delay(retryDelay);
+    }
+  }
+  logTS(`Disney+ CC: Could not select after ${maxAttempts} attempts`);
+}
+
+async function fullScreenVideoDisneyPlus(page, closedCaptions = '') {
+  logTS("URL contains disneyplus.com, setting up Disney+ video");
+
+  let frameHandle, videoHandle;
+
+  // Find the video element
+  videoSearch: for (let step = 0; step < Constants.FIND_VIDEO_RETRIES; step++) {
+    try {
+      const frames = await page.frames({ timeout: 1000 });
+      for (const frame of frames) {
+        try {
+          const videos = await frame.$$('video');
+          if (videos.length > 1) {
+            for (const video of videos) {
+              const hasAudio = await frame.evaluate((v) => {
+                return v.mozHasAudio || Boolean(v.webkitAudioDecodedByteCount) ||
+                       Boolean(v.audioTracks && v.audioTracks.length);
+              }, video);
+              if (hasAudio) {
+                videoHandle = video;
+                frameHandle = frame;
+                logTS('Found Disney+ video element with audio');
+                break videoSearch;
+              } else if (!videoHandle) {
+                videoHandle = video;
+                frameHandle = frame;
+              }
+            }
+          } else if (videos.length === 1) {
+            videoHandle = videos[0];
+            frameHandle = frame;
+            logTS('Found Disney+ video element');
+            break videoSearch;
+          }
+        } catch (error) {
+          // Continue searching
+        }
+      }
+    } catch (error) {
+      logTS('Error looking for Disney+ video:', error.message);
+      videoHandle = null;
+    }
+    if (!videoHandle) {
+      await delay(Constants.FIND_VIDEO_WAIT * 1000);
+    }
+  }
+
+  if (videoHandle) {
+    // Wait for video to be playing
+    logTS("Waiting for Disney+ video to be ready");
+    for (let step = 0; step < Constants.PLAY_VIDEO_RETRIES; step++) {
+      const readyState = await GetProperty(videoHandle, 'readyState');
+      const paused = await GetProperty(videoHandle, 'paused');
+      if (readyState >= 3 && !paused) {
+        logTS(`Disney+ video ready (readyState: ${readyState})`);
+        break;
+      }
+      if (readyState >= 3 && paused) {
+        await frameHandle.evaluate((v) => v.play().catch(() => {}), videoHandle);
+      }
+      await delay(1000);
+    }
+
+    // Unmute video
+    await frameHandle.evaluate((video) => {
+      video.muted = false;
+      video.removeAttribute('muted');
+    }, videoHandle);
+
+    // Ensure video is playing
+    await frameHandle.evaluate((video) => {
+      if (video.paused) {
+        video.play().catch(err => console.log('Play failed:', err));
+      }
+    }, videoHandle);
+
+    // Select closed captions BEFORE fullscreen (controls accessible in normal view)
+    logTS(`Disney+ CC param received: "${closedCaptions}"`);
+    if (closedCaptions) {
+      selectDisneyPlusClosedCaptionsWithRetry(page, closedCaptions)
+        .catch(err => logTS(`Disney+ CC background error: ${err.message}`));
+    }
+
+    // Go fullscreen via the player's own fullscreen button
+    logTS("Going fullscreen via Disney+ player fullscreen button");
+    const viewport = page.viewport();
+    const cx = Math.floor((viewport ? viewport.width : 1280) / 2);
+    const cy = Math.floor((viewport ? viewport.height : 720) / 2);
+    await page.mouse.move(cx, cy);
+    await delay(500);
+
+    logTS("Disney+: pressing F key for fullscreen");
+    await page.keyboard.press('f');
+
+    await setupPauseMonitor(frameHandle, videoHandle, page);
+  } else {
+    logTS('Could not find Disney+ video element');
+  }
+
+  await hideCursor(page);
+  await page.mouse.move(0, 0);
+  logTS("Disney+ fullscreen setup complete");
+}
+
+async function selectAmazonClosedCaptions(page, ccOption) {
+  logTS(`Selecting Amazon Prime Video subtitles: ${ccOption}`);
+  try {
+    // Move mouse to center to make player controls visible
+    const viewport = page.viewport();
+    const cx = Math.floor((viewport ? viewport.width : 1280) / 2);
+    const cy = Math.floor((viewport ? viewport.height : 720) / 2);
+    await page.mouse.move(cx, cy);
+    await delay(500);
+
+    // Click the Subtitles and Audio menu button
+    const menuBtn = await page.waitForSelector('button[aria-label="Subtitles and Audio Menu"]', { timeout: 5000 }).catch(() => null);
+    if (!menuBtn) {
+      logTS('Amazon CC: Subtitles menu button not found, skipping');
+      return false;
+    }
+    await menuBtn.click();
+    await delay(300);
+
+    // Map option name to the aria-label Amazon uses in the player
+    const ariaLabel = ccOption === 'English' ? 'English [CC]' : ccOption;
+
+    // Click the matching subtitle radio input and verify it actually got checked
+    // (during ad-to-content transitions the input may exist but not register the click)
+    const clicked = await page.evaluate((label) => {
+      const inputs = document.querySelectorAll('input[type="radio"][name="subtitle"]');
+      for (const input of inputs) {
+        if (input.getAttribute('aria-label') === label) {
+          input.click();
+          return input.checked; // false if transition prevented the selection from taking
+        }
+      }
+      return false;
+    }, ariaLabel);
+
+    if (clicked) {
+      logTS(`Amazon CC: Selected "${ariaLabel}"`);
+    } else {
+      logTS(`Amazon CC: Option "${ariaLabel}" not found or not checked (may be transitioning)`);
+    }
+
+    // Always close the menu — re-query fresh since original ref may be stale after retries
+    // Avoid Escape key — in fullscreen it can trigger overlays or exit fullscreen
+    const closeMenuBtn = await page.$('button[aria-label="Subtitles and Audio Menu"]');
+    if (closeMenuBtn) {
+      await closeMenuBtn.click();
+    } else {
+      logTS('Amazon CC: Close button not found, moving mouse away to auto-hide menu');
+    }
+    await delay(200);
+
+    // Move mouse to top-left corner so player controls hide and nothing else is triggered
+    await page.mouse.move(0, 0);
+    return clicked;
+  } catch (err) {
+    logTS(`Amazon CC selection error (non-fatal): ${err.message}`);
+    return false;
+  }
+}
+
+async function selectAmazonClosedCaptionsWithRetry(page, ccOption) {
+  const maxAttempts = 6;
+  const retryDelay = 30000; // 30s — covers typical pre-roll ad breaks
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    logTS(`Amazon CC: Attempt ${attempt}/${maxAttempts} for "${ccOption}"`);
+    const success = await selectAmazonClosedCaptions(page, ccOption);
+    if (success) return;
+
+    if (attempt < maxAttempts) {
+      logTS(`Amazon CC: Not available yet, retrying in 30s...`);
+      await delay(retryDelay);
+    }
+  }
+  logTS(`Amazon CC: Could not select after ${maxAttempts} attempts`);
+}
+
+async function fullScreenVideoAmazon(page, closedCaptions = '') {
   logTS("URL contains amazon.com, setting up fullscreen for Amazon Prime Video");
 
   // Wait a bit for the Amazon player to initialize
@@ -4769,21 +5219,45 @@ async function fullScreenVideoAmazon(page) {
       await delay(1000);
     }
 
-    logTS("Going fullscreen and ensuring Amazon video is unmuted");
+    // Unmute video
     await frameHandle.evaluate((video) => {
       video.muted = false;
       video.removeAttribute('muted');
-      video.style.cursor = 'none!important';
-      video.requestFullscreen();
     }, videoHandle);
 
-    // Amazon pauses video when going fullscreen, so explicitly play after fullscreen
-    await delay(500); // Brief delay to let fullscreen transition start
+    // Ensure video is playing
     await frameHandle.evaluate((video) => {
       if (video.paused) {
-        video.play().catch(err => console.log('Play after fullscreen failed:', err));
+        video.play().catch(err => console.log('Play failed:', err));
       }
     }, videoHandle);
+
+    // Go fullscreen using the player's own fullscreen button
+    logTS("Going fullscreen via Amazon player fullscreen button");
+    const viewport = page.viewport();
+    const cx = Math.floor((viewport ? viewport.width : 1280) / 2);
+    const cy = Math.floor((viewport ? viewport.height : 720) / 2);
+    await page.mouse.move(cx, cy);
+    await delay(500);
+
+    const fsBtn = await page.waitForSelector('button[aria-label="Fullscreen"]', { timeout: 5000 }).catch(() => null);
+    if (fsBtn) {
+      await fsBtn.click();
+      logTS("Amazon: clicked player fullscreen button");
+    } else {
+      logTS("Amazon: fullscreen button not found, pressing F key");
+      await page.keyboard.press('f');
+    }
+
+    // Wait for fullscreen transition and any ad-to-content transition to settle
+    await delay(3000);
+
+    // Select closed captions AFTER fullscreen so the transition doesn't reset them
+    logTS(`Amazon CC param received: "${closedCaptions}"`);
+    if (closedCaptions) {
+      selectAmazonClosedCaptionsWithRetry(page, closedCaptions)
+        .catch(err => logTS(`Amazon CC background error: ${err.message}`));
+    }
 
     // Setup pause monitor with more aggressive checking for Amazon
     // Amazon's player sometimes pauses unexpectedly
@@ -4793,8 +5267,9 @@ async function fullScreenVideoAmazon(page) {
     logTS('Could not find Amazon Prime Video element');
   }
 
-  // Hide cursor
+  // Hide cursor then move mouse to corner so player controls fade out
   await hideCursor(page);
+  await page.mouse.move(0, 0);
 
   logTS("Amazon Prime Video fullscreen setup complete");
 }
@@ -5522,6 +5997,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
     }
 
     targetUrl = getFullUrl(req);
+    const closedCaptions = req.query.cc || '';
     logTS(`[DEBUG] /stream endpoint - req.query.url: ${req.query.url}`);
     logTS(`[DEBUG] /stream endpoint - getFullUrl result: ${targetUrl}`);
 
@@ -5603,7 +6079,8 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
           // Peacock works better with a maximized (not OS-fullscreen) browser window;
           // its player will handle fullscreen internally via the 'f' key.
           // All other sites use OS-level fullscreen.
-          const windowState = targetUrl.includes('peacocktv.com') ? 'maximized' : 'fullscreen';
+          // Peacock, Amazon, and Disney+ use maximized so the player handles fullscreen internally via its own button
+          const windowState = (targetUrl.includes('peacocktv.com') || targetUrl.includes('amazon.com') || targetUrl.includes('disneyplus.com') || targetUrl.includes('hbomax.com') || targetUrl.includes('max.com')) ? 'maximized' : 'fullscreen';
           await session.send('Browser.setWindowBounds', {windowId, bounds: {windowState}});
           await session.detach();
           logTS(`[${availableEncoder.url}] Browser window restored and set to ${windowState} via CDP`);
@@ -5727,7 +6204,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
           }
 
           // Handle site-specific fullscreen (pass encoder config for audio re-application)
-          await handleSiteSpecificFullscreen(targetUrl, page, availableEncoder);
+          await handleSiteSpecificFullscreen(targetUrl, page, availableEncoder, closedCaptions);
         }
       }, availableEncoder.url, async () => {
         // Fallback action - attempt recovery
@@ -5879,7 +6356,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
 
   // POST /instant - Handle instant recording or tuning
   app.post('/instant', async (req, res) => {
-    const { recording_name, recording_url, recording_duration, button_record, button_tune, episode_title, recording_summary, season_number, episode_number, selected_encoder, recording_image } = req.body;
+    const { recording_name, recording_url, recording_duration, button_record, button_tune, episode_title, recording_summary, season_number, episode_number, selected_encoder, recording_image, closed_captions } = req.body;
 
     // Check if client wants JSON response
     const wantsJson = req.headers.accept && req.headers.accept.includes('application/json');
@@ -6031,7 +6508,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
 
         // Start the stream in the background (don't wait for response)
         // Pass the encoder URL so the stream uses the same encoder that was selected for recording
-        const streamUrl = `http://localhost:${Constants.CH4C_PORT}/stream?url=${encodeURIComponent(targetUrl)}&encoder=${encodeURIComponent(availableEncoder.url)}`;
+        const streamUrl = `http://localhost:${Constants.CH4C_PORT}/stream?url=${encodeURIComponent(targetUrl)}&encoder=${encodeURIComponent(availableEncoder.url)}${closed_captions ? '&cc=' + encodeURIComponent(closed_captions) : ''}`;
         logTS(`[DEBUG] Initiating stream fetch to: ${streamUrl}`);
         logTS(`[DEBUG] Target URL being streamed: ${targetUrl}`);
         logTS(`[DEBUG] Using encoder: ${availableEncoder.url}`);
@@ -6088,7 +6565,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
 
       // Start the stream in the background (don't wait for response)
       // Pass the encoder URL so the stream uses the same encoder that was selected for tuning
-      fetch(`http://localhost:${Constants.CH4C_PORT}/stream?url=${encodeURIComponent(targetUrl)}&encoder=${encodeURIComponent(availableEncoder.url)}`)
+      fetch(`http://localhost:${Constants.CH4C_PORT}/stream?url=${encodeURIComponent(targetUrl)}&encoder=${encodeURIComponent(availableEncoder.url)}${closed_captions ? '&cc=' + encodeURIComponent(closed_captions) : ''}`)
         .catch(err => logTS(`Stream fetch error (expected): ${err.message}`));
     } else {
       sendResponse(400, { success: false, error: 'Invalid form submission' });
@@ -6194,10 +6671,12 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
   app.get('/stop', async (req, res) => {
     const cleanupManager = req.app.locals.cleanupManager;
     const streamMonitor = req.app.locals.streamMonitor;
+    const wantsJson = req.headers.accept && req.headers.accept.includes('application/json');
 
     const activeStreams = Array.from(streamMonitor.activeStreams.keys());
 
     if (activeStreams.length === 0) {
+      if (wantsJson) return res.json({ success: false, message: 'No active streams to stop.' });
       res.send(`
         <!DOCTYPE html>
         <html>
@@ -6235,6 +6714,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
       }
     }
 
+    if (wantsJson) return res.json({ success: true, message: `All ${activeStreams.length} stream(s) stopped.` });
     res.send(`
       <!DOCTYPE html>
       <html>
@@ -6265,6 +6745,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
     const cleanupManager = req.app.locals.cleanupManager;
     const streamMonitor = req.app.locals.streamMonitor;
     const encoderIndex = parseInt(req.params.encoderIndex, 10);
+    const wantsJson = req.headers.accept && req.headers.accept.includes('application/json');
 
     // Determine where to redirect back to based on referer
     const referer = req.get('Referer') || '';
@@ -6273,6 +6754,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
 
     // Validate encoder index
     if (isNaN(encoderIndex) || encoderIndex < 0 || encoderIndex >= Constants.ENCODERS.length) {
+      if (wantsJson) return res.status(400).json({ success: false, message: `Invalid encoder index ${req.params.encoderIndex}.` });
       res.status(400).send(`
         <!DOCTYPE html>
         <html>
@@ -6304,6 +6786,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
 
     // Check if this encoder has an active stream
     if (!streamMonitor.activeStreams.has(encoderUrl)) {
+      if (wantsJson) return res.json({ success: false, message: `No active stream on Channel ${encoderConfig.channel}.` });
       res.send(`
         <!DOCTYPE html>
         <html>
@@ -6340,6 +6823,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
       await cleanupManager.cleanup(encoderUrl, null);
       logTS(`Stopped stream on encoder ${encoderIndex} (${encoderUrl})`);
 
+      if (wantsJson) return res.json({ success: true, message: `Stream on Channel ${encoderConfig.channel} stopped.` });
       res.send(`
         <!DOCTYPE html>
         <html>
@@ -6369,6 +6853,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
       `);
     } catch (error) {
       logTS(`Error stopping stream on encoder ${encoderIndex}: ${error.message}`);
+      if (wantsJson) return res.status(500).json({ success: false, message: `Error stopping stream: ${error.message}` });
       res.status(500).send(`
         <!DOCTYPE html>
         <html>
@@ -7046,19 +7531,19 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
 }
 
 // Helper function to consolidate site-specific fullscreen logic
-async function handleSiteSpecificFullscreen(targetUrl, page, encoderConfig = null) {
+async function handleSiteSpecificFullscreen(targetUrl, page, encoderConfig = null, closedCaptions = '') {
   try {
     if (targetUrl.includes("youtube.com") || targetUrl.includes("youtu.be")) {
       logTS("Handling YouTube video");
       await fullScreenVideoYouTube(page);
     } else if (targetUrl.includes("amazon.com")) {
       logTS("Handling Amazon Prime Video");
-      await fullScreenVideoAmazon(page);
+      await fullScreenVideoAmazon(page, closedCaptions);
     } else if (targetUrl.includes("watch.sling.com")) {
       logTS("Handling Sling video");
       await fullScreenVideoSling(page, encoderConfig);
     } else if (targetUrl.includes("peacocktv.com")) {
-      await fullScreenVideoPeacock(page, encoderConfig);
+      await fullScreenVideoPeacock(page, encoderConfig, closedCaptions);
     } else if (targetUrl.includes("spectrum.net")) {
       await fullScreenVideoSpectrum(page);
     } else if (targetUrl.includes("photos.app.goo.gl")) {
@@ -7067,6 +7552,12 @@ async function handleSiteSpecificFullscreen(targetUrl, page, encoderConfig = nul
     } else if (targetUrl.includes("espn.com")) {
       logTS("Handling ESPN video");
       await fullScreenVideoESPN(page, encoderConfig);
+    } else if (targetUrl.includes("disneyplus.com")) {
+      logTS("Handling Disney+ video");
+      await fullScreenVideoDisneyPlus(page, closedCaptions);
+    } else if (targetUrl.includes("hbomax.com") || targetUrl.includes("max.com")) {
+      logTS("Handling Max (HBO Max) video");
+      await fullScreenVideoMax(page, closedCaptions);
     } else if (targetUrl.includes("disneynow.com")) {
       logTS("Handling DisneyNow video");
       await fullScreenVideoDisneyNow(page);

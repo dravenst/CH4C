@@ -239,6 +239,7 @@ Navigate to `http://<CH4C_IP>:<CH4C_PORT>/instant` to:
 - Tune your encoder to a URL without recording (watch in Channels on the encoder's channel number)
 - Add your own show metadata that will be visible in the Channels DVR Recordings
 - **Show Search**: automatically look up a specific episode or movie from a supported streaming service and pre-fill all recording metadata (title, episode, duration, artwork, and direct watch URL)
+- **Closed Captions**: select English or Off from the CC dropdown — CH4C will automatically open the player's subtitle menu and apply the selection after playback starts. Supported on Prime Video, Disney+, Peacock, and Max (HBO Max). If the CC menu is unavailable at startup (e.g., during pre-roll ads), CH4C retries in the background for up to 3 minutes.
 
 Enter the show name and optionally an episode in the Show Search field, select a service, and click **Search**. The matching episode or movie details will be populated automatically — just select an encoder and start the recording.
 

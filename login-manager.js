@@ -36,9 +36,11 @@ const LOGIN_SITES = [
     id: 'sling',
     name: 'Sling TV',
     type: 'direct',
-    // Navigate to sign-in page; if already logged in it will redirect to /home or /dashboard
-    // URL fallback: presence of /sign-in in URL = not logged in
-    checkUrl: 'https://www.sling.com/sign-in',
+    // Navigate to home page first to avoid hitting /sign-in directly (bot detection).
+    // Logged-out users stay on the home page; logged-in users are redirected to /home or /dashboard.
+    // URL fallback: presence of /sign-in in URL = not logged in.
+    checkUrl: 'https://www.sling.com/',
+    loggedOutUrlFragment: '/sign-in',
   },
   // ── 2–13. Remaining sites (alphabetical) ─────────────────────────────────
   {
@@ -590,6 +592,10 @@ async function checkLogin(page, siteConfig) {
 
 async function loginSling(page, username, password) {
   try {
+    // Visit home page first to establish cookies and reduce bot detection before sign-in
+    await page.goto('https://www.sling.com/', { waitUntil: 'domcontentloaded', timeout: 25000 });
+    await delay(3000);
+
     await page.goto('https://www.sling.com/sign-in', { waitUntil: 'domcontentloaded', timeout: 25000 });
     await delay(3000); // allow React app to render
 
@@ -821,6 +827,16 @@ async function loginHboMax(page, username, password) {
     await page.goto('https://auth.hbomax.com/login?flow=login', { waitUntil: 'domcontentloaded', timeout: 20000 });
     await delay(2000); // allow React auth app to render
 
+    // Dismiss Terms / Privacy consent modal if it appears on the auth page too.
+    try {
+      await page.waitForSelector('button[class*="btn--privacy-primary"]', { timeout: 4000, visible: true });
+      logTS('HBO Max: dismissing Terms/Privacy consent modal on auth page');
+      await page.click('button[class*="btn--privacy-primary"]');
+      await delay(800);
+    } catch (_) {
+      // Modal not present
+    }
+
     // The login form is rendered by Stencil.js web components (gi-form, gi-form-input).
     // Stencil components use shadow DOM — standard page.$() cannot pierce shadow roots,
     // and the inputs are invisible to frame.$() too. Use findShadowElement() which
@@ -830,7 +846,8 @@ async function loginHboMax(page, username, password) {
     // which takes longer than the initial DOMContentLoaded event.
     await delay(2000); // extra wait for Stencil hydration on top of the 2s already elapsed
 
-    const emailSelector = 'input#sign-in-email-input';
+    // Email/phone input — id changed to sign-in-phoneEmail-input in newer auth UI
+    const emailSelector = 'input#sign-in-phoneEmail-input';
     logTS('HBO Max: searching for email input in shadow DOM');
     const emailInput = await findShadowElement(page, emailSelector, 15000);
     if (!emailInput) throw new Error('HBO Max email input not found — Stencil shadow DOM may not have hydrated');

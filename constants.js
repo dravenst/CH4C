@@ -1969,8 +1969,8 @@ const INSTANT_PAGE_HTML = `
                     placeholder="https://example.com/stream"
                     required
                 />
-                <div style="display:flex;gap:6px;margin-top:8px;align-items:flex-end;">
-                    <div style="display:flex;flex-direction:column;gap:3px;flex:0 0 115px;">
+                <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;align-items:flex-end;justify-content:flex-end;">
+                    <div style="display:flex;flex-direction:column;gap:3px;flex:0 0 115px;min-width:115px;">
                         <span style="font-size:11px;color:#718096;font-weight:600;">Show Search</span>
                         <select id="search_service" style="padding:8px 6px;border:1px solid #e2e8f0;border-radius:8px;font-size:13px;background:#fff;cursor:pointer;">
                             <option value="">Select Service</option>
@@ -1980,15 +1980,15 @@ const INSTANT_PAGE_HTML = `
                             <option value="prime_video">Prime Video</option>
                         </select>
                     </div>
-                    <div style="display:flex;flex-direction:column;gap:3px;flex:1;min-width:0;">
+                    <div style="display:flex;flex-direction:column;gap:3px;flex:1;min-width:140px;">
                         <span style="font-size:11px;color:#718096;font-weight:600;">Title</span>
                         <input type="text" id="search_query" placeholder="e.g. Young Sherlock" style="padding:8px 10px;border:1px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;" />
                     </div>
-                    <div style="display:flex;flex-direction:column;gap:3px;flex:0 0 48px;">
+                    <div style="display:flex;flex-direction:column;gap:3px;flex:0 0 48px;min-width:48px;">
                         <span style="font-size:11px;color:#718096;font-weight:600;text-align:center;">Season</span>
                         <input type="number" id="search_season" placeholder="S#" min="1" style="padding:8px 4px;border:1px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;text-align:center;" />
                     </div>
-                    <div style="display:flex;flex-direction:column;gap:3px;flex:0 0 48px;">
+                    <div style="display:flex;flex-direction:column;gap:3px;flex:0 0 48px;min-width:48px;">
                         <span style="font-size:11px;color:#718096;font-weight:600;text-align:center;">Episode</span>
                         <input type="number" id="search_episode" placeholder="E#" min="1" style="padding:8px 4px;border:1px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;text-align:center;" />
                     </div>
@@ -2000,7 +2000,7 @@ const INSTANT_PAGE_HTML = `
             <div class="form-row">
                 <div class="form-group narrow">
                     <label>
-                        Duration (minutes) *
+                        Duration (mins)
                     </label>
                     <input
                         type="number"
@@ -2010,6 +2010,19 @@ const INSTANT_PAGE_HTML = `
                         min="1"
                         step="1"
                     />
+                </div>
+
+                <div class="form-group narrow">
+                    <label>
+                        Closed Captions
+                    </label>
+                    <select
+                        name="closed_captions"
+                        id="closed_captions"
+                    >
+                        <option value="Off">Off</option>
+                        <option value="English">English</option>
+                    </select>
                 </div>
 
                 <div class="form-group wide">
@@ -2070,7 +2083,7 @@ const INSTANT_PAGE_HTML = `
 
                 <div class="form-group">
                     <label>
-                        Season Number
+                        Season Num
                         <span class="label-hint">(optional)</span>
                     </label>
                     <input
@@ -2085,7 +2098,7 @@ const INSTANT_PAGE_HTML = `
 
                 <div class="form-group">
                     <label>
-                        Episode Number
+                        Episode Num
                         <span class="label-hint">(optional)</span>
                     </label>
                     <input
@@ -2132,6 +2145,8 @@ const INSTANT_PAGE_HTML = `
     </div>
 
     <!-- Modal for confirmations -->
+    <div id="stop-status" style="display:none;margin:12px 0;padding:10px 16px;border-radius:8px;background:#f0fff4;font-size:14px;font-weight:600;text-align:center;"></div>
+
     <div class="modal-overlay" id="modal-overlay">
         <div class="modal" id="modal">
             <div class="modal-icon" id="modal-icon"></div>
@@ -2328,26 +2343,25 @@ const INSTANT_PAGE_HTML = `
 
                 if (result.success) {
                     const isRecording = submitButton.name === 'button_record';
-                    const icon = isRecording ? '✓' : '📺';
-                    const title = isRecording ? 'Recording Started' : 'Tuned to Channel ' + result.channel;
-                    const type = isRecording ? 'success' : 'info';
 
-                    let message = result.message || '';
-                    let detail = result.detail || '';
+                    // Only show modal for recordings; tune silently starts
+                    if (isRecording) {
+                        showModal('success', '✓', 'Recording Started',
+                            result.message || '', result.detail || '',
+                            [{ text: 'OK', action: hideModal }]);
 
-                    showModal(type, icon, title, message, detail, [{ text: 'OK', action: hideModal }]);
+                        // Clear form only for recordings
+                        document.getElementById('recording_url').value = '';
+                        document.getElementById('recording_name').value = '';
+                        document.getElementById('recording_image').value = '';
+                        document.getElementById('episode_title').value = '';
+                        document.getElementById('recording_summary').value = '';
+                        document.getElementById('season_number').value = '';
+                        document.getElementById('episode_number').value = '';
+                    }
 
                     // Refresh active streams
                     refreshActiveStreams();
-
-                    // Clear form
-                    document.getElementById('recording_url').value = '';
-                    document.getElementById('recording_name').value = '';
-                    document.getElementById('recording_image').value = '';
-                    document.getElementById('episode_title').value = '';
-                    document.getElementById('recording_summary').value = '';
-                    document.getElementById('season_number').value = '';
-                    document.getElementById('episode_number').value = '';
                 } else {
                     showModal('error', '❌', 'Error', result.error || 'An error occurred', '',
                         [{ text: 'OK', action: hideModal }]);
@@ -2402,13 +2416,13 @@ const INSTANT_PAGE_HTML = `
                                     <span class="stream-url" title="\${targetUrlDisplay}">\${displayUrl}</span>
                                     <span class="stream-duration">Running for \${uptimeMinutes} min</span>
                                 </div>
-                                <a href="/stop/\${encoderIndex}" class="btn-stop" onclick="return confirm('Stop this stream on Channel \${encoderChannel}?')">Stop</a>
+                                <button class="btn-stop" onclick="stopStream(\${encoderIndex}, \${encoderChannel})">Stop</button>
                             </div>
                         \`;
                     });
 
                     html += '</div>';
-                    html += '<div class="stream-actions"><a href="/stop" class="btn-stop-all" onclick="return confirm(\\'Stop ALL active streams?\\')">Stop All Streams</a></div>';
+                    html += '<div class="stream-actions"><button class="btn-stop-all" onclick="stopAllStreams()">Stop All Streams</button></div>';
 
                     activeStreamsContainer.innerHTML = html;
                     activeStreamsContainer.style.display = 'block';
@@ -2418,6 +2432,36 @@ const INSTANT_PAGE_HTML = `
                 }
             } catch (error) {
                 console.error('Error refreshing active streams:', error);
+            }
+        }
+
+        function showStopStatus(message, isError) {
+            const el = document.getElementById('stop-status');
+            el.textContent = message;
+            el.style.color = isError ? '#e53e3e' : '#38a169';
+            el.style.display = 'block';
+            setTimeout(() => { el.style.display = 'none'; }, 4000);
+        }
+
+        async function stopStream(encoderIndex, channel) {
+            try {
+                const res = await fetch('/stop/' + encoderIndex, { headers: { 'Accept': 'application/json' } });
+                const data = await res.json();
+                showStopStatus(data.message || ('Stream on Channel ' + channel + ' stopped.'), !data.success);
+                refreshActiveStreams();
+            } catch (err) {
+                showStopStatus('Error stopping stream: ' + err.message, true);
+            }
+        }
+
+        async function stopAllStreams() {
+            try {
+                const res = await fetch('/stop', { headers: { 'Accept': 'application/json' } });
+                const data = await res.json();
+                showStopStatus(data.message || 'All streams stopped.', !data.success);
+                refreshActiveStreams();
+            } catch (err) {
+                showStopStatus('Error stopping streams: ' + err.message, true);
             }
         }
 
