@@ -5301,7 +5301,7 @@ function getExecutablePath() {
 }
 
 function buildRecordingJson(name, duration, encoderChannel, episodeTitle, summary, seasonNumber, episodeNumber, imageUrl) {
-  const startTime = Math.round(Date.now() / 1000);
+  const startTime = Math.round(Date.now() / 1000) + 3;
 
   const data = {
     "Name": name,
@@ -5318,6 +5318,7 @@ function buildRecordingJson(name, duration, encoderChannel, episodeTitle, summar
       "Summary": summary || `Manual recording: ${name}`,
       "Image": imageUrl || "https://tmsimg.fancybits.co/assets/p9467679_st_h6_aa.jpg",
       "SeriesID": "MANUAL",
+      "ProgramID": `MAN${startTime}`,
     }
   }
 
