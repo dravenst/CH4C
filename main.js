@@ -466,7 +466,17 @@ async function searchDisneyPlus(page, query) {
       if (!clicked) {
         logTS(`Disney+: Season ${targetSeason} not found in dropdown`);
       } else {
+        // Wait for the dropdown button to confirm the season changed before looking for episodes
+        await page.waitForFunction(
+          (season) => {
+            const btn = document.querySelector('[data-testid="dropdown-button"]');
+            return btn?.textContent?.includes(`Season ${season}`);
+          },
+          { timeout: 5000 },
+          targetSeason
+        ).catch(() => logTS(`Disney+: timed out waiting for dropdown to show Season ${targetSeason}`));
         // Wait for the episode list to reload after season change
+        await delay(2000);
         await page.waitForSelector('a[data-testid="set-item"][href^="/play/"]', { timeout: 8000 })
                   .catch(() => {});
       }
