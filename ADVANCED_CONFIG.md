@@ -104,9 +104,19 @@ Position values depend on your display setup. For two 1920x1080 displays aligned
 
 For multi-encoder setups, each encoder needs its own audio device. The **Settings** page automatically discovers available audio devices and presents them in a dropdown when adding or editing an encoder. Simply select the correct device from the list.
 
-If automatic detection is unavailable, you can manually enter a partial device name (e.g., "Encoder" or "MACROSILICON") in the text field. The home page also lists all detected audio devices for reference. If not specified, CH4C uses the default audio device.
+If your device doesn't appear in the dropdown, select **Other (manual entry)...** to type a partial device name manually (e.g., "Encoder" or "MACROSILICON"). The home page also lists all detected audio devices for reference. If not specified, CH4C uses the default audio device.
 
-To find device names manually, use Windows Sound Settings or PowerShell: `Get-AudioDevice -List`
+### PowerShell AudioDeviceCmdlets Module (Recommended)
+
+For the most accurate and complete audio device listing, install the `AudioDeviceCmdlets` PowerShell module. Run the following once in an **Administrator PowerShell**:
+
+```powershell
+Install-Module -Name AudioDeviceCmdlets -Force
+```
+
+This enables `Get-AudioDevice -List` which provides the most reliable device enumeration. Without it, CH4C falls back to registry and WMI-based methods which may not list all devices.
+
+To verify detected devices or find device names manually, use Windows Sound Settings or run: `Get-AudioDevice -List`
 
 ![Windows Sound Settings showing encoder audio devices](./assets/pcaudiodevices.jpg)
 

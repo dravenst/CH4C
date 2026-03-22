@@ -1168,10 +1168,19 @@ const START_PAGE_HTML = `
         async function loadAudioDevices() {
             try {
                 const response = await fetch('/audio-devices');
-                const devices = await response.json();
+                const data = await response.json();
+                const devices = data.devices || data;
+                const moduleAvailable = data.moduleAvailable;
 
                 const container = document.getElementById('audio-devices');
                 container.innerHTML = '';
+
+                if (moduleAvailable === false) {
+                    const warn = document.createElement('p');
+                    warn.style.cssText = 'color:#d69e2e;margin-bottom:8px;font-size:13px;background:#fffff0;border:1px solid #ecc94b;border-radius:4px;padding:8px 10px;';
+                    warn.innerHTML = '<strong>&#9888; AudioDeviceCmdlets not installed</strong> &mdash; some audio devices may not appear. Run in an Administrator PowerShell: <code>Install-Module -Name AudioDeviceCmdlets -Force</code>';
+                    container.appendChild(warn);
+                }
 
                 if (devices && devices.length > 0) {
                     devices.forEach((device, index) => {
@@ -1181,7 +1190,10 @@ const START_PAGE_HTML = `
                         container.appendChild(div);
                     });
                 } else {
-                    container.innerHTML = '<p style="color: #718096;">No audio devices found.</p>';
+                    const p = document.createElement('p');
+                    p.style.color = '#718096';
+                    p.textContent = 'No audio devices found.';
+                    container.appendChild(p);
                 }
             } catch (error) {
                 console.error('Error loading audio devices:', error);
@@ -5880,6 +5892,7 @@ const SETTINGS_PAGE_HTML = `
     <script>
         let settingsData = null;
         let audioDevices = [];
+        let audioModuleAvailable = null;
         let displayData = [];
         let screenPickerPrefix = null;
         let hasChanges = false;
@@ -5897,6 +5910,7 @@ const SETTINGS_PAGE_HTML = `
                 if (audioRes.ok) {
                     const audioData = await audioRes.json();
                     audioDevices = audioData.devices || audioData || [];
+                    audioModuleAvailable = audioData.moduleAvailable !== undefined ? audioData.moduleAvailable : null;
                 }
                 if (displayRes.ok) {
                     displayData = await displayRes.json();
@@ -6306,19 +6320,28 @@ const SETTINGS_PAGE_HTML = `
             // Audio device
             html += '<div class="form-row"><label class="form-label">Audio Device</label>';
             if (audioDevices.length > 0) {
-                html += '<select class="form-select" id="enc-audio-' + prefix + '">';
+                var showOther = !!(enc.audioDevice && !audioDevices.some(function(dev) {
+                    var name = typeof dev === 'string' ? dev : (dev.name || dev.label || '');
+                    return name.includes(enc.audioDevice) || enc.audioDevice.includes(name);
+                }));
+                html += '<select class="form-select" id="enc-audio-' + prefix + '" onchange="toggleAudioOther(\\'' + prefix + '\\')">';
                 html += '<option value="">Default</option>';
                 audioDevices.forEach(function(dev) {
                     const name = typeof dev === 'string' ? dev : (dev.name || dev.label || '');
-                    const selected = (enc.audioDevice && name.includes(enc.audioDevice)) ? ' selected' : '';
+                    const selected = (!showOther && enc.audioDevice && name.includes(enc.audioDevice)) ? ' selected' : '';
                     html += '<option value="' + escapeHtml(name) + '"' + selected + '>' + escapeHtml(name) + '</option>';
                 });
+                html += '<option value="__other__"' + (showOther ? ' selected' : '') + '>Other (manual entry)...</option>';
                 html += '</select>';
+                html += '<input type="text" class="form-input" id="enc-audio-other-' + prefix + '" style="margin-top:8px;display:' + (showOther ? '' : 'none') + ';" value="' + escapeHtml(showOther && enc.audioDevice ? enc.audioDevice : '') + '" placeholder="e.g., Encoder or MACROSILICON">';
             } else {
                 html += '<input type="text" class="form-input" id="enc-audio-' + prefix + '" value="' + escapeHtml(enc.audioDevice || '') + '" placeholder="e.g., Encoder">';
             }
             html += '</div>';
             html += '<div class="form-description">Audio output device name (or partial match)</div>';
+            if (audioModuleAvailable === false) {
+                html += '<div style="margin-top:4px;padding:7px 10px;background:#fffff0;border:1px solid #ecc94b;border-radius:4px;font-size:12px;color:#744210;">&#9888; <strong>AudioDeviceCmdlets not installed</strong> &mdash; some devices may not appear. Run in Administrator PowerShell: <code>Install-Module -Name AudioDeviceCmdlets -Force</code></div>';
+            }
 
             // Buttons
             html += '<div style="margin-top:16px;display:flex;gap:8px;">';
@@ -6334,13 +6357,29 @@ const SETTINGS_PAGE_HTML = `
             return html;
         }
 
+        function toggleAudioOther(prefix) {
+            var select = document.getElementById('enc-audio-' + prefix);
+            var otherInput = document.getElementById('enc-audio-other-' + prefix);
+            if (otherInput) {
+                otherInput.style.display = select.value === '__other__' ? '' : 'none';
+            }
+        }
+
         function getEncoderFromForm(prefix) {
+            var audioEl = document.getElementById('enc-audio-' + prefix);
+            var audioDevice;
+            if (audioEl && audioEl.tagName === 'SELECT' && audioEl.value === '__other__') {
+                var otherEl = document.getElementById('enc-audio-other-' + prefix);
+                audioDevice = otherEl ? otherEl.value.trim() || null : null;
+            } else {
+                audioDevice = audioEl ? audioEl.value.trim() || null : null;
+            }
             return {
                 url: document.getElementById('enc-url-' + prefix).value.trim(),
                 channel: document.getElementById('enc-channel-' + prefix).value.trim() || '24.42',
                 width: parseInt(document.getElementById('enc-width-' + prefix).value) || 0,
                 height: parseInt(document.getElementById('enc-height-' + prefix).value) || 0,
-                audioDevice: document.getElementById('enc-audio-' + prefix).value.trim() || null
+                audioDevice: audioDevice
             };
         }
 

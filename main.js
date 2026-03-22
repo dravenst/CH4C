@@ -5755,6 +5755,23 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
   await healthMonitor.startMonitoring(Constants.ENCODERS);
   streamMonitor.startPeriodicCheck();
 
+  // Log available audio devices at startup
+  try {
+    const startupAudioManager = new AudioDeviceManager();
+    const detectedDevices = await startupAudioManager.getAudioDevices();
+    if (startupAudioManager.moduleAvailable === false) {
+      logTS('WARNING: AudioDeviceCmdlets PowerShell module not installed. Some audio devices may not be detected.');
+      logTS('To install, run in Administrator PowerShell: Install-Module -Name AudioDeviceCmdlets -Force');
+    }
+    if (detectedDevices && detectedDevices.length > 0) {
+      logTS(`Detected ${detectedDevices.length} audio device(s): ${detectedDevices.join(', ')}`);
+    } else {
+      logTS('No audio devices detected.');
+    }
+  } catch (e) {
+    logTS('Could not detect audio devices:', e.message);
+  }
+
   // Initialize browser pool with validation
   const initResults = await initializeBrowserPoolWithValidation(
   Constants,        // Add Constants parameter
@@ -5816,8 +5833,8 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
         if (!existingChannel) {
           // Create new encoder channel
           // Use audio device name if available, otherwise use generic name
-          const encoderName = encoder.audioDevice || `Encoder ${i + 1}`;
-          const encoderCallSign = encoder.audioDevice || `ENC${i + 1}`;
+          const encoderName = (encoder.audioDevice || `Encoder ${i + 1}`).substring(0, 16);
+          const encoderCallSign = (encoder.audioDevice || `ENC${i + 1}`).substring(0, 16);
 
           const channelData = {
             id: channelId,
@@ -5847,8 +5864,8 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
           // Update existing encoder channel to match current encoder config.
           // When encoders are deleted, indices shift, so we must sync all encoder-derived
           // fields (name, callSign, streamUrl, channelNumber) to reflect the encoder now at this index.
-          const encoderName = encoder.audioDevice || `Encoder ${i + 1}`;
-          const encoderCallSign = encoder.audioDevice || `ENC${i + 1}`;
+          const encoderName = (encoder.audioDevice || `Encoder ${i + 1}`).substring(0, 16);
+          const encoderCallSign = (encoder.audioDevice || `ENC${i + 1}`).substring(0, 16);
           const channelIndex = manager.channels.findIndex(ch => ch.id === channelId);
           if (channelIndex !== -1) {
             manager.channels[channelIndex] = {
@@ -6284,7 +6301,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
   app.get('/audio-devices', async (req, res) => {
     const audioManager = new AudioDeviceManager();
     const devices = await audioManager.getAudioDevices();
-    res.json(devices);
+    res.json({ devices, moduleAvailable: audioManager.moduleAvailable });
   });
 
   // GET /displays - Get display/monitor configuration

@@ -127,7 +127,9 @@ Launch CH4C and navigate to `http://<CH4C_IP>:2442/settings`:
 In Settings, click **+ Add Encoder** for each HDMI encoder:
 
 1. Set the **Encoder URL** (e.g., `http://192.168.50.71/live/stream0`)
-2. Select the **Audio Device** from the dropdown — CH4C automatically discovers available audio devices and presents them for selection. Choose "Default" to use the system default audio device. If audio devices cannot be detected, a text field is shown instead where you can enter a partial device name (e.g., "Encoder" or "MACROSILICON").
+2. Select the **Audio Device** from the dropdown — CH4C automatically discovers available audio devices and presents them for selection. Choose "Default" to use the system default audio device. If your device doesn't appear, select **Other (manual entry)...** to type a partial device name manually (e.g., "Encoder" or "MACROSILICON").
+
+   > **Note**: For the most complete audio device listing on Windows, install the `AudioDeviceCmdlets` PowerShell module. Run this once in an **Administrator PowerShell**: `Install-Module -Name AudioDeviceCmdlets -Force`. CH4C falls back to registry and WMI-based detection if the module is unavailable, but some devices may not appear in the list.
 3. For multi-monitor setups, set the **Screen X/Y Position** — use the **Screens** button to visually select a display, or the home page shows a Display Configuration visual with offsets for each monitor. Display scale must be set to 100% for correct positioning.
 4. Click **Add Encoder**, then **Save Settings** and restart CH4C
 

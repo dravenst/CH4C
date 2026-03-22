@@ -14,6 +14,7 @@ class AudioDeviceManager {
   constructor() {
     this.platform = os.platform();
     this.cachedDevices = null;
+    this.moduleAvailable = null; // null = unknown, true = Get-AudioDevice worked, false = not installed
     this.cacheTimeout = 60000;
     this.lastCacheTime = 0;
   }
@@ -63,26 +64,30 @@ class AudioDeviceManager {
       
       const scriptContent = `
 try {
-  # Method 1: Try Get-AudioDevice first (most accurate when available)
   $devices = @()
+
+  # Method 1: Try Get-AudioDevice (most accurate names when available)
   try {
-    $audioDevices = Get-AudioDevice -List | Where-Object { $_.Type -eq "Playbook" -or $_.Type -eq "Playback" }
+    $found = Get-ChildItem -Path "$env:USERPROFILE" -Recurse -Filter "AudioDeviceCmdlets.psd1" -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $found) { $found = Get-ChildItem -Path "C:\Program Files" -Recurse -Filter "AudioDeviceCmdlets.psd1" -ErrorAction SilentlyContinue | Select-Object -First 1 }
+    if ($found) {
+      Import-Module $found.FullName -ErrorAction Stop
+    } else {
+      Import-Module AudioDeviceCmdlets -ErrorAction Stop
+    }
+    $audioDevices = Get-AudioDevice -List -ErrorAction Stop | Where-Object { $_.Type -eq "Playback" }
     foreach ($device in $audioDevices) {
-      if ($device.Name -and $device.Name.Trim() -ne "") { 
+      if ($device.Name -and $device.Name.Trim() -ne "") {
         $devices += $device.Name.Trim()
       }
     }
-    if ($devices.Count -gt 0) {
-      $devices | ConvertTo-Json -Compress
-      exit
-    }
+    Write-Host "AUDIOCMDLETS_AVAILABLE"
   } catch {
-    Write-Host "Get-AudioDevice not available, trying alternative methods..."
+    Write-Host "AUDIOCMDLETS_MISSING"
   }
 
-  # Method 2: Direct registry enumeration of audio endpoints
+  # Method 2: Direct registry enumeration of audio endpoints (supplements Method 1)
   try {
-    $devices = @()
     $renderPath = "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\MMDevices\\Audio\\Render"
     
     if (Test-Path $renderPath) {
@@ -90,6 +95,10 @@ try {
       
       foreach ($deviceKey in $deviceKeys) {
         try {
+          # Skip inactive devices (DeviceState: 1=Active, 2=Disabled, 4=NotPresent, 8=Unplugged)
+          $stateVal = Get-ItemProperty -Path $deviceKey.PSPath -Name "DeviceState" -ErrorAction SilentlyContinue
+          if ($stateVal -and $stateVal.DeviceState -ne 1) { continue }
+
           $propsPath = Join-Path $deviceKey.PSPath "Properties"
           if (Test-Path $propsPath) {
             # Try to get the device description (different property)
@@ -117,13 +126,20 @@ try {
       }
     }
     
-    if ($devices.Count -gt 0) {
-      $devices = $devices | Sort-Object -Unique
-      $devices | ConvertTo-Json -Compress
-      exit
-    }
   } catch {
     Write-Host "Registry method failed, trying audio endpoint enumeration..."
+  }
+
+  # Output combined results if we have any devices so far
+  if ($devices.Count -gt 0) {
+    $devices = $devices | Sort-Object -Unique
+    # Remove short names that are prefixes of longer names (e.g. "1 - Encoder" when "1 - Encoder (AMD...)" exists)
+    $devices = $devices | Where-Object {
+      $current = $_
+      -not ($devices | Where-Object { $_ -ne $current -and $_.StartsWith($current) })
+    }
+    $devices | ConvertTo-Json -Compress
+    exit
   }
 
   # Method 3: Try PowerShell with Audio endpoint enumeration
@@ -253,6 +269,15 @@ try {
 
           // Process the full output - look for JSON content
           const fullOutput = stdout.trim();
+
+          // Detect whether AudioDeviceCmdlets module was available via explicit marker
+          const combinedOutput = fullOutput + '\n' + (stderr || '');
+          if (combinedOutput.includes('AUDIOCMDLETS_AVAILABLE')) {
+            this.moduleAvailable = true;
+          } else if (combinedOutput.includes('AUDIOCMDLETS_MISSING')) {
+            this.moduleAvailable = false;
+          }
+          // If neither marker is present, leave as null (unknown)
           
           // Try to find JSON in the output (could be on any line)
           const lines = fullOutput.split('\n').map(line => line.trim()).filter(line => line);

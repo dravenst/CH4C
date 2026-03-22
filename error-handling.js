@@ -929,6 +929,11 @@ const createCleanupManager = () => {
 // Also update setupBrowserCrashHandlers in error-handling.js to check for intentional closes:
 
 function setupBrowserCrashHandlers(browser, encoderUrl, recoveryManager, encoderConfig, browsers, launchBrowserFunc, Constants) {
+  // Lock to prevent concurrent Sling auto-recovery attempts for this encoder
+  let slingRecoveryInProgress = false;
+  let slingRecoveryAttempts = 0;
+  const SLING_MAX_RECOVERY_ATTEMPTS = 3;
+
   // Monitor for disconnection
   browser.on('disconnected', async () => {
     try {
@@ -1066,43 +1071,54 @@ function setupBrowserCrashHandlers(browser, encoderUrl, recoveryManager, encoder
         if (global.streamMonitor && url.includes('/dashboard')) {
           const stream = global.streamMonitor.activeStreams.get(encoderUrl);
           if (stream && stream.targetUrl && stream.targetUrl.includes('watch.sling.com') && stream.targetUrl.includes('/watch')) {
-            logTS(`[${encoderUrl}] RECOVERY: Sling navigated away from watch page to dashboard during active stream`);
-            logTS(`[${encoderUrl}] RECOVERY: Attempting to navigate back to ${stream.targetUrl}`);
+            if (slingRecoveryInProgress) {
+              logTS(`[${encoderUrl}] RECOVERY: Sling redirect detected but recovery already in progress, ignoring`);
+            } else if (slingRecoveryAttempts >= SLING_MAX_RECOVERY_ATTEMPTS) {
+              logTS(`[${encoderUrl}] RECOVERY: Sling redirect detected but max recovery attempts (${SLING_MAX_RECOVERY_ATTEMPTS}) reached, giving up`);
+            } else {
+              slingRecoveryInProgress = true;
+              slingRecoveryAttempts++;
+              logTS(`[${encoderUrl}] RECOVERY: Sling navigated away from watch page to dashboard during active stream`);
+              logTS(`[${encoderUrl}] RECOVERY: Attempting to navigate back to ${stream.targetUrl} (attempt ${slingRecoveryAttempts}/${SLING_MAX_RECOVERY_ATTEMPTS})`);
 
-            // Run recovery async (don't block the event handler)
-            (async () => {
-              try {
-                const page = await target.page();
-                if (!page) {
-                  logTS(`[${encoderUrl}] RECOVERY: Could not get page object, aborting`);
-                  return;
-                }
-
-                // Re-navigate to the original watch URL
-                if (global.navigateSlingLikeHuman) {
-                  const success = await global.navigateSlingLikeHuman(page, stream.targetUrl, encoderUrl);
-                  if (success) {
-                    logTS(`[${encoderUrl}] RECOVERY: Successfully navigated back to ${stream.targetUrl}`);
-
-                    // Wait for video and re-apply fullscreen
-                    if (global.setupBrowserAudio) {
-                      await global.setupBrowserAudio(page, encoderConfig, stream.targetUrl);
-                    }
-                    if (global.handleSiteSpecificFullscreen) {
-                      await global.handleSiteSpecificFullscreen(stream.targetUrl, page, encoderConfig);
-                    }
-
-                    logTS(`[${encoderUrl}] RECOVERY: Stream fully restored`);
-                  } else {
-                    logTS(`[${encoderUrl}] RECOVERY: Failed to navigate back to watch page`);
+              // Run recovery async (don't block the event handler)
+              (async () => {
+                try {
+                  const page = await target.page();
+                  if (!page) {
+                    logTS(`[${encoderUrl}] RECOVERY: Could not get page object, aborting`);
+                    return;
                   }
-                } else {
-                  logTS(`[${encoderUrl}] RECOVERY: navigateSlingLikeHuman not available`);
+
+                  // Re-navigate to the original watch URL
+                  if (global.navigateSlingLikeHuman) {
+                    const success = await global.navigateSlingLikeHuman(page, stream.targetUrl, encoderUrl);
+                    if (success) {
+                      logTS(`[${encoderUrl}] RECOVERY: Successfully navigated back to ${stream.targetUrl}`);
+                      slingRecoveryAttempts = 0; // Reset on success
+
+                      // Wait for video and re-apply fullscreen
+                      if (global.setupBrowserAudio) {
+                        await global.setupBrowserAudio(page, encoderConfig, stream.targetUrl);
+                      }
+                      if (global.handleSiteSpecificFullscreen) {
+                        await global.handleSiteSpecificFullscreen(stream.targetUrl, page, encoderConfig);
+                      }
+
+                      logTS(`[${encoderUrl}] RECOVERY: Stream fully restored`);
+                    } else {
+                      logTS(`[${encoderUrl}] RECOVERY: Failed to navigate back to watch page`);
+                    }
+                  } else {
+                    logTS(`[${encoderUrl}] RECOVERY: navigateSlingLikeHuman not available`);
+                  }
+                } catch (err) {
+                  logTS(`[${encoderUrl}] RECOVERY: Error during auto-recovery: ${err.message}`);
+                } finally {
+                  slingRecoveryInProgress = false;
                 }
-              } catch (err) {
-                logTS(`[${encoderUrl}] RECOVERY: Error during auto-recovery: ${err.message}`);
-              }
-            })();
+              })();
+            }
           }
         }
       }
