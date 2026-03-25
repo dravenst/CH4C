@@ -7614,6 +7614,13 @@ async function handleSiteSpecificFullscreen(targetUrl, page, encoderConfig = nul
       logTS("Handling default video");
       await fullScreenVideo(page);
     }
+
+    // Hide cursor so it doesn't appear over the fullscreen video capture
+    await page.evaluate(() => {
+      const style = document.createElement('style');
+      style.textContent = '*, *::before, *::after { cursor: none !important; }';
+      document.head.appendChild(style);
+    }).catch(() => {});
   } catch (e) {
     logTS(`Fullscreen setup failed (non-fatal): ${e.message}`);
     // Don't throw - fullscreen failure shouldn't stop the stream
