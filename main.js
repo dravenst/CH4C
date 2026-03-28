@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // Handle service commands before loading the full application
 if (process.argv[2] === 'service') {
   const { handleServiceCommand } = require('./service-manager');
@@ -5302,12 +5303,22 @@ function getExecutablePath() {
     const validPath = Constants.CHROME_EXECUTABLE_DIRECTORIES[process.platform].find(isValidLinuxPath)
     if (validPath) {
       return execSync(validPath).toString().split('\n').shift()
-    } else {
-      return null
     }
-  } else {
-    return Constants.CHROME_EXECUTABLE_DIRECTORIES[process.platform].find(existsSync)
+    return null
   }
+
+  if (process.platform === 'darwin') {
+    // Check standard application paths first
+    const appPath = Constants.CHROME_EXECUTABLE_DIRECTORIES[process.platform].find(existsSync)
+    if (appPath) return appPath
+    // Fall back to PATH-based detection (covers Homebrew installs)
+    const whichCmds = ['which chromium', 'which google-chrome', 'which chromium-browser']
+    const found = whichCmds.find(isValidLinuxPath)
+    if (found) return execSync(found).toString().split('\n').shift()
+    return null
+  }
+
+  return Constants.CHROME_EXECUTABLE_DIRECTORIES[process.platform].find(existsSync)
 }
 
 function buildRecordingJson(name, duration, encoderChannel, episodeTitle, summary, seasonNumber, episodeNumber, imageUrl) {
@@ -5590,10 +5601,16 @@ async function main() {
   app.locals.streamMonitor = streamMonitor;
 
   // Chrome setup (existing code)
-  chromeDataDir = Constants.CHROME_USERDATA_DIRECTORIES[process.platform].find(existsSync);
-  if (!chromeDataDir) {
-    console.log('cannot find Chrome User Data Directory');
-    return;
+  if (process.platform === 'win32') {
+    chromeDataDir = Constants.CHROME_USERDATA_DIRECTORIES[process.platform].find(existsSync);
+    if (!chromeDataDir) {
+      console.log('cannot find Chrome User Data Directory');
+      return;
+    }
+  } else {
+    // Mac/Linux: use a dedicated CH4C profiles directory instead of the system Chrome user data dir
+    chromeDataDir = Constants.CH4C_PROFILES_DIR;
+    fs.mkdirSync(chromeDataDir, { recursive: true });
   }
   chromePath = getExecutablePath();
   if (!chromePath) {

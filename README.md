@@ -85,6 +85,8 @@ To use a custom data directory:
 ch4c service install -d C:\ch4c-data
 ```
 
+> **Upgrading from a previous version (Windows)**: If a `data` directory exists in the CH4C folder, it will continue to be used as the default data location for backward compatibility. If no `data` directory is found, CH4C will use `%APPDATA%\ch4c` as the new default. A log message at startup will indicate which location is in use. To migrate to the new default, move the contents of `data` to `%APPDATA%\ch4c` and remove the `data` folder.
+
 **Other service commands:**
 
 ```bash

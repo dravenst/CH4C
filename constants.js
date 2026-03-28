@@ -7,12 +7,34 @@ const { URL } = require('url');
 const { logTS } = require('./logger');
 const { AudioDeviceManager, DisplayManager } = require('./audio-device-manager');
 
+// Computed once for Win32 migration: check if legacy ./data exists before any dir is created
+const _win32AppDataDir = process.platform === 'win32'
+  ? path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'ch4c')
+  : null;
+const _win32LegacyDataExists = process.platform === 'win32' && fs.existsSync('data');
+
 /**
  * Get data directory from raw CLI args before full yargs parsing.
  * This allows us to find config.json location early.
  * @param {string[]} args - Raw command line arguments
  * @returns {string} - Data directory path
  */
+function getDefaultDataDir() {
+  switch (process.platform) {
+    case 'win32':
+      // Migration: if legacy ./data exists, keep using it; otherwise use %APPDATA%\ch4c
+      return _win32LegacyDataExists ? 'data' : _win32AppDataDir;
+    case 'darwin':
+      return path.join(os.homedir(), 'Library', 'Application Support', 'ch4c');
+    default: // linux
+      return path.join(os.homedir(), '.config', 'ch4c');
+  }
+}
+
+function getDefaultProfilesDir() {
+  return path.join(getDefaultDataDir(), 'profiles');
+}
+
 function getDataDirFromArgs(args) {
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -28,7 +50,7 @@ function getDataDirFromArgs(args) {
       return args[i + 1];
     }
   }
-  return 'data'; // default
+  return getDefaultDataDir();
 }
 
 /**
@@ -354,7 +376,7 @@ const argv = yargs(rawArgs)
   .option('data-dir', {
     alias: 'd',
     type: 'string',
-    default: fileConfig?.dataDir || 'data',
+    default: fileConfig?.dataDir || getDefaultDataDir(),
     describe: 'Directory location for storing channel data.'
   })
   .option('enable-pause-monitor', {
@@ -548,6 +570,18 @@ if (usingConfigFile) {
 } else {
   logTS('Configuration loaded from: command line arguments');
 }
+
+// Win32 data directory migration notice (only when no explicit --data-dir CLI override)
+if (process.platform === 'win32' && !cliOverrides.dataDir) {
+  if (_win32LegacyDataExists) {
+    logTS(`WARNING: Using deprecated default data directory .\\data.`);
+    logTS(`  To migrate to the new default location (${_win32AppDataDir}), move your data and remove .\\data.`);
+    logTS(`  Alternatively, specify a data directory explicitly with: --data-dir <path>`);
+  } else if (!fileConfig?.dataDir) {
+    logTS(`Data directory: no .\\data directory found, using new default location: ${_win32AppDataDir}`);
+  }
+}
+
 logTS('Current configuration:');
 logTS(JSON.stringify(config, null, 2));
 
@@ -3471,6 +3505,10 @@ const macChromeExecutableDirectories = [
     '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
     '/Applications/Chromium.app/Contents/MacOS/Chromium',
     '/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary',
+    '/opt/homebrew/bin/chromium',         // Apple Silicon Homebrew
+    '/usr/local/bin/chromium',            // Intel Homebrew
+    '/opt/homebrew/bin/google-chrome',
+    '/usr/local/bin/google-chrome',
 ]
 const winChromeExecutableDirectories = [
     `C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe`,
@@ -6753,6 +6791,7 @@ module.exports = {
   SETTINGS_PAGE_HTML,
   CHROME_USERDATA_DIRECTORIES,
   CHROME_EXECUTABLE_DIRECTORIES,
+  CH4C_PROFILES_DIR: getDefaultProfilesDir(),
   CONFIG_FILE_PATH: configFilePath,
   USING_CONFIG_FILE: usingConfigFile,
   CLI_OVERRIDES: cliOverrides
