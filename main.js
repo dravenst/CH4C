@@ -3774,6 +3774,8 @@ async function fullScreenVideoESPN(page, encoderConfig = null) {
   // Setup error recovery monitor to handle hard errors (e.g. too many devices streaming)
   setupESPNErrorMonitor(page, encoderConfig);
 
+  await hideCursor(page);
+  await page.mouse.move(0, 0);
   logTS("finished ESPN fullscreen setup");
 }
 
@@ -6000,7 +6002,7 @@ async function main() {
   app.use(express.urlencoded({ extended: false }));
 
   // Serve noVNC static files for remote access feature
-  app.use('/novnc', express.static(path.join(__dirname, 'novnc')));
+  app.use('/novnc', express.static(path.join(__dirname, 'vendor', 'novnc')));
 
   // Check for admin mode FIRST, before any other initialization
   if (isRunningAsAdmin()) {

@@ -28,6 +28,7 @@
   },
   "homepage": "https://github.com/dravenst/CH4C#readme",
   "dependencies": {
+    "@novnc/novnc": "^1.6.0",
     "express": "^5.1.0",
     "node-fetch": "^2.7.0",
     "rebrowser-puppeteer-core": "^24.8.1",
@@ -42,10 +43,11 @@
   },
   "pkg": {
     "assets": [
-      "novnc/**/*"
+      "node_modules/@novnc/novnc/**/*"
     ]
   },
   "scripts": {
+    "postinstall": "node -e \"if(process.platform==='linux'){console.log('\\nWARNING: Linux detected. CH4C is primarily supported on Windows and macOS.\\n  The \\'ch4c service install\\' command is not available on Linux.\\n  You can still run CH4C manually with: ch4c\\n')}\"",
     "build": "pkg . --targets latest-win-x64 --output dist/ch4c.exe && pkg . --targets latest-macos-x64 --output dist/ch4c",
     "build:win": "pkg . --targets latest-win-x64 --output dist/ch4c.exe",
     "build:mac": "pkg . --targets latest-macos-x64 --output dist/ch4c"

@@ -2,10 +2,6 @@
 
 This project merges elements of the excellent [Chrome Capture for Channels](https://github.com/fancybits/chrome-capture-for-channels) and [HDMI for Channels](https://github.com/tmm1/androidhdmi-for-channels) projects, in an attempt to capture benefits of each. It builds on the original idea from [ParksideParade](https://github.com/ParksideParade/CH4C).
 
-**Compared to similar projects:**
-- **vs CC4C**: This project can run on a much lower cost/performance PC by offloading the video encoding of one or more streams to an external hardware HDMI encoder(s)
-- **vs Android HDMI for Channels (AH4C)**: This project can capture from any web URL with no dependency on an Android TV app or device
-
 **Why I made this:**
 
 - Recovering channels lost from TV Everywhere
@@ -56,13 +52,27 @@ See [example LinkPi encoder settings](./assets/linkpi-encoder-settings.jpg) for 
 
 ## Installation
 
-### Windows
+### npm (recommended — Windows & macOS)
 
-Download `ch4c.exe` from the latest [release](https://github.com/dravenst/CH4C/releases).
+Requires [Node.js](https://nodejs.org/) 18 or later.
 
-### macOS
+**Latest code:**
+```bash
+npm install -g github:dravenst/CH4C
+```
 
-Download `ch4c` from the latest [release](https://github.com/dravenst/CH4C/releases). On first run, remove the quarantine flag added by macOS:
+**Specific stable release** (replace `v0.4.1` with the latest tag from the [releases page](https://github.com/dravenst/CH4C/releases)):
+```bash
+npm install -g github:dravenst/CH4C#v0.4.1
+```
+
+To update, run the same command again.
+
+### Pre-built executables
+
+If you prefer not to install Node.js, download a standalone executable from the latest [release](https://github.com/dravenst/CH4C/releases).
+
+**macOS:** After downloading, remove the quarantine flag:
 
 ```bash
 xattr -d com.apple.quarantine ch4c
@@ -70,7 +80,7 @@ chmod +x ch4c
 ./ch4c --help
 ```
 
-### Running from Source (any platform)
+### Running from Source
 
 ```bash
 git clone https://github.com/dravenst/CH4C
