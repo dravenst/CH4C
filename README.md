@@ -52,27 +52,25 @@ See [example LinkPi encoder settings](./assets/linkpi-encoder-settings.jpg) for 
 
 ## Installation
 
-### npm (recommended — Windows & macOS)
+### Windows
 
-Requires [Node.js](https://nodejs.org/) 18 or later.
+Download `ch4c.exe` from the latest [release](https://github.com/dravenst/CH4C/releases).
 
-**Latest code:**
+### macOS
+
+Download `ch4c` from the latest [release](https://github.com/dravenst/CH4C/releases), or install via npm:
+
 ```bash
 npm install -g github:dravenst/CH4C
 ```
 
-**Specific stable release** (replace `v0.4.1` with the latest tag from the [releases page](https://github.com/dravenst/CH4C/releases)):
+To update to the latest, run the same command again. For a specific stable release, check the [releases page](https://github.com/dravenst/CH4C/releases) for the latest tag:
+
 ```bash
 npm install -g github:dravenst/CH4C#v0.4.1
 ```
 
-To update, run the same command again.
-
-### Pre-built executables
-
-If you prefer not to install Node.js, download a standalone executable from the latest [release](https://github.com/dravenst/CH4C/releases).
-
-**macOS:** After downloading, remove the quarantine flag:
+On first run of the downloaded binary, remove the macOS quarantine flag:
 
 ```bash
 xattr -d com.apple.quarantine ch4c
@@ -94,7 +92,7 @@ node main.js --help
 Install CH4C as a service that starts automatically at login:
 
 ```bash
-ch4c service install          # or: node main.js service install
+ch4c service install          # or: node main.js service install if running from source
 ```
 
 **Windows** — creates a Task Scheduler entry that runs CH4C at user logon with a 30-second startup delay. Requires **Administrator privileges**:
@@ -104,8 +102,8 @@ powershell -Command "Start-Process cmd -ArgumentList '/k cd /d C:\path\to\CH4C &
 
 **macOS** — installs a launchd agent at `~/Library/LaunchAgents/com.ch4c.plist`. No elevated privileges required:
 ```bash
-node main.js service install
-node main.js service install -d ~/ch4c-data   # custom data directory
+ch4c service install
+ch4c service install -d ~/ch4c-data   # custom data directory
 ```
 
 **Other service commands** (Windows and macOS):

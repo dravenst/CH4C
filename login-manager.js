@@ -729,18 +729,36 @@ async function loginDisney(page, username, password) {
       if (modal) { await modal.click(); await delay(500); }
     } catch (_) {}
 
-    // Check if already logged in — LOG IN button absent means logged in
-    const loginBtn = await page.$('a[data-testid="log_in"]');
+    // Check if already logged in — LOG IN button absent AND still on disneyplus.com means logged in.
+    // Unauthenticated users get JS-redirected to disney.com (~5s); if that redirect happened during
+    // the 3s delay, the LOG IN button won't exist on disney.com either — don't misread that as logged in.
+    let loginBtn = await page.$('a[data-testid="log_in"]');
     if (!loginBtn) {
-      logTS('Disney+: already logged in');
-      return { success: true };
+      if (page.url().includes('www.disney.com') && !page.url().includes('disneyplus.com')) {
+        logTS('Disney+: redirected to disney.com — not logged in, navigating back');
+        await page.goto('https://www.disneyplus.com/home', { waitUntil: 'domcontentloaded', timeout: 25000 });
+        await delay(2000);
+        // If we get redirected again immediately, the session is definitely not authenticated
+        if (page.url().includes('www.disney.com') && !page.url().includes('disneyplus.com')) {
+          throw new Error('Disney+ keeps redirecting to disney.com — unable to reach login page');
+        }
+        loginBtn = await page.$('a[data-testid="log_in"]');
+        if (!loginBtn) throw new Error('Disney+ LOG IN button not found after redirect recovery');
+      } else {
+        logTS('Disney+: already logged in');
+        return { success: true };
+      }
     }
 
-    // Click the LOG IN button — navigates to /identity/login/enter-email (full page, no iframe)
+    // Click the LOG IN button — navigates to /identity/login (may go through intermediate redirects)
     logTS('Disney+: clicking LOG IN button');
     await loginBtn.click();
-    await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
-    await delay(1000);
+    // Disney+ SPA may redirect /home → / → /identity/login in multiple steps.
+    // Poll until the URL settles on /identity/login rather than trusting a single waitForNavigation.
+    await page.waitForFunction(
+      () => window.location.href.includes('/identity/login'),
+      { timeout: 15000 }
+    ).catch(() => {});
 
     if (!page.url().includes('/identity/login')) {
       throw new Error(`Expected Disney+ login page, got: ${page.url()}`);
