@@ -2020,6 +2020,7 @@ const INSTANT_PAGE_HTML = `
                         <span style="font-size:11px;color:#718096;font-weight:600;">Show Search</span>
                         <select id="search_service" style="padding:8px 6px;border:1px solid #e2e8f0;border-radius:8px;font-size:13px;background:#fff;cursor:pointer;">
                             <option value="">Select Service</option>
+                            <option value="apple_tv">Apple TV+</option>
                             <option value="disney_plus">Disney+</option>
                             <option value="hbomax">HBO Max</option>
                             <option value="peacock">Peacock</option>

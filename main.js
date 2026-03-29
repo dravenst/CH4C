@@ -567,6 +567,175 @@ async function searchDisneyPlus(page, query) {
 }
 
 /**
+ * Search Apple TV+ for content and return the watch URL.
+ */
+async function searchAppleTV(page, query) {
+  const episodeMatch  = query.match(/\bs(\d+)\s*e(\d+)\b/i);
+  const targetSeason  = episodeMatch ? parseInt(episodeMatch[1], 10) : null;
+  const targetEpisode = episodeMatch ? parseInt(episodeMatch[2], 10) : null;
+  const searchTerm    = query.replace(/\bs\d+\s*e\d+\b/i, '').trim();
+
+  logTS('Navigating to Apple TV+');
+  await page.goto('https://tv.apple.com/', { waitUntil: 'networkidle2', timeout: 30000 });
+  await delay(3000);
+
+  logTS(`Apple TV+: searching for "${searchTerm}"`);
+  const searchInput = await page.waitForSelector('[data-testid="search-input__text-field"]', { timeout: 15000 });
+  await searchInput.click({ clickCount: 3 });
+  await searchInput.type(searchTerm, { delay: 60 });
+
+  // Capture any pre-existing first result title so we can detect when results actually update
+  const initialTitle = await page.evaluate(() => {
+    const el = document.querySelector('[data-testid="shelf-item-list"] li[data-index="0"] span.visually-hidden');
+    return el ? el.textContent.trim() : '__none__';
+  });
+
+  await page.keyboard.press('Enter');
+
+  // Wait for the results list to contain a first item with a non-empty title that differs from
+  // the pre-search state. The li container appears quickly, but content loads asynchronously.
+  await page.waitForFunction(
+    (prev) => {
+      const el = document.querySelector('[data-testid="shelf-item-list"] li[data-index="0"] span.visually-hidden');
+      return el && el.textContent.trim().length > 0 && el.textContent.trim() !== prev;
+    },
+    { timeout: 20000 },
+    initialTitle
+  ).catch(() => {});
+
+  // Extra settle time for images and additional tiles to render
+  await delay(1000);
+
+  // Extract title and poster image from the first search result.
+  // Note: img.src is a lazy-load placeholder (/assets/artwork/1x1.gif) — use the jpeg source srcset.
+  // Apple TV srcsets have no space after commas: split on ",(?=https)" not "/,\s+/".
+  const { firstResultTitle, searchResultImageUrl } = await page.evaluate(() => {
+    const item = document.querySelector('[data-testid="shelf-item-list"] li[data-index="0"]');
+    if (!item) return { firstResultTitle: null, searchResultImageUrl: null };
+    const titleEl = item.querySelector('span.visually-hidden');
+    const srcset = item.querySelector('picture source[type="image/jpeg"]')?.srcset || '';
+    const entries = srcset.trim().split(/,(?=https)/);
+    const last = entries[entries.length - 1];
+    const imageUrl = last ? last.split(' ')[0] : null;
+    return {
+      firstResultTitle: titleEl ? titleEl.textContent.trim() : null,
+      searchResultImageUrl: imageUrl || null,
+    };
+  });
+  logTS(`Apple TV+: first result: "${firstResultTitle}"`);
+
+  // Click the first result
+  const firstResult = await page.$('[data-testid="shelf-item-list"] li[data-index="0"] [data-testid="lockup"]');
+  if (!firstResult) throw new Error('No search results found on Apple TV+');
+
+  await Promise.all([
+    page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 20000 }),
+    firstResult.click(),
+  ]);
+
+  const detailUrl = page.url();
+  logTS(`Apple TV+ navigated to detail page: ${detailUrl}`);
+
+  // Use the title already captured from the search result's span.visually-hidden as the
+  // primary show title — og:title on Apple TV returns a generic "Apple TV+" value.
+  const showTitle = firstResultTitle || await page.evaluate(() => {
+    const raw = document.querySelector('h1')?.textContent?.trim() || document.title || '';
+    return raw.replace(/\s*[|\-–]\s*Apple TV\+?.*$/i, '').trim() || null;
+  });
+
+  // If a specific episode was requested, select the right season and find the episode
+  if (targetSeason !== null) {
+    const seasonSelectEl = await page.$('[data-testid="accessory-button-select"]');
+    if (seasonSelectEl) {
+      const seasonOptions = await page.evaluate(() => {
+        const select = document.querySelector('[data-testid="accessory-button-select"]');
+        return select ? Array.from(select.options).map((opt, i) => ({ index: i, text: opt.textContent.trim() })) : [];
+      });
+      logTS(`Apple TV+: seasons found: ${seasonOptions.map(o => o.text).join(', ')}`);
+
+      const targetSeasonOpt = seasonOptions.find(o =>
+        o.text.match(new RegExp(`season\\s*${targetSeason}\\b`, 'i'))
+      );
+      if (targetSeasonOpt) {
+        logTS(`Apple TV+: selecting Season ${targetSeason} (index ${targetSeasonOpt.index})`);
+        // Svelte select binds via both 'input' and 'change' events
+        await page.evaluate((idx) => {
+          const select = document.querySelector('[data-testid="accessory-button-select"]');
+          select.selectedIndex = idx;
+          select.dispatchEvent(new Event('input',  { bubbles: true }));
+          select.dispatchEvent(new Event('change', { bubbles: true }));
+        }, targetSeasonOpt.index);
+        await delay(2000);
+        await page.waitForSelector(
+          '[data-testid="shelf-item-list"] li[data-index="0"] a[data-testid="lockup"]',
+          { timeout: 10000 }
+        ).catch(() => {});
+      }
+    }
+
+    // Find the episode by matching its "EPISODE N" tag text
+    const episodeData = await page.evaluate((targetEp) => {
+      const items = document.querySelectorAll('[data-testid="shelf-item-list"] li.shelf-grid__list-item');
+      for (const item of items) {
+        const tagEl = item.querySelector('.tag');
+        if (!tagEl) continue;
+        const epNumMatch = tagEl.textContent.trim().match(/episode\s*(\d+)/i);
+        if (!epNumMatch || parseInt(epNumMatch[1], 10) !== targetEp) continue;
+
+        const linkEl = item.querySelector('a[data-testid="lockup"]');
+        if (!linkEl) continue;
+
+        const titleEl = item.querySelector('.title');
+        const descEl  = item.querySelector('.description');
+        const durEl   = item.querySelector('.duration');
+
+        // Episode still image — scoped to the artwork div; use jpeg srcset, split on ",(?=https)"
+        const srcset = item.querySelector('[data-testid="artwork"] picture source[type="image/jpeg"]')?.srcset || '';
+        const entries = srcset.trim().split(/,(?=https)/);
+        const last = entries[entries.length - 1];
+        const imageUrl = last ? last.split(' ')[0] : null;
+
+        return {
+          href:         linkEl.href,
+          episodeTitle: titleEl ? titleEl.textContent.trim() : null,
+          summary:      descEl  ? descEl.textContent.trim()  : null,
+          durationStr:  durEl   ? durEl.textContent.trim()   : null,
+          imageUrl,
+        };
+      }
+      return null;
+    }, targetEpisode);
+
+    if (episodeData && episodeData.href) {
+      logTS(`Apple TV+: found S${targetSeason} E${targetEpisode} | title: "${episodeData.episodeTitle}" | duration: "${episodeData.durationStr}" | url: ${episodeData.href}`);
+      return {
+        url:             episodeData.href,
+        title:           showTitle,
+        episodeTitle:    episodeData.episodeTitle,
+        seasonNumber:    targetSeason,
+        episodeNumber:   targetEpisode,
+        durationMinutes: parseDurationMinutes(episodeData.durationStr),
+        summary:         episodeData.summary,
+        imageUrl:        episodeData.imageUrl || searchResultImageUrl,
+      };
+    }
+    logTS(`Apple TV+: episode S${targetSeason} E${targetEpisode} not found, falling back to detail page`);
+  }
+
+  // No episode specified (or not found) — return the show detail page
+  logTS(`Apple TV+: returning detail page: ${detailUrl} | showTitle: "${showTitle}"`);
+  return {
+    url:             detailUrl,
+    title:           showTitle,
+    episodeTitle:    null,
+    seasonNumber:    null,
+    episodeNumber:   null,
+    durationMinutes: null,
+    imageUrl:        searchResultImageUrl,
+  };
+}
+
+/**
  * Search Max (HBO Max) for content and return the watch URL.
  */
 async function searchMax(page, query) {
@@ -2126,6 +2295,55 @@ async function setupBrowserAudio(page, encoderConfig, targetUrl = null) {
     } finally {
       clearInterval(activityUpdateInterval);
     }
+  } else if (targetUrl && targetUrl.includes("tv.apple.com")) {
+    // Apple TV+ episode pages show a static details page — wait for Svelte to fully mount
+    // (the button appears in DOM before its event handlers are attached), then click play.
+    logTS("Apple TV+ detected, waiting for page to fully load before clicking play");
+
+    // Wait for the capsule button to appear in the DOM, then give Svelte a moment to attach handlers.
+    await page.waitForSelector('button[data-testid="capsule-button"]', { timeout: 15000 }).catch(() => {});
+
+    let playClicked = false;
+    for (let i = 0; i < 20; i++) {
+      const btnFound = await page.evaluate(() => {
+        return !!document.querySelector('button[data-testid="capsule-button"]');
+      });
+      if (btnFound) {
+        logTS(`Apple TV+: capsule button found on attempt ${i + 1}, waiting 2s for Svelte to attach handlers`);
+        await delay(2000);
+        // Use a real mouse click at the button's center so Svelte pointer events fire
+        const rect = await page.evaluate(() => {
+          const btn = document.querySelector('button[data-testid="capsule-button"]');
+          if (!btn) return null;
+          const r = btn.getBoundingClientRect();
+          return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+        });
+        if (rect) {
+          await page.mouse.click(rect.x, rect.y);
+          logTS(`Apple TV+: mouse clicked capsule button at (${Math.round(rect.x)}, ${Math.round(rect.y)})`);
+          playClicked = true;
+          break;
+        }
+      }
+      await delay(500);
+    }
+
+    if (!playClicked) {
+      logTS("Apple TV+: capsule play button not found, pressing Space as fallback");
+      await page.keyboard.press('Space');
+    }
+
+    // Wait up to 30s for the video element to appear after clicking play
+    try {
+      await page.waitForFunction(() => {
+        const videos = document.querySelectorAll('video');
+        return Array.from(videos).some(v => v.readyState >= 1);
+      }, { timeout: 30000 });
+      logTS("Apple TV+: video element ready");
+    } catch (e) {
+      logTS(`Apple TV+: video wait timed out (non-fatal): ${e.message}`);
+    }
+
   } else if (targetUrl && targetUrl.includes("disneynow.com")) {
     // DisneyNow requires clicking the play overlay before video loads
     logTS("DisneyNow detected, clicking play overlay to start video");
@@ -2430,11 +2648,8 @@ async function launchBrowser(targetUrl, encoderConfig, startMinimized, applyStar
           `--audio-output-device=${result.deviceName}`
         );
       } else {
-        logTS(`Warning: Audio device "${encoderConfig.audioDevice}" not found`);
-                launchArgs.push(
-          '--use-fake-ui-for-media-stream',
-          `--audio-output-device=${encoderConfig.audioDevice}`
-        );
+        logTS(`Warning: Audio device "${encoderConfig.audioDevice}" not found - launching without audio device flag to avoid browser launch failure`);
+        launchArgs.push('--use-fake-ui-for-media-stream');
       }
     }
     // Couldn't find a way to redirect sound for Google so mute it
@@ -3689,6 +3904,216 @@ async function fullScreenVideoDisneyNow(page) {
 
   logTS(`DisneyNow fullscreen status: ${fullscreenResult}`);
   logTS("finished DisneyNow fullscreen setup");
+}
+
+async function selectAppleTVClosedCaptions(page, ccOption) {
+  logTS(`Apple TV+ CC: selecting subtitles "${ccOption}"`);
+  try {
+    const vp = page.viewport();
+    const cx = Math.floor((vp ? vp.width : 1280) / 2);
+    const cy = Math.floor((vp ? vp.height : 720) / 2);
+
+    // Move mouse to center to trigger player controls to appear.
+    // The Subtitles button lives inside amp-* web components with shadow DOM —
+    // must use a recursive shadow DOM search to find it.
+    await page.mouse.move(cx, cy);
+    let ccBtnRect = null;
+    for (let i = 0; i < 20; i++) {
+      await page.mouse.move(cx + (i % 2 === 0 ? 2 : -2), cy);
+      ccBtnRect = await page.evaluate(() => {
+        function findInShadow(root, selector) {
+          const direct = root.querySelector(selector);
+          if (direct) return direct;
+          for (const el of root.querySelectorAll('*')) {
+            if (el.shadowRoot) {
+              const found = findInShadow(el.shadowRoot, selector);
+              if (found) return found;
+            }
+          }
+          return null;
+        }
+        const btn = findInShadow(document, 'button[aria-label="Subtitles"]');
+        if (!btn) return null;
+        const r = btn.getBoundingClientRect();
+        if (r.width === 0) return null;
+        return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+      });
+      if (ccBtnRect) break;
+      await delay(500);
+    }
+    if (!ccBtnRect) {
+      logTS('Apple TV+ CC: Subtitles button not found in shadow DOM after hovering, skipping');
+      return false;
+    }
+    await page.mouse.click(ccBtnRect.x, ccBtnRect.y);
+    logTS(`Apple TV+ CC: clicked Subtitles button at (${Math.round(ccBtnRect.x)}, ${Math.round(ccBtnRect.y)})`);
+    await delay(500);
+
+    // Helper reused for On/Off buttons — also searches shadow DOM
+    const getMenuBtnRect = (title) => page.evaluate((t) => {
+      function findInShadow(root, sel) {
+        const d = root.querySelector(sel);
+        if (d) return d;
+        for (const el of root.querySelectorAll('*')) {
+          if (el.shadowRoot) { const f = findInShadow(el.shadowRoot, sel); if (f) return f; }
+        }
+        return null;
+      }
+      const btn = findInShadow(document, `button[title="${t}"]`);
+      if (!btn) return null;
+      const r = btn.getBoundingClientRect();
+      return r.width ? { x: r.left + r.width / 2, y: r.top + r.height / 2 } : null;
+    }, title);
+
+    if (ccOption === 'Off') {
+      const offRect = await getMenuBtnRect('Off');
+      if (offRect) {
+        await page.mouse.click(offRect.x, offRect.y);
+        logTS('Apple TV+ CC: clicked "Off"');
+        await page.mouse.move(0, 0);
+        return true;
+      }
+      logTS('Apple TV+ CC: "Off" button not found in menu');
+      return false;
+    } else {
+      // Click On button
+      const onRect = await getMenuBtnRect('On');
+      if (onRect) {
+        await page.mouse.click(onRect.x, onRect.y);
+        logTS('Apple TV+ CC: clicked "On"');
+        await delay(300);
+      } else {
+        logTS('Apple TV+ CC: "On" button not found in menu');
+      }
+
+      // Select language from the dropdown (also search shadow DOM)
+      const langSelected = await page.evaluate((ccOpt) => {
+        function findInShadow(root, sel) {
+          const d = root.querySelector(sel);
+          if (d) return d;
+          for (const el of root.querySelectorAll('*')) {
+            if (el.shadowRoot) { const f = findInShadow(el.shadowRoot, sel); if (f) return f; }
+          }
+          return null;
+        }
+        const select = findInShadow(document, '.contextual-menu--subtitles select');
+        if (!select) return false;
+        for (const opt of select.options) {
+          if (opt.text.toLowerCase() === ccOpt.toLowerCase()) {
+            select.value = opt.value;
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+            return true;
+          }
+        }
+        for (const opt of select.options) {
+          if (opt.text.toLowerCase().startsWith(ccOpt.toLowerCase())) {
+            select.value = opt.value;
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+            return true;
+          }
+        }
+        return false;
+      }, ccOption);
+      logTS(`Apple TV+ CC: language select result for "${ccOption}": ${langSelected}`);
+
+      await page.mouse.move(0, 0);
+      return !!onRect;
+    }
+  } catch (err) {
+    logTS(`Apple TV+ CC selection error (non-fatal): ${err.message}`);
+    return false;
+  }
+}
+
+
+async function fullScreenVideoAppleTV(page, encoderConfig = null, closedCaptions = '') {
+  logTS("URL contains tv.apple.com, setting up Apple TV+ video");
+
+  const vp = page.viewport();
+  const cx = Math.floor((vp ? vp.width : 1280) / 2);
+  const cy = Math.floor((vp ? vp.height : 720) / 2);
+
+  // Move mouse to center to reveal player controls (play button already clicked in setupBrowserAudio)
+  await page.mouse.move(cx, cy);
+  await delay(1000);
+
+  // Find video element (already playing from setupBrowserAudio), unmute and set max volume
+  const frameHandle = page;
+  const videoHandle = await frameHandle.waitForSelector('video', { timeout: 10000 }).catch(() => null);
+
+  if (videoHandle) {
+    await frameHandle.evaluate((video) => {
+      video.muted = false;
+      video.volume = 1.0;
+      if (video.paused) video.play().catch(err => console.log('Play failed:', err));
+    }, videoHandle);
+    logTS("Apple TV+: unmuted video and set volume to max");
+  } else {
+    logTS("Apple TV+: could not find video element");
+  }
+
+  // Move mouse to center to reveal player controls
+  await page.mouse.move(cx, cy);
+  await delay(500);
+
+  // Unmute via the volume indicator button while controls are visible, then set volume to max via JS
+  const volumeBtn = await page.$('.volume-unified__indicator');
+  if (volumeBtn) {
+    const isMuted = await page.evaluate(() => {
+      const btn = document.querySelector('.volume-unified__indicator');
+      return btn ? btn.textContent.trim().toLowerCase() === 'unmute' : false;
+    });
+    if (isMuted) {
+      logTS("Apple TV+: player is muted, clicking unmute button");
+      await volumeBtn.click();
+      await delay(300);
+    }
+  }
+
+  // Set volume to max directly on the video element
+  if (videoHandle) {
+    await frameHandle.evaluate((video) => {
+      video.muted = false;
+      video.volume = 1.0;
+    }, videoHandle);
+    logTS("Apple TV+: volume set to max via JS");
+  }
+
+  // Select closed captions NOW while controls are guaranteed visible (before fullscreen)
+  if (closedCaptions) {
+    logTS(`Apple TV+ CC: selecting "${closedCaptions}" before fullscreen`);
+    await selectAppleTVClosedCaptions(page, closedCaptions);
+  }
+
+  // Click the fullscreen button; fall back to the 'f' keyboard shortcut if not found
+  await page.mouse.move(cx, cy);
+  await delay(300);
+  const fullScreenBtn = await page.waitForSelector('amp-playback-controls-full-screen', { visible: true, timeout: 8000 }).catch(() => null);
+  if (fullScreenBtn) {
+    logTS("Apple TV+: clicking fullscreen button");
+    await fullScreenBtn.click();
+  } else {
+    logTS("Apple TV+: fullscreen button not found, trying 'f' key");
+    await page.keyboard.press('f');
+  }
+  await delay(1000);
+
+  // Re-apply volume after fullscreen transition (player may reset it)
+  if (videoHandle) {
+    await frameHandle.evaluate((video) => {
+      video.muted = false;
+      video.volume = 1.0;
+    }, videoHandle);
+    logTS("Apple TV+: volume re-applied after fullscreen");
+  }
+
+  if (videoHandle) {
+    await setupPauseMonitor(frameHandle, videoHandle, page);
+  }
+
+  await hideCursor(page);
+  await page.mouse.move(0, 0);
+  logTS("Apple TV+ fullscreen setup complete");
 }
 
 async function fullScreenVideoFXNow(page) {
@@ -5394,7 +5819,7 @@ function getFullUrl (req) {
   const urlObj = new URL(req.query.url);
   
   // Add any additional query parameters (exclude CH4C routing params that shouldn't go to the target site)
-  const internalParams = new Set(['url', 'encoder']);
+  const internalParams = new Set(['url', 'encoder', 'cc']);
   Object.entries(req.query).forEach(([key, value]) => {
     if (!internalParams.has(key)) {
       urlObj.searchParams.append(key, value);
@@ -7326,6 +7751,8 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
         result = await searchDisneyPlus(searchPage, query);
       } else if (service === 'hbomax') {
         result = await searchMax(searchPage, query);
+      } else if (service === 'apple_tv') {
+        result = await searchAppleTV(searchPage, query);
       } else {
         return res.status(400).json({ success: false, error: `Service "${service}" is not yet supported` });
       }
@@ -7605,6 +8032,9 @@ async function handleSiteSpecificFullscreen(targetUrl, page, encoderConfig = nul
     } else if (targetUrl.includes("disneyplus.com")) {
       logTS("Handling Disney+ video");
       await fullScreenVideoDisneyPlus(page, closedCaptions);
+    } else if (targetUrl.includes("tv.apple.com")) {
+      logTS("Handling Apple TV+ video");
+      await fullScreenVideoAppleTV(page, encoderConfig, closedCaptions);
     } else if (targetUrl.includes("hbomax.com") || targetUrl.includes("max.com")) {
       logTS("Handling Max (HBO Max) video");
       await fullScreenVideoMax(page, closedCaptions);
