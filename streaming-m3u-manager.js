@@ -661,9 +661,10 @@ class StreamingM3UManager {
       duration: channel.duration || (match ? null : 60)
     };
 
-    // Preserve manually-set channel numbers (marked with manualChannelNumber flag)
-    // Otherwise use Channels DVR channel number if found, or auto-assign
-    if (channel.manualChannelNumber) {
+    // Preserve user-provided channel numbers — either explicitly flagged as manual,
+    // or simply present (user typed one in the form before submitting).
+    // Only fall back to Channels DVR match or auto-assign when none was given.
+    if (channel.manualChannelNumber || channel.channelNumber) {
       enriched.channelNumber = channel.channelNumber;
       enriched.manualChannelNumber = true;
     } else if (match?.channel) {

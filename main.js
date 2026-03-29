@@ -2,7 +2,8 @@
 // Handle service commands before loading the full application
 if (process.argv[2] === 'service') {
   const { handleServiceCommand } = require('./service-manager');
-  handleServiceCommand(process.argv.slice(3));
+  handleServiceCommand(process.argv.slice(3)).catch(() => process.exit(1));
+  return; // Prevent the rest of main.js (including yargs) from loading
 }
 
 const express = require('express');
@@ -2408,7 +2409,13 @@ async function launchBrowser(targetUrl, encoderConfig, startMinimized, applyStar
     ];
 
     if (applyStartFullScreenArg) {
-      launchArgs.push('--start-fullscreen');
+      if (os.platform() === 'darwin') {
+        // --kiosk hides the browser toolbar on macOS; --start-fullscreen only maximizes
+        // the window but leaves the address bar visible
+        launchArgs.push('--kiosk');
+      } else {
+        launchArgs.push('--start-fullscreen');
+      }
     }
 
     // Add audio configuration if device specified
@@ -5801,10 +5808,8 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
   // Check if we have at least one working encoder (only if encoders were configured)
   const workingEncoders = initResults.filter(r => r.success);
   if (Constants.ENCODERS.length > 0 && workingEncoders.length === 0) {
-    logTS('FATAL: No encoders could be initialized. Exiting.');
-    process.exit(1);
-  }
-  if (Constants.ENCODERS.length === 0) {
+    logTS('WARNING: No encoders could be initialized. Check encoder settings at /settings.');
+  } else if (Constants.ENCODERS.length === 0) {
     logTS('No encoders configured. Add encoders via Settings to start streaming.');
   }
 

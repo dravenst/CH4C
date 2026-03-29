@@ -36,17 +36,19 @@ This project merges elements of the excellent [Chrome Capture for Channels](http
 
 ### Hardware
 
-- **Windows PC**: Most Windows PC should work, I run both my Channels DVR service and CH4C together on the same low power Intel Celeron 5105 PC.
+- **Windows PC or Mac**: Most Windows PCs work well. macOS (Intel and Apple Silicon via Rosetta 2) is also supported. I run both Channels DVR and CH4C together on the same low-power Intel Celeron 5105 PC.
 - **Encoder**: Recommended [Link Pi ENC1-v3](https://a.co/d/76zJF9U) with dual input ports (HDMI and USB). For the USB port, use an HDMI to USB adapter.
-- **VNC Server**: Recommended to install on the Windows PC for remote browser access and streaming service logins. Install [TightVNC](https://www.tightvnc.com/) (or similar) and enable **loopback connections** so CH4C's built-in VNC viewer can connect locally.
+- **VNC Server** (for remote browser access):
+  - **Windows**: Install [TightVNC](https://www.tightvnc.com/) and enable **loopback connections** so CH4C's built-in VNC viewer can connect locally.
+  - **macOS**: Enable Screen Sharing in System Settings → General → Sharing. CH4C's built-in VNC viewer can connect to it at `127.0.0.1:5900`.
 
 ### Encoder Configuration
 
 Follow the guidelines in the [Channels community thread](https://community.getchannels.com/t/linkpi-encoder-family/38860/4) to configure the encoders:
 
-1. Connect your PC HDMI port(s) to the external encoder box
+1. Connect your HDMI port(s) to the external encoder box
 2. Set the encoder to 60fps or 30fps 1920x1080 (to match the streaming services), and test CBR/VBR/AVBR and bitrate (minimum 8,000 recommended) to your preference.  The secondary USB 2.0 LinkPi ENC1-v3 input only supports 30fps so set your encoder appropriately.
-3. Set PC display(s) to 1920x1080 @ 60Hz.  Optionally, in Intel Graphics Command Center, set Quantization Range to "Full" for better black levels
+3. Set your display(s) to 1920x1080 @ 60Hz.  (Optionally on PC, in Intel Graphics Command Center, set Quantization Range to "Full" for better black levels)
 
 See [example LinkPi encoder settings](./assets/linkpi-encoder-settings.jpg) for a recommended configuration.
 
@@ -54,9 +56,22 @@ See [example LinkPi encoder settings](./assets/linkpi-encoder-settings.jpg) for 
 
 ## Installation
 
+### Windows
+
 Download `ch4c.exe` from the latest [release](https://github.com/dravenst/CH4C/releases).
 
-Alternatively, clone the repository and run from source:
+### macOS
+
+Download `ch4c` from the latest [release](https://github.com/dravenst/CH4C/releases). On first run, remove the quarantine flag added by macOS:
+
+```bash
+xattr -d com.apple.quarantine ch4c
+chmod +x ch4c
+./ch4c --help
+```
+
+### Running from Source (any platform)
+
 ```bash
 git clone https://github.com/dravenst/CH4C
 cd CH4C
@@ -64,37 +79,39 @@ npm install
 node main.js --help
 ```
 
-### Running CH4C at PC Startup
+### Running CH4C at Startup
 
-Install CH4C as a Windows scheduled task that starts automatically at user logon:
+Install CH4C as a service that starts automatically at login:
 
 ```bash
-ch4c service install
+ch4c service install          # or: node main.js service install
 ```
 
-This creates a scheduled task that runs CH4C when you log in, with a 30-second startup delay for system stabilization. The task itself runs without elevated privileges (required for Chrome).
-
-> **Note**: The `install` and `uninstall` commands require **Administrator privileges**. Right-click Command Prompt and select "Run as administrator", or use PowerShell:
-> ```powershell
-> powershell -Command "Start-Process cmd -ArgumentList '/k cd /d C:\path\to\CH4C && ch4c service install' -Verb RunAs"
-> ```
-
-To use a custom data directory:
-
-```bash
-ch4c service install -d C:\ch4c-data
+**Windows** — creates a Task Scheduler entry that runs CH4C at user logon with a 30-second startup delay. Requires **Administrator privileges**:
+```powershell
+powershell -Command "Start-Process cmd -ArgumentList '/k cd /d C:\path\to\CH4C && ch4c service install' -Verb RunAs"
 ```
 
-> **Upgrading from a previous version (Windows)**: If a `data` directory exists in the CH4C folder, it will continue to be used as the default data location for backward compatibility. If no `data` directory is found, CH4C will use `%APPDATA%\ch4c` as the new default. A log message at startup will indicate which location is in use. To migrate to the new default, move the contents of `data` to `%APPDATA%\ch4c` and remove the `data` folder.
+**macOS** — installs a launchd agent at `~/Library/LaunchAgents/com.ch4c.plist`. No elevated privileges required:
+```bash
+node main.js service install
+node main.js service install -d ~/ch4c-data   # custom data directory
+```
 
-**Other service commands:**
+**Other service commands** (Windows and macOS):
 
 ```bash
-ch4c service status      # Check if the task is installed and running
+ch4c service status      # Check if installed and running
 ch4c service start       # Start CH4C
 ch4c service stop        # Stop CH4C gracefully
-ch4c service uninstall   # Remove the scheduled task (requires Administrator)
+ch4c service uninstall   # Remove the service
 ```
+
+> **Default data directory locations:**
+> - **Windows**: `%APPDATA%\ch4c` (e.g. `C:\Users\<user>\AppData\Roaming\ch4c`). If a `data` folder exists in the CH4C install directory it will be used instead for backward compatibility.
+> - **macOS**: `~/Library/Application Support/ch4c`
+>
+> A log message at startup will confirm which location is in use. Use `-d <path>` to specify a custom directory.
 
 For manual startup configurations using PowerShell scripts or batch files, see [ADVANCED_CONFIG.md](ADVANCED_CONFIG.md).
 
@@ -102,7 +119,7 @@ For manual startup configurations using PowerShell scripts or batch files, see [
 
 ## Getting Started
 
-> **Important**: Do NOT run ch4c.exe or display/sound config-related commands in a Windows Remote Desktop session. Video and audio sources will change when using Remote Desktop. Use VNC instead (e.g., [TightVNC](https://www.tightvnc.com/)). See [Remote Access](#remote-access) for the built-in VNC viewer.
+> **Important**: On Windows, do NOT run ch4c.exe or display/sound config-related commands in a Remote Desktop session. Video and audio sources will change when using Remote Desktop. Use VNC instead (e.g., [TightVNC](https://www.tightvnc.com/)). See [Remote Access](#remote-access) for the built-in VNC viewer. On macOS, use Terminal or enable Screen Sharing for remote access.
 
 CH4C is configured through its built-in **Settings** web interface. The home page includes a step-by-step Getting Started guide. Here is an overview of the setup process:
 
@@ -110,9 +127,10 @@ CH4C is configured through its built-in **Settings** web interface. The home pag
 
 Before starting CH4C:
 
-1. Connect your HDMI encoder(s) to the PC
-2. Set PC display(s) to **1920x1080** and configure the encoder transport stream to match (recommended **30fps**)
-3. Install a VNC server (e.g., [TightVNC](https://www.tightvnc.com/)) and enable **loopback connections**
+1. Connect your HDMI encoder(s) to the computer
+2. Set display(s) to **1920x1080** and configure the encoder transport stream to match (recommended **30fps**)
+3. **Windows**: Install a VNC server (e.g., [TightVNC](https://www.tightvnc.com/)) and enable **loopback connections** for remote browser access
+   **macOS**: Enable Screen Sharing in System Settings → General → Sharing for remote browser access
 
 ### Step 2: Configure Settings
 
@@ -131,7 +149,7 @@ In Settings, click **+ Add Encoder** for each HDMI encoder:
 1. Set the **Encoder URL** (e.g., `http://192.168.50.71/live/stream0`)
 2. Select the **Audio Device** from the dropdown — CH4C automatically discovers available audio devices and presents them for selection. Choose "Default" to use the system default audio device. If your device doesn't appear, select **Other (manual entry)...** to type a partial device name manually (e.g., "Encoder" or "MACROSILICON").
 
-   > **Note**: For the most complete audio device listing on Windows, install the `AudioDeviceCmdlets` PowerShell module. Run this once in an **Administrator PowerShell**: `Install-Module -Name AudioDeviceCmdlets -Force`. CH4C falls back to registry and WMI-based detection if the module is unavailable, but some devices may not appear in the list.
+   > **Note**: On **Windows**, for the most complete audio device listing, install the `AudioDeviceCmdlets` PowerShell module. Run this once in an **Administrator PowerShell**: `Install-Module -Name AudioDeviceCmdlets -Force`. CH4C falls back to registry and WMI-based detection if the module is unavailable. On **macOS**, audio devices are detected automatically via `system_profiler`.
 3. For multi-monitor setups, set the **Screen X/Y Position** — use the **Screens** button to visually select a display, or the home page shows a Display Configuration visual with offsets for each monitor. Display scale must be set to 100% for correct positioning.
 4. Click **Add Encoder**, then **Save Settings** and restart CH4C
 
@@ -263,6 +281,7 @@ For better clipboard functionality and security, enable HTTPS in [Settings](#set
 
 ### Setup
 
+**Windows:**
 ```bash
 winget install -e --id Git.Git
 winget install -e --id OpenJS.NodeJS
@@ -273,12 +292,25 @@ npm install
 node main.js --help
 ```
 
+**macOS:**
+```bash
+brew install node git   # or install from nodejs.org
+git clone https://github.com/dravenst/CH4C
+cd CH4C
+npm install
+node main.js --help
+```
+
 ### Building
 
-Build the Windows executable:
+Build executables for all platforms (Windows x64 and macOS x64):
 ```bash
 npm run build
 ```
+
+Output is placed in the `dist/` folder:
+- `ch4c.exe` — Windows
+- `ch4c` — macOS (Intel and Apple Silicon via Rosetta 2)
 
 ---
 
@@ -287,7 +319,8 @@ npm run build
 This works surprisingly well, though streaming providers may have occasional glitches that prevent consistent loading.
 
 **Additional notes:**
-- **Mac and Linux**: This is optimized for Windows and is not currently configured to work on Mac or Linux.  I plan to add support in a future release.
+- **macOS**: Supported on Intel and Apple Silicon (via Rosetta 2). Audio device detection, display detection, service installation, and fullscreen streaming are all supported. Linux support is not currently implemented.
+- **Display Scale**: Display scale must be set to **100%** for correct window positioning on both Windows and macOS.
 - **HLS Support**: The examples use MPEG-TS, but HLS is also supported. Configure your encoder for HLS, update the Channels custom channel to use HLS, and adjust the encoder parameter to use the HLS stream URL
 - **Secondary Channels DVR Server**: Channels allows you to export an M3U playlist from your primary Channels DVR server and import it into a secondary server to allow remote access for a second Channels DVR instance (e.g. if you only want to run a single CH4C instance and share with another device.). See the [Channels DVR Export Channels](https://getchannels.com/docs/channels-dvr-server/how-to/export-channels/) documentation for details on how to export and customize the M3U parameters. I highly recommend using Tailscale to create a private network to provide connectivity between your Channels DVR servers.
 

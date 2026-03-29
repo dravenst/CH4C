@@ -41,15 +41,13 @@
     "pkg": "^5.8.1"
   },
   "pkg": {
-    "targets": [
-      "latest-win-x64"
-    ],
-    "outputPath": "dist",
     "assets": [
       "novnc/**/*"
     ]
   },
   "scripts": {
-    "build": "pkg ."
+    "build": "pkg . --targets latest-win-x64 --output dist/ch4c.exe && pkg . --targets latest-macos-x64 --output dist/ch4c",
+    "build:win": "pkg . --targets latest-win-x64 --output dist/ch4c.exe",
+    "build:mac": "pkg . --targets latest-macos-x64 --output dist/ch4c"
   }
 }

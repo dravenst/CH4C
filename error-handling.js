@@ -1,6 +1,8 @@
 // error-handling.js
 const fetch = require('node-fetch');
 const { execSync } = require('child_process');
+const fs = require('fs');
+const path = require('path');
 const os = require('os');
 const { logTS } = require('./logger');
 
@@ -15,12 +17,18 @@ function delay(ms) {
  * @param {string} userDataDir - The user data directory path
  */
 async function killChromeProcessesForUserData(userDataDir) {
-  if (os.platform() !== 'win32') {
-    // For Linux/Mac, we could use pgrep/pkill but this is mainly for Windows
-    logTS('Chrome process killing only implemented for Windows');
-    return;
-  }
+  const platform = os.platform();
 
+  if (platform === 'win32') {
+    await killChromeProcessesWindows(userDataDir);
+  } else if (platform === 'darwin' || platform === 'linux') {
+    await killChromeProcessesUnix(userDataDir);
+  } else {
+    logTS(`Chrome process killing not supported on platform: ${platform}`);
+  }
+}
+
+async function killChromeProcessesWindows(userDataDir) {
   try {
     // Normalize the path for comparison
     const normalizedPath = userDataDir.toLowerCase().replace(/\//g, '\\');
@@ -87,6 +95,72 @@ async function killChromeProcessesForUserData(userDataDir) {
       }
     } else {
       logTS(`No Chrome processes found for ${userDataDir}`);
+    }
+  } catch (error) {
+    logTS(`Error checking for Chrome processes: ${error.message}`);
+  }
+}
+
+async function killChromeProcessesUnix(userDataDir) {
+  try {
+    // Use pgrep to find Chrome processes whose command line contains our exact user-data-dir
+    // -f matches against the full command line, not just the process name
+    let output;
+    try {
+      output = execSync(`pgrep -f -- "--user-data-dir=${userDataDir}"`, {
+        encoding: 'utf8',
+        timeout: 5000
+      });
+    } catch (pgrepErr) {
+      // pgrep exits with code 1 when no processes are found — not an error
+      if (pgrepErr.status === 1) {
+        logTS(`No Chrome processes found for ${userDataDir}`);
+        return;
+      }
+      throw pgrepErr;
+    }
+
+    const pids = output.trim().split('\n').filter(Boolean);
+
+    if (pids.length === 0) {
+      logTS(`No Chrome processes found for ${userDataDir}`);
+      return;
+    }
+
+    logTS(`Found ${pids.length} Chrome processes using ${userDataDir}`);
+
+    let killedCount = 0;
+    for (const pid of pids) {
+      try {
+        // Check if process still exists before killing
+        execSync(`kill -0 ${pid}`, { timeout: 1000 });
+
+        // Process exists — force kill it
+        execSync(`kill -9 ${pid}`, { timeout: 3000 });
+        logTS(`Force-killed lingering Chrome process ${pid}`);
+        killedCount++;
+      } catch (killErr) {
+        // kill -0 or kill -9 will throw if the process no longer exists (ESRCH)
+        logTS(`Chrome process ${pid} already exited gracefully`);
+      }
+    }
+
+    if (killedCount > 0) {
+      logTS(`Force-killed ${killedCount} lingering Chrome processes`);
+      await delay(1000);
+    } else {
+      logTS(`All Chrome processes exited gracefully, no force-kill needed`);
+    }
+
+    // Clean up Chrome singleton lock file so the next launch isn't blocked
+    const lockFile = path.join(userDataDir, 'SingletonLock');
+    if (existsSync(lockFile)) {
+      try {
+        unlinkSync(lockFile);
+        logTS(`Removed Chrome singleton lock: ${lockFile}`);
+      } catch (unlinkErr) {
+        logTS(`Could not remove Chrome singleton lock: ${unlinkErr.message}`);
+      }
     }
   } catch (error) {
     logTS(`Error checking for Chrome processes: ${error.message}`);

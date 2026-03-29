@@ -442,7 +442,7 @@ const argv = yargs(rawArgs)
   .example('\n> $0 -s "http://192.168.50.50" -e "http://192.168.50.71/live/stream0:24.42:0:0:Encoder" -e "http://192.168.50.71/live/stream1:24.43:1920:0:MACROSILICON"')
   .example('\nThis sets the channels server to 192.168.50.50 and encoder to 192.168.50.71/live/stream0 and a second encoder at stream1. The 1920 position of stream1 moves it to the right on startup on screen 2 in a dual monitor setup.')
   .example('\nWhen specifying more than one encoder, you will need to find the audio device Name and specify the first portion of it at the end of the encoder param.')
-  .epilogue('Service Commands:\n  $0 service install [-d <path>]   Install as Windows scheduled task (starts at logon)\n  $0 service uninstall             Remove the scheduled task\n  $0 service status                Check if installed and running\n  $0 service start                 Start the scheduled task\n  $0 service stop                  Stop CH4C gracefully')
+  .epilogue('Service Commands:\n  $0 service install [-d <path>]   Install as a service that starts at login (Windows: Task Scheduler, macOS: launchd)\n  $0 service uninstall             Remove the service\n  $0 service status                Check if installed and running\n  $0 service start                 Start the service\n  $0 service stop                  Stop CH4C gracefully')
   .help(false)  // Disable built-in help to handle it in fail()
   .alias('help', 'h')
   .wrap(null)  // Don't wrap help text
@@ -497,7 +497,7 @@ if (argv.help) {
     .example('\n> $0 -s "http://192.168.50.50" -e "http://192.168.50.71/live/stream0:24.42:0:0:Encoder" -e "http://192.168.50.72/live/stream1:24.43:1920:0:MACROSILICON"')
     .example('\nThis sets the channels server to 192.168.50.50 and encoder to 192.168.50.71/live/stream0 and a second encoder at stream1. The 1920 position of stream1 moves it to the right on startup on screen 2 in a dual monitor setup.')
     .example('\nWhen specifying more than one encoder, you will need to find the audio device Name and specify the first portion of it at the end of the encoder param.')
-    .epilogue('Service Commands:\n  $0 service install [-d <path>]   Install as Windows scheduled task (starts at logon)\n  $0 service uninstall             Remove the scheduled task\n  $0 service status                Check if installed and running\n  $0 service start                 Start the scheduled task\n  $0 service stop                  Stop CH4C gracefully')
+    .epilogue('Service Commands:\n  $0 service install [-d <path>]   Install as a service that starts at login (Windows: Task Scheduler, macOS: launchd)\n  $0 service uninstall             Remove the service\n  $0 service status                Check if installed and running\n  $0 service start                 Start the service\n  $0 service stop                  Stop CH4C gracefully')
     .help()
     .wrap(null)
     .version(false);
@@ -1058,7 +1058,7 @@ const START_PAGE_HTML = `
                     <div style="background: linear-gradient(135deg, #667eea, #764ba2); color: white; border-radius: 50%; min-width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 16px;">1</div>
                     <div style="flex: 1;">
                         <h3 style="margin: 0 0 6px 0; font-size: 16px;">Preparation</h3>
-                        <p style="margin: 0; color: #4a5568; font-size: 14px;">Connect your HDMI encoder(s) to the PC. Set the PC display(s) to <strong>1920x1080</strong> and configure the encoder transport stream to match (recommended <strong>30fps</strong>). Install a VNC server (e.g., <a href="https://www.intergrid.com.au/tightvnc/" target="_blank" style="color: #667eea; font-weight: 600;">TightVNC</a>) and enable <strong>loopback connections</strong>. See the <a href="https://github.com/dravenst/CH4C#readme" target="_blank" style="color: #667eea;">documentation</a> for detailed hardware and encoder configuration.</p>
+                        <p style="margin: 0; color: #4a5568; font-size: 14px;">Connect your HDMI encoder(s) to the computer. Set the display(s) to <strong>1920x1080</strong> and configure the encoder transport stream to match (recommended <strong>30fps</strong>). On <strong>Windows</strong>, install a VNC server (e.g., <a href="https://www.intergrid.com.au/tightvnc/" target="_blank" style="color: #667eea; font-weight: 600;">TightVNC</a>) and enable <strong>loopback connections</strong> for remote browser access. On <strong>macOS</strong>, enable Screen Sharing in System Settings &rarr; General &rarr; Sharing. See the <a href="https://github.com/dravenst/CH4C#readme" target="_blank" style="color: #667eea;">documentation</a> for detailed hardware and encoder configuration.</p>
                     </div>
                 </div>
 

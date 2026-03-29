@@ -28,8 +28,15 @@ class AudioDeviceManager {
       return this.cachedDevices;
     }
 
+    if (this.platform === 'darwin') {
+      const devices = await this.getMacAudioDevices();
+      this.cachedDevices = devices;
+      this.lastCacheTime = now;
+      return devices;
+    }
+
     if (this.platform !== 'win32') {
-      console.log('Audio device detection only supported on Windows');
+      console.log('Audio device detection only supported on Windows and macOS');
       return this.getDefaultDevices();
     }
 
@@ -351,6 +358,60 @@ try {
   }
 
   /**
+   * Get macOS audio output devices via system_profiler.
+   * Returns device names that match what Chrome reports via enumerateDevices().
+   */
+  async getMacAudioDevices() {
+    return new Promise((resolve) => {
+      exec('system_profiler SPAudioDataType -json', { timeout: 10000 }, (error, stdout) => {
+        if (error) {
+          logTS(`system_profiler audio detection failed: ${error.message}`);
+          resolve([]);
+          return;
+        }
+
+        try {
+          const data = JSON.parse(stdout);
+          const topItems = data.SPAudioDataType || [];
+          const devices = [];
+
+          for (const group of topItems) {
+            // Devices are nested inside _items within each group
+            for (const item of (group._items || [])) {
+              // Only include output devices (coreaudio_device_output > 0)
+              if (!item.coreaudio_device_output) continue;
+
+              // _name is the CoreAudio device name Chrome uses for --audio-output-device
+              const name = item._name;
+              if (name && name.trim()) {
+                devices.push(name.trim());
+              }
+
+              // coreaudio_output_source is the human-readable label that appears in
+              // enumerateDevices() labels — include if distinct and not a placeholder
+              const source = item.coreaudio_output_source;
+              if (source && source !== 'spaudio_default' && source.trim() !== name) {
+                devices.push(source.trim());
+              }
+            }
+          }
+
+          if (devices.length > 0) {
+            logTS(`Mac audio detection (system_profiler): found ${devices.length} device(s): ${devices.join(', ')}`);
+            resolve(devices);
+            return;
+          }
+        } catch (parseErr) {
+          logTS(`Failed to parse system_profiler audio output: ${parseErr.message}`);
+        }
+
+        // Return empty on Mac rather than Windows-centric defaults
+        resolve([]);
+      });
+    });
+  }
+
+  /**
    * Default devices as final fallback
    */
   getDefaultDevices() {
@@ -573,6 +634,8 @@ class DisplayManager {
       return this.getWindowsDisplays();
     } else if (this.platform === 'linux') {
       return this.getLinuxDisplays();
+    } else if (this.platform === 'darwin') {
+      return this.getMacDisplays();
     } else {
       return this.getDefaultDisplays();
     }
@@ -703,6 +766,65 @@ class DisplayManager {
         }
       });
     });
+  }
+
+  /**
+   * Get macOS display information using system_profiler.
+   * Note: NSScreen (AppKit) cannot be used from a Node.js child process as it requires
+   * an active window server session. system_profiler gives us logical resolution and
+   * display names; multi-monitor X/Y positions are estimated by stacking horizontally.
+   */
+  async getMacDisplays() {
+    // system_profiler — available on all Macs, no extra tools needed.
+    // Gives us logical resolution and display names but not X/Y positions for
+    // multi-monitor setups, so we stack displays horizontally as a best-effort.
+    try {
+      const output = await new Promise((resolve, reject) => {
+        exec('system_profiler SPDisplaysDataType -json', { timeout: 10000 }, (error, stdout) => {
+          if (error) reject(error);
+          else resolve(stdout);
+        });
+      });
+
+      const data = JSON.parse(output);
+      const gpus = data.SPDisplaysDataType || [];
+      const displays = [];
+
+      for (const gpu of gpus) {
+        for (const monitor of (gpu.spdisplays_ndrvs || [])) {
+          // _spdisplays_resolution holds the logical (scaled) resolution, e.g. "1728 x 1117 Retina"
+          // spdisplays_resolution holds the native resolution, e.g. "3456 x 2234 @ 60.00Hz"
+          const logicalStr = monitor['_spdisplays_resolution'] || monitor['spdisplays_resolution'] || '';
+          const resMatch = logicalStr.match(/(\d+)\s*[xX×]\s*(\d+)/);
+          const width = resMatch ? parseInt(resMatch[1], 10) : 1920;
+          const height = resMatch ? parseInt(resMatch[2], 10) : 1080;
+          const isPrimary = monitor['spdisplays_main'] === 'spdisplays_yes';
+          const index = displays.length;
+
+          // Offset each display to the right of the previous one (best-effort)
+          const xOffset = displays.reduce((sum, d) => sum + d.width, 0);
+
+          displays.push({
+            id: index + 1,
+            name: monitor['_name'] || (index === 0 ? 'Built-in Display' : `Display ${index + 1}`),
+            primary: isPrimary,
+            x: xOffset,
+            y: 0,
+            width,
+            height
+          });
+        }
+      }
+
+      if (displays.length > 0) {
+        logTS(`Mac display detection (system_profiler): found ${displays.length} display(s)`);
+        return displays;
+      }
+    } catch (spErr) {
+      logTS(`Mac system_profiler display detection failed: ${spErr.message}`);
+    }
+
+    return this.getDefaultDisplays();
   }
 
   /**
