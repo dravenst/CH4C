@@ -87,7 +87,8 @@ function createMacLauncherFiles(dataDir) {
   }
   if (dataDir) programArgs.push('-d', dataDir);
 
-  const launcherDir = dataDir || path.join(workingDir, 'data');
+  const defaultDataDir = path.join(os.homedir(), 'Library', 'Application Support', 'ch4c');
+  const launcherDir = dataDir || defaultDataDir;
   if (!fs.existsSync(launcherDir)) {
     fs.mkdirSync(launcherDir, { recursive: true });
   }
