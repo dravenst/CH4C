@@ -446,12 +446,21 @@ async function searchDisneyPlus(page, query) {
               .catch(() => logTS('Disney+: timed out waiting for episode list'));
 
     // Switch to the correct season if needed
-    const currentSeason = await page.evaluate(() => {
+    const { currentSeason, hasDropdown } = await page.evaluate(() => {
       const btn = document.querySelector('[data-testid="dropdown-button"]');
-      return btn ? parseInt(btn.textContent?.match(/Season\s+(\d+)/i)?.[1] || '1', 10) : 1;
+      if (btn) {
+        return {
+          currentSeason: parseInt(btn.textContent?.match(/Season\s+(\d+)/i)?.[1] || '1', 10),
+          hasDropdown: true,
+        };
+      }
+      // No dropdown — single-season show; infer season from episode aria-labels
+      const firstEp = document.querySelector('a[data-testid="set-item"]');
+      const m = firstEp?.getAttribute('aria-label')?.match(/Season\s+(\d+)/i);
+      return { currentSeason: m ? parseInt(m[1], 10) : 1, hasDropdown: false };
     });
 
-    if (currentSeason !== targetSeason) {
+    if (currentSeason !== targetSeason && hasDropdown) {
       logTS(`Disney+: switching from Season ${currentSeason} to Season ${targetSeason}`);
       await page.click('[data-testid="dropdown-button"]');
       await page.waitForSelector('[role="option"]', { timeout: 5000 });
