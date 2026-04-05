@@ -1280,7 +1280,7 @@ async function handleSlingProfileSelector(page) {
   if (!selectorPresent) return;
   logTS('Sling TV: profile selector detected — selecting first profile');
 
-  // Click "Don't Ask Again" first so we won't be prompted on future navigations
+  // Click "Don't Ask Again" if present — this may navigate to /modal, so wait for it to resolve
   const suppressedPrompt = await page.evaluate(() => {
     const btn = document.querySelector('[data-testid="profile-preference-button"]');
     if (btn) { btn.click(); return true; }
@@ -1288,7 +1288,25 @@ async function handleSlingProfileSelector(page) {
   });
   if (suppressedPrompt) {
     logTS('Sling TV: clicked Don\'t Ask Again');
-    await page.waitForTimeout(500).catch(() => {});
+    await delay(500);
+    // If we landed on /modal, click the OKAY confirmation button then wait for it to dismiss
+    if (page.url().includes('/modal')) {
+      await page.waitForSelector('[data-testid="global-modal-content-group-button-0"]', { timeout: 5000 }).catch(() => {});
+      await page.evaluate(() => {
+        const btn = document.querySelector('[data-testid="global-modal-content-group-button-0"] button');
+        if (btn) btn.click();
+      });
+      await page.waitForFunction(
+        () => !window.location.href.includes('/modal'),
+        { timeout: 8000 }
+      ).catch(() => {});
+    }
+    // Re-check if profile selector is still present after modal resolved
+    const stillPresent = await page.$('.Profile-Selector-Content-Container').then(el => !!el).catch(() => false);
+    if (!stillPresent) {
+      logTS(`Sling TV: profile selector dismissed — now at: ${page.url()}`);
+      return;
+    }
   }
 
   const clicked = await page.evaluate(() => {
@@ -8501,14 +8519,18 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
       return res.status(400).json({ success: false, error: 'Service and search query are required' });
     }
 
-    // Find a browser instance to use — prefer the specified encoder, else any available
-    // Note: browsers map stores the browser object directly (not wrapped in {browser, page})
+    // Find an available (not currently streaming) browser for search.
+    // Using a browser that is actively streaming would disrupt the stream.
+    // First try the requested encoder if available, then fall back to any available encoder.
     let browser;
-    if (encoderUrl) {
+    const isAvailable = (url) => browsers.has(url) && cleanupManager.canStartBrowser(url);
+
+    if (encoderUrl && isAvailable(encoderUrl)) {
       browser = browsers.get(encoderUrl);
-    } else {
-      for (const [, b] of browsers) {
-        if (b) {
+    }
+    if (!browser) {
+      for (const [url, b] of browsers) {
+        if (b && cleanupManager.canStartBrowser(url)) {
           browser = b;
           break;
         }
@@ -8516,7 +8538,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
     }
 
     if (!browser) {
-      return res.status(503).json({ success: false, error: 'No browser instance available. Make sure at least one encoder is running.' });
+      return res.status(503).json({ success: false, error: 'No available encoder browser for search. All encoders are currently streaming.' });
     }
 
     let searchPage = null;
