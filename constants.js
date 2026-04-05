@@ -2025,6 +2025,7 @@ const INSTANT_PAGE_HTML = `
                             <option value="hbomax">HBO Max</option>
                             <option value="peacock">Peacock</option>
                             <option value="prime_video">Prime Video</option>
+                            <option value="sling">Sling TV</option>
                         </select>
                     </div>
                     <div style="display:flex;flex-direction:column;gap:3px;flex:1;min-width:140px;">

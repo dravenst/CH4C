@@ -1164,6 +1164,15 @@ function setupBrowserCrashHandlers(browser, encoderUrl, recoveryManager, encoder
                     return;
                   }
 
+                  // Check login state before navigating — redirect loops are often caused by session expiry
+                  if (global.checkAndRestoreSlingSession) {
+                    const sessionOk = await global.checkAndRestoreSlingSession(page, encoderUrl);
+                    if (!sessionOk) {
+                      logTS(`[${encoderUrl}] RECOVERY: Sling session could not be restored (logged out, no credentials, or login failed) — aborting recovery`);
+                      return;
+                    }
+                  }
+
                   // Re-navigate to the original watch URL
                   if (global.navigateSlingLikeHuman) {
                     const success = await global.navigateSlingLikeHuman(page, stream.targetUrl, encoderUrl);
