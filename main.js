@@ -4175,6 +4175,8 @@ async function fullScreenVideoSling(page, encoderConfig = null) {
       await setupAudioMonitor(frameHandle, videoHandle, encoderConfig.audioDevice, encoderConfig.url);
     }
   }
+
+  await hideCursor(page);
 }
 
 async function selectPeacockClosedCaptions(page, ccOption) {
