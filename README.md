@@ -67,7 +67,7 @@ npm install -g github:dravenst/CH4C
 To update to the latest, run the same command again. For a specific stable release, check the [releases page](https://github.com/dravenst/CH4C/releases) for the latest tag:
 
 ```bash
-npm install -g github:dravenst/CH4C#v0.4.1
+npm install -g github:dravenst/CH4C#v0.4.2
 ```
 
 On first run of the downloaded binary, remove the macOS quarantine flag:
