@@ -2059,6 +2059,7 @@ const INSTANT_PAGE_HTML = `
                         min="1"
                         step="1"
                     />
+                    <div id="duration_hint" style="font-size:11px;color:#718096;margin-top:3px;min-height:14px;"></div>
                 </div>
 
                 <div class="form-group narrow">
@@ -2298,9 +2299,17 @@ const INSTANT_PAGE_HTML = `
                     document.getElementById('episode_number').value       = result.episodeNumber   || '';
                     document.getElementById('recording_duration').value   = result.durationMinutes || '';
                     document.getElementById('recording_summary').value    = result.summary         || '';
+                    // Show original duration and buffer amount
+                    const durationHint = document.getElementById('duration_hint');
+                    if (result.originalDurationMinutes) {
+                        durationHint.textContent = result.originalDurationMinutes + ' mins + buffer';
+                    } else {
+                        durationHint.textContent = '';
+                    }
                     searchStatus.textContent = '\u2713 URL and metadata found and populated!';
                     searchStatus.style.color = '#38a169';
                 } else {
+                    document.getElementById('duration_hint').textContent = '';
                     searchStatus.textContent = '\u2717 ' + (result.error || 'No results found');
                     searchStatus.style.color = '#e53e3e';
                 }
