@@ -67,7 +67,7 @@ npm install -g github:dravenst/CH4C
 To update to the latest, run the same command again. For a specific stable release, check the [releases page](https://github.com/dravenst/CH4C/releases) for the latest tag:
 
 ```bash
-npm install -g github:dravenst/CH4C#v0.4.2
+npm install -g github:dravenst/CH4C#v0.4.3
 ```
 
 On first run of the downloaded binary, remove the macOS quarantine flag:
@@ -180,7 +180,7 @@ In Settings, click **+ Add Encoder** for each HDMI encoder:
 
 ### Step 6: Log In to Streaming Services
 
-Use the **Login Manager** on the home page (`http://<CH4C_IP>:2442/`) to automatically log in to supported streaming services across all running encoder browsers at once. Select a service, enter credentials, and CH4C logs in to each encoder browser sequentially — skipping any that are already logged in.
+Use the **Login Manager** on the home page (`http://<CH4C_IP>:2442/`) to automatically log in to supported streaming services across all running encoder browsers at once. Select a service, enter credentials, and CH4C logs in to each encoder browser sequentially — skipping any that are already logged in.  For services such as Sling TV, saved credentials will be used to trigger an automatic re-login if logout detected when streaming.
 
 For services not listed in the Login Manager, use [Remote Access](#remote-access) (`http://<CH4C_IP>:2442/remote-access`) to log in manually via VNC. Credentials are cached per encoder in the browser profile but services may periodically require re-authentication.
 
@@ -193,7 +193,7 @@ Use the [M3U Manager](#m3u-manager) (`http://<CH4C_IP>:2442/m3u-manager`) to bui
 - **Refresh Sling TV** to automatically sync channels from the Sling TV guide
 - **Add Custom Channel** for any streaming service URL (see [Sample Channel URLs](#sample-custom-channel-urls) below)
 
-After adding channels, refresh the custom channel source in Channels DVR to pick up the new channels.
+After adding channels, use the **M3U Refresh** section on the M3U Manager page to trigger Channels DVR to reload the playlist — select your M3U source from the dropdown and click **Refresh M3U**.
 
 ---
 
@@ -239,6 +239,7 @@ Navigate to `http://<CH4C_IP>:<CH4C_PORT>/m3u-manager` to:
 - Add popular network channels from the Networks tab
 - Create custom channels for any streaming service with deep links
 - Search for station IDs by callsign or channel name
+- **Trigger a Channels DVR M3U refresh** directly from the M3U Refresh dropdown — select your Channels DVR M3U source and click **Refresh M3U** to reload the playlist without opening Channels DVR settings
 
 ![M3U Manager Main](./assets/m3umanagermain.jpg)
 
@@ -258,6 +259,13 @@ Navigate to `http://<CH4C_IP>:<CH4C_PORT>/m3u-manager` to:
 
 See [samples.m3u](./assets/samples.m3u) for additional examples including Sling TV, NBC.com, Spectrum, and Peacock ([Peacock link format](https://community.getchannels.com/t/adbtuner-a-channel-tuning-application-for-networked-google-tv-android-tv-devices/36822/1895)).
 
+**Closed Captions in M3U URLs**: For Sling TV and custom channels that support closed captions, append `&cc=English` or `&cc=Off` to the stream URL. Sling TV channels can also be configured via the Edit Channel dialog in the M3U Manager. If no `cc` parameter is provided, CH4C leaves the service's closed caption state unchanged (Default behavior).
+
+```
+http://<CH4C_IP>:2442/stream?url=https%3A%2F%2Fwatch.sling.com%2F1%2Fchannel%2F...%2Fwatch&cc=English
+http://<CH4C_IP>:2442/stream?url=https%3A%2F%2Fwww.espn.com%2Fwatch%2F...&cc=English
+```
+
 **Create a new Custom Channel in Channels DVR using the playlist.m3u URL found in your M3U Manager main screen:**
 
 ![Custom Channel in Channels DVR](./assets/customchannelm3umgr.jpg)
@@ -269,7 +277,7 @@ Navigate to `http://<CH4C_IP>:<CH4C_PORT>/instant` to:
 - Tune your encoder to a URL without recording (watch in Channels on the encoder's channel number)
 - Add your own show metadata that will be visible in the Channels DVR Recordings
 - **Show Search**: automatically look up a specific episode or movie from a supported streaming service and pre-fill all recording metadata (title, episode, duration, artwork, and direct watch URL)
-- **Closed Captions**: select English or Off from the CC dropdown — CH4C will automatically open the player's subtitle menu and apply the selection after playback starts. Supported on Prime Video, Disney+, Peacock, and Max (HBO Max). If the CC menu is unavailable at startup (e.g., during pre-roll ads), CH4C retries in the background for up to 3 minutes.
+- **Closed Captions**: select Default, English, or Off from the CC dropdown. Default leaves the service's caption state unchanged. English or Off will open the player's subtitle menu and apply the selection after playback starts. If the CC menu is unavailable at startup (e.g., during pre-roll ads), CH4C retries in the background for up to 3 minutes. Supported on Prime Video, Disney+, Peacock, Max (HBO Max), Sling TV, ESPN, Apple TV+, and YouTube.
 
 Enter the show name and optionally an episode in the Show Search field, select a service, and click **Search**. The matching episode or movie details will be populated automatically — just select an encoder and start the recording.
 

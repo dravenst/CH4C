@@ -1164,13 +1164,19 @@ function setupBrowserCrashHandlers(browser, encoderUrl, recoveryManager, encoder
                     return;
                   }
 
-                  // Check login state before navigating — redirect loops are often caused by session expiry
-                  if (global.checkAndRestoreSlingSession) {
+                  // Check login state before navigating — redirect loops are occasionally caused by session expiry,
+                  // but most redirects are Sling's concurrency enforcement (not an auth issue).
+                  // The session check itself navigates to /dashboard/home, adding ~8-15s of dead time, so
+                  // only run it every 5th attempt to catch genuine expiry without slowing down normal recovery.
+                  if (slingRecoveryAttempts % 5 === 0 && global.checkAndRestoreSlingSession) {
+                    logTS(`[${encoderUrl}] RECOVERY: Verifying Sling session (attempt ${slingRecoveryAttempts})`);
                     const sessionOk = await global.checkAndRestoreSlingSession(page, encoderUrl);
                     if (!sessionOk) {
                       logTS(`[${encoderUrl}] RECOVERY: Sling session could not be restored (logged out, no credentials, or login failed) — aborting recovery`);
                       return;
                     }
+                  } else {
+                    logTS(`[${encoderUrl}] RECOVERY: Skipping session check (attempt ${slingRecoveryAttempts}) — session assumed valid`);
                   }
 
                   // Re-navigate to the original watch URL

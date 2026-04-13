@@ -19,6 +19,7 @@ class StreamingM3UManager {
 
     this.isRefreshing = false;
     this.lastUpdate = null;
+    this.channelsDvrSourceName = '';
 
     // Known callsign aliases - map common channel names to their Channels DVR callsigns
     this.callsignAliases = {
@@ -156,6 +157,7 @@ class StreamingM3UManager {
       const parsed = JSON.parse(data);
       this.channels = parsed.channels || [];
       this.lastUpdate = parsed.lastUpdate;
+      this.channelsDvrSourceName = parsed.channelsDvrSourceName || '';
       console.log(`[M3U Manager] Loaded ${this.channels.length} channels from disk`);
     } catch (error) {
       console.log('[M3U Manager] No saved data found, starting fresh');
@@ -169,7 +171,8 @@ class StreamingM3UManager {
   async saveToDisk() {
     const data = {
       channels: this.channels,
-      lastUpdate: this.lastUpdate
+      lastUpdate: this.lastUpdate,
+      channelsDvrSourceName: this.channelsDvrSourceName
     };
     await fs.writeFile(this.dataFile, JSON.stringify(data, null, 2));
     console.log(`[M3U Manager] Saved ${this.channels.length} channels to disk`);
@@ -989,13 +992,13 @@ class StreamingM3UManager {
 
       m3u += `#EXTINF:-1 tvg-id="${tvgId}" tvg-name="${tvgName}" tvg-logo="${tvgLogo}"${guideAttribute} channel-number="${channelNum}"${genreAttribute}${tagsAttribute},${displayName}\n`;
 
-      // Encoder channels (custom service) use direct URLs, streaming services use proxy wrapper
+      // Encoder channels (custom service) use direct URLs (cc= already baked in),
+      // streaming services use proxy wrapper with optional &cc= for Sling
       if (ch.service === 'custom') {
-        // Encoder channel - use direct URL without encoding
         m3u += `${ch.streamUrl}\n\n`;
       } else {
-        // Streaming service channel - use proxy wrapper
-        m3u += `http://${replaceHost}:${ch4cPort}/stream?url=${encodeURIComponent(ch.streamUrl)}\n\n`;
+        const ccParam = (ch.service === 'sling' && ch.cc) ? `&cc=${encodeURIComponent(ch.cc)}` : '';
+        m3u += `http://${replaceHost}:${ch4cPort}/stream?url=${encodeURIComponent(ch.streamUrl)}${ccParam}\n\n`;
       }
     }
 
@@ -1020,7 +1023,8 @@ class StreamingM3UManager {
       enabledChannels: this.channels.filter(ch => ch.enabled !== false).length,
       lastUpdate: this.lastUpdate,
       isRefreshing: this.isRefreshing,
-      services: serviceStats
+      services: serviceStats,
+      channelsDvrSourceName: this.channelsDvrSourceName
     };
   }
 }

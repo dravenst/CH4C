@@ -808,38 +808,73 @@ async function searchAppleTV(page, query) {
 
   // If a specific episode was requested, select the right season and find the episode
   if (targetSeason !== null) {
-    const seasonSelectEl = await page.$('[data-testid="accessory-button-select"]');
-    if (seasonSelectEl) {
-      const seasonOptions = await page.evaluate(() => {
-        const select = document.querySelector('[data-testid="accessory-button-select"]');
-        return select ? Array.from(select.options).map((opt, i) => ({ index: i, text: opt.textContent.trim() })) : [];
-      });
-      logTS(`Apple TV+: seasons found: ${seasonOptions.map(o => o.text).join(', ')}`);
-
-      const targetSeasonOpt = seasonOptions.find(o =>
-        o.text.match(new RegExp(`season\\s*${targetSeason}\\b`, 'i'))
-      );
-      if (targetSeasonOpt) {
-        logTS(`Apple TV+: selecting Season ${targetSeason} (index ${targetSeasonOpt.index})`);
-        // Svelte select binds via both 'input' and 'change' events
-        await page.evaluate((idx) => {
+    // Primary: try direct season navigation link (season_select_sN href)
+    const targetSeasonLink = await page.$(`a[href*="season_select_s${targetSeason}"]`);
+    if (targetSeasonLink) {
+      const seasonHref = await page.evaluate(el => el.href, targetSeasonLink);
+      logTS(`Apple TV+: navigating to Season ${targetSeason} via season link`);
+      await page.goto(seasonHref, { waitUntil: 'networkidle2', timeout: 30000 });
+      await page.waitForSelector('[data-testid="accessory-button-select"]', { timeout: 10000 }).catch(() => {});
+      await delay(1000);
+    } else {
+      // Fallback: Svelte select — click element handle to focus, then use arrow keys
+      const seasonSelectEl = await page.$('[data-testid="accessory-button-select"]');
+      if (seasonSelectEl) {
+        const seasonOptions = await page.evaluate(() => {
           const select = document.querySelector('[data-testid="accessory-button-select"]');
-          select.selectedIndex = idx;
-          select.dispatchEvent(new Event('input',  { bubbles: true }));
-          select.dispatchEvent(new Event('change', { bubbles: true }));
-        }, targetSeasonOpt.index);
-        await delay(2000);
-        await page.waitForSelector(
-          '[data-testid="shelf-item-list"] li[data-index="0"] a[data-testid="lockup"]',
-          { timeout: 10000 }
-        ).catch(() => {});
+          return select ? Array.from(select.options).map((opt, i) => ({ index: i, text: opt.textContent.trim() })) : [];
+        });
+        logTS(`Apple TV+: seasons found: ${seasonOptions.map(o => o.text).join(', ')}`);
+
+        const targetSeasonOpt = seasonOptions.find(o =>
+          o.text.match(new RegExp(`season\\s*${targetSeason}\\b`, 'i'))
+        );
+        if (targetSeasonOpt) {
+          // Apple TV+ keeps ALL seasons in a single list and just scrolls to the selected season.
+          // The href of li[data-index="0"] never changes, so we detect success by confirming
+          // the select's selectedIndex matches the target after attempting selection.
+          // Retry up to 3 times — the Svelte component sometimes needs two interactions.
+          let confirmed = false;
+          for (let attempt = 1; attempt <= 3 && !confirmed; attempt++) {
+            const currentIndex = await page.evaluate(() => {
+              const select = document.querySelector('[data-testid="accessory-button-select"]');
+              return select ? select.selectedIndex : 0;
+            });
+            if (currentIndex === targetSeasonOpt.index) {
+              confirmed = true;
+              break;
+            }
+            const delta = targetSeasonOpt.index - currentIndex;
+            logTS(`Apple TV+: season select attempt ${attempt} (want index ${targetSeasonOpt.index}, current ${currentIndex})`);
+            await seasonSelectEl.click();
+            await delay(400);
+            const key = delta > 0 ? 'ArrowDown' : 'ArrowUp';
+            for (let i = 0; i < Math.abs(delta); i++) {
+              await page.keyboard.press(key);
+              await delay(300);
+            }
+            await page.keyboard.press('Enter');
+            await delay(1500);
+          }
+          const confirmedSeason = await page.evaluate(() => {
+            const select = document.querySelector('[data-testid="accessory-button-select"]');
+            return select ? select.options[select.selectedIndex]?.textContent?.trim() : 'not found';
+          });
+          logTS(`Apple TV+: season after selection: "${confirmedSeason}" (confirmed=${confirmed})`);
+          await delay(500);
+        }
       }
     }
 
-    // Find the episode by matching its "EPISODE N" tag text
+    // Find the episode by matching its "EPISODE N" tag text.
+    // Apple TV+ keeps all seasons in one list and scrolls to the selected season.
+    // Items from other seasons have aria-hidden="true", so restrict search to visible items only.
     const episodeData = await page.evaluate((targetEp) => {
       const items = document.querySelectorAll('[data-testid="shelf-item-list"] li.shelf-grid__list-item');
-      for (const item of items) {
+      // First pass: visible (non-hidden) items for the active season
+      const visibleItems = Array.from(items).filter(item => item.getAttribute('aria-hidden') !== 'true');
+      const searchItems = visibleItems.length > 0 ? visibleItems : Array.from(items);
+      for (const item of searchItems) {
         const tagEl = item.querySelector('.tag');
         if (!tagEl) continue;
         const epNumMatch = tagEl.textContent.trim().match(/episode\s*(\d+)/i);
@@ -1024,23 +1059,36 @@ async function searchMax(page, query) {
     await page.evaluate(() => window.scrollBy(0, 800));
     await delay(1500);
     await page.waitForSelector('a[data-testid$="_tile"][data-sonic-type="video"]', { timeout: 10000 }).catch(() => {});
-    // Use the specific episodes tab season dropdown (not tile action menu dropdowns)
-    // Topical shows (e.g. Last Week Tonight) use a different data-testid than regular series
-    const seasonDropdownSel =
-      (await page.$('[data-testid="generic-topical-show-page-rail-episodes_dropdown"] button[aria-haspopup]').catch(() => null))
-        ? '[data-testid="generic-topical-show-page-rail-episodes_dropdown"] button[aria-haspopup]'
-        : '[data-testid="generic-show-page-rail-episodes-tabbed-content_dropdown"] button[aria-haspopup]';
+    // Use the season dropdown button — data-testid varies by show (generic vs show-specific name)
+    // Match any dropdown whose testid ends with the known suffixes
+    const seasonDropdownSel = await page.evaluate(() => {
+      const buttons = document.querySelectorAll('button[aria-haspopup]');
+      for (const btn of buttons) {
+        const wrapper = btn.closest('[data-testid]');
+        const testid = wrapper?.getAttribute('data-testid') || '';
+        if (testid.endsWith('_dropdown') && (
+          testid.includes('episodes') || testid.includes('tabbed-content')
+        )) {
+          // Build a selector that targets this specific button
+          return `[data-testid="${testid}"] button[aria-haspopup]`;
+        }
+      }
+      return null;
+    });
 
     // Read currently displayed season
     const currentSeason = await page.evaluate((sel) => {
+      if (!sel) return null;
       const btn = document.querySelector(sel);
       const text = btn?.querySelector('span')?.textContent?.trim() || '';
-      return parseInt(text.match(/\d+/)?.[0] || '1', 10);
+      return parseInt(text.match(/\d+/)?.[0] || '0', 10) || null;
     }, seasonDropdownSel);
+
+    logTS(`Max: season dropdown selector="${seasonDropdownSel}" currentSeason=${currentSeason}`);
 
     logTS(`Max: page is on Season ${currentSeason}, target is Season ${targetSeason}`);
 
-    if (currentSeason !== targetSeason) {
+    if (seasonDropdownSel && currentSeason !== targetSeason) {
       logTS(`Max: switching to Season ${targetSeason}`);
       // Click the season dropdown to open it
       await page.click(seasonDropdownSel).catch(() => {});
@@ -1687,6 +1735,75 @@ async function searchSling(page, query) {
     episodeNumber:   null,
     durationMinutes: parseDurationMinutes(movieDetails.durationStr || result.durationStr),
     summary:         movieDetails.summary,
+    imageUrl:        result.imageUrl,
+  };
+}
+
+/**
+ * Search YouTube for a video and return the watch URL.
+ */
+async function searchYouTube(page, query) {
+  const searchTerm = query.replace(/\bs\d+(?:\s*e\d+)?\b/i, '').trim();
+  logTS(`Searching YouTube for: "${searchTerm}"`);
+
+  await page.goto('https://www.youtube.com', { waitUntil: 'networkidle2', timeout: 30000 });
+
+  const searchInput = await page.waitForSelector('input[name="search_query"]', { timeout: 10000 });
+  await searchInput.click({ clickCount: 3 });
+  await searchInput.type(searchTerm, { delay: 60 });
+
+  // Click the search button or press Enter
+  await page.keyboard.press('Enter');
+
+  // Wait for video results
+  await page.waitForSelector('ytd-video-renderer', { timeout: 15000 });
+
+  const result = await page.evaluate(() => {
+    const renderer = document.querySelector('ytd-video-renderer');
+    if (!renderer) return null;
+
+    const titleEl = renderer.querySelector('a#video-title');
+    const title   = titleEl?.getAttribute('title') || titleEl?.textContent?.trim() || null;
+    const href    = titleEl?.getAttribute('href') || null;
+    const url     = href ? `https://www.youtube.com${href}` : null;
+
+    // Thumbnail image
+    const imgEl = renderer.querySelector('ytd-thumbnail img');
+    const imageUrl = imgEl?.getAttribute('src') || null;
+
+    // Duration badge on thumbnail overlay
+    const durationEl = renderer.querySelector('div.yt-badge-shape__text, span.ytd-thumbnail-overlay-time-status-renderer');
+    const durationStr = durationEl?.textContent?.trim() || null;
+
+    // Description snippet — class "metadata-snippet-text" on yt-formatted-string
+    const descEl = renderer.querySelector('yt-formatted-string.metadata-snippet-text');
+    const summary = descEl?.textContent?.trim() || null;
+
+    return { title, url, durationStr, summary, imageUrl };
+  });
+
+  if (!result || !result.url) throw new Error('No YouTube results found');
+
+  // Convert duration string "H:MM:SS" or "M:SS" to minutes
+  let durationMinutes = null;
+  if (result.durationStr) {
+    const parts = result.durationStr.split(':').map(Number);
+    if (parts.length === 3) {
+      durationMinutes = parts[0] * 60 + parts[1] + Math.round(parts[2] / 60);
+    } else if (parts.length === 2) {
+      durationMinutes = parts[0] + Math.round(parts[1] / 60);
+    }
+  }
+
+  logTS(`YouTube: url="${result.url}" title="${result.title}" duration=${durationMinutes}min summary="${result.summary?.substring(0, 80) || 'none'}" image="${result.imageUrl || 'none'}"`);
+  return {
+    url:             result.url,
+    title:           result.title,
+    episodeTitle:    null,
+    seasonNumber:    null,
+    episodeNumber:   null,
+    durationMinutes: durationMinutes,
+    summary:         result.summary,
     imageUrl:        result.imageUrl,
   };
 }
@@ -4150,7 +4267,39 @@ async function fullScreenVideo(page) {
   await hideCursor(page)
 }
 
-async function fullScreenVideoSling(page, encoderConfig = null) {
+async function selectSlingClosedCaptions(page, ccOption) {
+  // Returns true if successfully selected, false if player controls not available yet
+  try {
+    // Move mouse to center to reveal player controls
+    const viewport = page.viewport();
+    const cx = Math.floor((viewport ? viewport.width : 1280) / 2);
+    const cy = Math.floor((viewport ? viewport.height : 720) / 2);
+    await page.mouse.move(cx, cy);
+    await delay(500);
+
+    const settingsBtn = await page.waitForSelector('[data-testid="player-button-videoPlayerSettings"]', { timeout: 5000 }).catch(() => null);
+    if (!settingsBtn) return false;
+    await settingsBtn.click();
+    await delay(300);
+
+    const testId = ccOption.toLowerCase() === 'off' ? 'closed-captions-off' : 'closed-captions-on';
+    const option = await page.waitForSelector(`[data-testid="${testId}"]`, { timeout: 3000 }).catch(() => null);
+    if (!option) return false;
+    await option.click();
+    await delay(300);
+
+    // Close the settings menu by clicking away
+    await page.mouse.move(cx, cy - 200);
+    await page.mouse.click(cx, cy - 200);
+    logTS(`Sling CC: selected "${ccOption}"`);
+    return true;
+  } catch (e) {
+    logTS(`Sling CC: error — ${e.message}`);
+    return false;
+  }
+}
+
+async function fullScreenVideoSling(page, encoderConfig = null, closedCaptions = '') {
   logTS("URL contains watch.sling.com, going fullscreen");
 
   // Click the full screen button
@@ -4160,13 +4309,27 @@ async function fullScreenVideoSling(page, encoderConfig = null) {
 
   // Find Mute button and then use volume slider
   const muteButton = await page.waitForSelector('div.player-button.active.volumeControls', { visible: true });
-  await muteButton.click(); //click unmute
+  await muteButton.click(); // unmute
   // Simulate pressing the right arrow key 10 times to max volume
   for (let i = 0; i < 10; i++) {
     await delay(100);
     await page.keyboard.press('ArrowRight');
   }
   logTS("finished change to fullscreen and max volume");
+
+  // Select closed captions AFTER fullscreen — skip if Default (empty)
+  const ccValue = closedCaptions || '';
+  if (ccValue) {
+    (async () => {
+      for (let attempt = 1; attempt <= 6; attempt++) {
+        if (attempt > 1) await delay(30000);
+        logTS(`Sling CC: Attempt ${attempt}/6 for "${ccValue}"`);
+        const success = await selectSlingClosedCaptions(page, ccValue);
+        if (success) return;
+      }
+      logTS(`Sling CC: Could not select after 6 attempts`);
+    })().catch(err => logTS(`Sling CC background error: ${err.message}`));
+  }
 
   // Setup audio monitor to maintain audio sink (helps with multi-stream scenarios)
   if (encoderConfig && encoderConfig.audioDevice) {
@@ -4319,7 +4482,7 @@ async function fullScreenVideoPeacock(page, encoderConfig = null, closedCaptions
     logTS("Warning: Could not find Peacock video element for pause monitoring");
   }
 
-  // Fire CC selection in background with retries — ads may block the button initially
+  // Fire CC selection in background with retries — skip if Default (empty)
   if (closedCaptions) {
     selectPeacockClosedCaptionsWithRetry(page, closedCaptions)
       .catch(err => logTS(`Peacock CC background error: ${err.message}`));
@@ -4365,7 +4528,53 @@ async function fullScreenVideoGooglePhotos(page) {
   logTS("changed to fullscreen and max volume");
 }
 
-async function fullScreenVideoESPN(page, encoderConfig = null) {
+async function selectESPNClosedCaptions(page, ccOption) {
+  // Returns true if successfully set, false if button not found
+  try {
+    const viewport = page.viewport();
+    const cx = Math.floor((viewport ? viewport.width : 1280) / 2);
+    const cy = Math.floor((viewport ? viewport.height : 720) / 2);
+    await page.mouse.move(cx, cy);
+    await delay(500);
+
+    const result = await page.evaluate((wantOn) => {
+      function querySelectorDeep(selector, root = document) {
+        const el = root.querySelector(selector);
+        if (el) return el;
+        for (const child of root.querySelectorAll('*')) {
+          if (child.shadowRoot) {
+            const found = querySelectorDeep(selector, child.shadowRoot);
+            if (found) return found;
+          }
+        }
+        return null;
+      }
+
+      // Find the CC toggle button — when ON it has class "disable-captions active",
+      // when OFF it has class "enable-captions"
+      const btn = querySelectorDeep('button.toggle-closed-captions');
+      if (!btn) return 'not found';
+
+      const isOn = btn.classList.contains('disable-captions');
+      if (wantOn && !isOn) {
+        btn.click();
+        return 'turned on';
+      } else if (!wantOn && isOn) {
+        btn.click();
+        return 'turned off';
+      }
+      return 'already correct';
+    }, ccOption.toLowerCase() !== 'off');
+
+    logTS(`ESPN CC: ${result} for "${ccOption}"`);
+    return result !== 'not found';
+  } catch (e) {
+    logTS(`ESPN CC: error — ${e.message}`);
+    return false;
+  }
+}
+
+async function fullScreenVideoESPN(page, encoderConfig = null, closedCaptions = '') {
   logTS("URL contains ESPN, setting up fullscreen and unmuting");
 
   // Wait for video element to have enough data to play (readyState >= 3)
@@ -4570,6 +4779,18 @@ async function fullScreenVideoESPN(page, encoderConfig = null) {
 
   // Setup error recovery monitor to handle hard errors (e.g. too many devices streaming)
   setupESPNErrorMonitor(page, encoderConfig);
+
+  // Select closed captions — skip if Default (empty)
+  const espnCcValue = closedCaptions || '';
+  if (espnCcValue) (async () => {
+    for (let attempt = 1; attempt <= 6; attempt++) {
+      if (attempt > 1) await delay(30000);
+      logTS(`ESPN CC: Attempt ${attempt}/6 for "${espnCcValue}"`);
+      const success = await selectESPNClosedCaptions(page, espnCcValue);
+      if (success) return;
+    }
+    logTS(`ESPN CC: Could not select after 6 attempts`);
+  })().catch(err => logTS(`ESPN CC background error: ${err.message}`));
 
   await hideCursor(page);
   await page.mouse.move(0, 0);
@@ -4878,10 +5099,23 @@ async function fullScreenVideoAppleTV(page, encoderConfig = null, closedCaptions
     logTS("Apple TV+: volume set to max via JS");
   }
 
-  // Select closed captions NOW while controls are guaranteed visible (before fullscreen)
-  if (closedCaptions) {
-    logTS(`Apple TV+ CC: selecting "${closedCaptions}" before fullscreen`);
-    await selectAppleTVClosedCaptions(page, closedCaptions);
+  // Select closed captions before fullscreen, with background retries — skip if Default (empty)
+  const appleTVCcValue = closedCaptions || '';
+  if (appleTVCcValue) {
+    logTS(`Apple TV+ CC: selecting "${appleTVCcValue}" before fullscreen`);
+    const firstAttempt = await selectAppleTVClosedCaptions(page, appleTVCcValue);
+    if (!firstAttempt) {
+      // Fire-and-forget retry loop — covers pre-roll ads blocking the CC menu
+      (async () => {
+        for (let attempt = 2; attempt <= 6; attempt++) {
+          await delay(30000);
+          logTS(`Apple TV+ CC: retry attempt ${attempt}/6 for "${appleTVCcValue}"`);
+          const success = await selectAppleTVClosedCaptions(page, appleTVCcValue);
+          if (success) return;
+        }
+        logTS(`Apple TV+ CC: could not select after 6 attempts`);
+      })().catch(err => logTS(`Apple TV+ CC background error: ${err.message}`));
+    }
   }
 
   // Click the fullscreen button; fall back to the 'f' keyboard shortcut if not found
@@ -5934,7 +6168,26 @@ async function fullScreenVideoTBS(page) {
   logTS("finished TBS fullscreen setup");
 }
 
-async function fullScreenVideoYouTube(page) {
+async function selectYouTubeClosedCaptions(page, ccOption) {
+  try {
+    const wantOn = ccOption.toLowerCase() !== 'off';
+    const result = await page.evaluate((wantOn) => {
+      const btn = document.querySelector('button.ytp-subtitles-button');
+      if (!btn) return 'not found';
+      const isOn = btn.getAttribute('aria-pressed') === 'true';
+      if (wantOn && !isOn) { btn.click(); return 'turned on'; }
+      if (!wantOn && isOn) { btn.click(); return 'turned off'; }
+      return 'already correct';
+    }, wantOn);
+    logTS(`YouTube CC: ${result} for "${ccOption}"`);
+    return result !== 'not found';
+  } catch (e) {
+    logTS(`YouTube CC: error — ${e.message}`);
+    return false;
+  }
+}
+
+async function fullScreenVideoYouTube(page, closedCaptions = '') {
   logTS("URL contains YouTube, setting up fullscreen");
 
   // Wait a bit for the page to settle
@@ -6008,6 +6261,20 @@ async function fullScreenVideoYouTube(page) {
     await setupPauseMonitor(frameHandle, videoHandle, page);
   } else {
     logTS('Could not find YouTube video element');
+  }
+
+  // Select closed captions — skip if Default (empty)
+  const ytCcValue = closedCaptions || '';
+  if (ytCcValue) {
+    (async () => {
+      for (let attempt = 1; attempt <= 6; attempt++) {
+        if (attempt > 1) await delay(30000);
+        logTS(`YouTube CC: Attempt ${attempt}/6 for "${ytCcValue}"`);
+        const success = await selectYouTubeClosedCaptions(page, ytCcValue);
+        if (success) return;
+      }
+      logTS(`YouTube CC: Could not select after 6 attempts`);
+    })().catch(err => logTS(`YouTube CC background error: ${err.message}`));
   }
 
   // Hide cursor
@@ -6103,10 +6370,11 @@ async function fullScreenVideoMax(page, closedCaptions = '') {
         if (video.paused) video.play().catch(err => console.log('Play failed:', err));
       }, videoHandle);
 
-      // Select closed captions BEFORE fullscreen (controls accessible in normal view)
-      logTS(`Max CC param received: "${closedCaptions}"`);
-      if (closedCaptions) {
-        selectMaxClosedCaptionsWithRetry(page, closedCaptions)
+      // Select closed captions BEFORE fullscreen — skip if Default (empty)
+      const maxCcValue = closedCaptions || '';
+      if (maxCcValue) {
+        logTS(`Max CC param received: "${maxCcValue}"`);
+        selectMaxClosedCaptionsWithRetry(page, maxCcValue)
           .catch(err => logTS(`Max CC background error: ${err.message}`));
       }
 
@@ -6288,10 +6556,11 @@ async function fullScreenVideoDisneyPlus(page, closedCaptions = '') {
       }
     }, videoHandle);
 
-    // Select closed captions BEFORE fullscreen (controls accessible in normal view)
-    logTS(`Disney+ CC param received: "${closedCaptions}"`);
-    if (closedCaptions) {
-      selectDisneyPlusClosedCaptionsWithRetry(page, closedCaptions)
+    // Select closed captions BEFORE fullscreen — skip if Default (empty)
+    const disneyPlusCcValue = closedCaptions || '';
+    if (disneyPlusCcValue) {
+      logTS(`Disney+ CC param received: "${disneyPlusCcValue}"`);
+      selectDisneyPlusClosedCaptionsWithRetry(page, disneyPlusCcValue)
         .catch(err => logTS(`Disney+ CC background error: ${err.message}`));
     }
 
@@ -6494,10 +6763,11 @@ async function fullScreenVideoAmazon(page, closedCaptions = '') {
     // Wait for fullscreen transition and any ad-to-content transition to settle
     await delay(3000);
 
-    // Select closed captions AFTER fullscreen so the transition doesn't reset them
-    logTS(`Amazon CC param received: "${closedCaptions}"`);
-    if (closedCaptions) {
-      selectAmazonClosedCaptionsWithRetry(page, closedCaptions)
+    // Select closed captions AFTER fullscreen — skip if Default (empty)
+    const amazonCcValue = closedCaptions || '';
+    if (amazonCcValue) {
+      logTS(`Amazon CC param received: "${amazonCcValue}"`);
+      selectAmazonClosedCaptionsWithRetry(page, amazonCcValue)
         .catch(err => logTS(`Amazon CC background error: ${err.message}`));
     }
 
@@ -6592,19 +6862,23 @@ function buildRecordingJson(name, duration, encoderChannel, episodeTitle, summar
 }
 
 async function startRecording(name, duration, encoderChannel, episodeTitle, summary, seasonNumber, episodeNumber, imageUrl) {
-  let response
   try {
-    response = await fetch(Constants.CHANNELS_POST_URL, {
+    logTS(`startRecording POST to: ${Constants.CHANNELS_POST_URL}`);
+    const response = await fetch(Constants.CHANNELS_POST_URL, {
       method: 'POST',
       headers: {
         'Content-type': 'application/json',
       },
       body: buildRecordingJson(name, duration, encoderChannel, episodeTitle, summary, seasonNumber, episodeNumber, imageUrl),
-    })
+    });
+    if (!response.ok) {
+      const body = await response.text().catch(() => '');
+      logTS(`startRecording failed: HTTP ${response.status} ${response.statusText} — ${body.substring(0, 200)}`);
+    }
+    return response.ok;
   } catch (error) {
-    console.log('Unable to schedule recording', error)
-  } finally {
-    return response.ok
+    logTS(`startRecording error: ${error.message}`);
+    return false;
   }
 }
 
@@ -7934,6 +8208,61 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
     }
   });
 
+  // GET /m3u-manager/channels-dvr-lineups - Fetch X-M3U source names from Channels DVR
+  app.get('/m3u-manager/channels-dvr-lineups', async (req, res) => {
+    try {
+      if (!Constants.CHANNELS_URL || !Constants.CHANNELS_PORT) {
+        return res.status(400).json({ success: false, error: 'Channels DVR URL is not configured' });
+      }
+      const lineupsUrl = `${Constants.CHANNELS_URL}:${Constants.CHANNELS_PORT}/dvr/lineups`;
+      const response = await fetch(lineupsUrl);
+      if (!response.ok) {
+        return res.status(502).json({ success: false, error: `Channels DVR returned ${response.status}` });
+      }
+      const lineups = await response.json();
+      // Return only X-M3U source names (the keys)
+      const m3uSources = Object.entries(lineups)
+        .filter(([, type]) => type === 'X-M3U')
+        .map(([name]) => name);
+      res.json({ success: true, sources: m3uSources });
+    } catch (error) {
+      res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
+  // POST /m3u-manager/refresh-channels-dvr - Trigger Channels DVR to refresh the M3U source
+  app.post('/m3u-manager/refresh-channels-dvr', async (req, res) => {
+    try {
+      const { sourceName } = req.body;
+      if (!sourceName || !sourceName.trim()) {
+        return res.status(400).json({ success: false, error: 'M3U source name is required' });
+      }
+      if (!Constants.CHANNELS_URL || !Constants.CHANNELS_PORT) {
+        return res.status(400).json({ success: false, error: 'Channels DVR URL is not configured' });
+      }
+
+      // Persist the source name for next load
+      m3uManager.channelsDvrSourceName = sourceName.trim();
+      await m3uManager.saveToDisk();
+
+      const refreshUrl = `${Constants.CHANNELS_URL}:${Constants.CHANNELS_PORT}/providers/m3u/sources/${encodeURIComponent(sourceName.trim())}/refresh`;
+      logTS(`[M3U Manager] Triggering Channels DVR M3U refresh: ${refreshUrl}`);
+
+      const response = await fetch(refreshUrl, { method: 'POST' });
+      const body = await response.text();
+      logTS(`[M3U Manager] Channels DVR refresh response: ${response.status} "${body}"`);
+
+      if (!response.ok || body.trim() !== 'true') {
+        return res.status(502).json({ success: false, error: `Channels DVR returned ${response.status}: ${body}` });
+      }
+
+      res.json({ success: true });
+    } catch (error) {
+      logTS(`[M3U Manager] Error refreshing Channels DVR: ${error.message}`);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
   // GET /m3u-manager/playlist.m3u - Generate M3U playlist
   app.get('/m3u-manager/playlist.m3u', (req, res) => {
     const host = req.get('host').split(':')[0]; // Get hostname without port
@@ -8560,6 +8889,8 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
         result = await searchAppleTV(searchPage, query);
       } else if (service === 'sling') {
         result = await searchSling(searchPage, query);
+      } else if (service === 'youtube') {
+        result = await searchYouTube(searchPage, query);
       } else {
         return res.status(400).json({ success: false, error: `Service "${service}" is not yet supported` });
       }
@@ -8819,13 +9150,13 @@ async function handleSiteSpecificFullscreen(targetUrl, page, encoderConfig = nul
   try {
     if (targetUrl.includes("youtube.com") || targetUrl.includes("youtu.be")) {
       logTS("Handling YouTube video");
-      await fullScreenVideoYouTube(page);
+      await fullScreenVideoYouTube(page, closedCaptions);
     } else if (targetUrl.includes("amazon.com")) {
       logTS("Handling Amazon Prime Video");
       await fullScreenVideoAmazon(page, closedCaptions);
     } else if (targetUrl.includes("watch.sling.com")) {
       logTS("Handling Sling video");
-      await fullScreenVideoSling(page, encoderConfig);
+      await fullScreenVideoSling(page, encoderConfig, closedCaptions);
     } else if (targetUrl.includes("peacocktv.com")) {
       await fullScreenVideoPeacock(page, encoderConfig, closedCaptions);
     } else if (targetUrl.includes("spectrum.net")) {
@@ -8835,7 +9166,7 @@ async function handleSiteSpecificFullscreen(targetUrl, page, encoderConfig = nul
       await fullScreenVideoGooglePhotos(page);
     } else if (targetUrl.includes("espn.com")) {
       logTS("Handling ESPN video");
-      await fullScreenVideoESPN(page, encoderConfig);
+      await fullScreenVideoESPN(page, encoderConfig, closedCaptions);
     } else if (targetUrl.includes("disneyplus.com")) {
       logTS("Handling Disney+ video");
       await fullScreenVideoDisneyPlus(page, closedCaptions);

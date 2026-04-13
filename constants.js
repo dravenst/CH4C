@@ -2026,6 +2026,7 @@ const INSTANT_PAGE_HTML = `
                             <option value="peacock">Peacock</option>
                             <option value="prime_video">Prime Video</option>
                             <option value="sling">Sling TV</option>
+                            <option value="youtube">YouTube</option>
                         </select>
                     </div>
                     <div style="display:flex;flex-direction:column;gap:3px;flex:1;min-width:140px;">
@@ -2068,6 +2069,7 @@ const INSTANT_PAGE_HTML = `
                         name="closed_captions"
                         id="closed_captions"
                     >
+                        <option value="">Default</option>
                         <option value="Off">Off</option>
                         <option value="English">English</option>
                     </select>
@@ -3767,6 +3769,24 @@ const M3U_MANAGER_PAGE_HTML = `
             font-size: 13px;
         }
 
+        .m3u-url-box .m3u-divider {
+            width: 1px;
+            align-self: stretch;
+            background: #cbd5e0;
+            margin: 0 4px;
+        }
+
+        .m3u-url-box .m3u-source-input {
+            flex: 0 0 auto;
+            width: 220px;
+            padding: 8px;
+            border: 1px solid #cbd5e0;
+            border-radius: 4px;
+            font-family: inherit;
+            font-size: 13px;
+            background: white;
+        }
+
         .table-container {
             overflow-x: auto;
         }
@@ -4003,7 +4023,12 @@ const M3U_MANAGER_PAGE_HTML = `
             <input type="text" id="m3uUrl" readonly value="http://<<host>>/m3u-manager/playlist.m3u">
             <button class="btn btn-secondary btn-small" onclick="copyM3UUrl()">📋 Copy</button>
             <button class="btn btn-secondary btn-small" onclick="previewM3U()">👁️ Preview</button>
-            <a href="/m3u-manager/playlist.m3u" download class="btn btn-success btn-small">⬇️ Download</a>
+            <div class="m3u-divider"></div>
+            <strong>M3U Refresh:</strong>
+            <select id="channelsDvrSource" class="m3u-source-input" title="Channels DVR M3U source name">
+                <option value="">-- Loading sources... --</option>
+            </select>
+            <button class="btn btn-primary btn-small" onclick="refreshChannelsDvr()">🔄 Refresh M3U</button>
         </div>
 
         <div class="service-tabs">
@@ -4071,10 +4096,18 @@ const M3U_MANAGER_PAGE_HTML = `
                         Will be prepended with: <code style="background: #f7fafc; padding: 2px 6px; border-radius: 3px; font-size: 11px;">http://<span id="customUrlPrefix">detecting...</span>:${CH4C_PORT}/stream?url=</code>
                     </small>
                 </div>
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px;">
+                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-bottom: 16px;">
                     <div class="form-group" style="margin: 0;">
                         <label>Channel Number</label>
                         <input type="text" id="customNumber" placeholder="Auto-assigned if blank">
+                    </div>
+                    <div class="form-group" style="margin: 0;">
+                        <label>Closed Captions</label>
+                        <select id="customCc">
+                            <option value="">Default</option>
+                            <option value="Off">Off</option>
+                            <option value="English">English</option>
+                        </select>
                     </div>
                     <div class="form-group" style="margin: 0;">
                         <label>Genre</label>
@@ -4143,10 +4176,18 @@ const M3U_MANAGER_PAGE_HTML = `
                         Will be prepended with: <code style="background: #f7fafc; padding: 2px 6px; border-radius: 3px; font-size: 11px;">http://<span id="editUrlPrefix">detecting...</span>:${CH4C_PORT}/stream?url=</code>
                     </small>
                 </div>
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px;">
+                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-bottom: 16px;">
                     <div class="form-group" style="margin: 0;">
                         <label>Channel Number</label>
                         <input type="text" id="editNumber" placeholder="Auto-assigned if blank">
+                    </div>
+                    <div class="form-group" id="editCcGroup" style="margin: 0;">
+                        <label>Closed Captions</label>
+                        <select id="editCc">
+                            <option value="">Default</option>
+                            <option value="Off">Off</option>
+                            <option value="English">English</option>
+                        </select>
                     </div>
                     <div class="form-group" style="margin: 0;">
                         <label>Genre</label>
@@ -4236,6 +4277,7 @@ const M3U_MANAGER_PAGE_HTML = `
             </div>
             <div class="modal-actions">
                 <button type="button" class="btn btn-secondary" onclick="copyM3UPreview()">📋 Copy to Clipboard</button>
+                <a href="/m3u-manager/playlist.m3u" download class="btn btn-success">⬇️ Download</a>
                 <button type="button" class="btn btn-secondary" onclick="closeModal('previewM3UModal')">Close</button>
             </div>
         </div>
@@ -4352,14 +4394,66 @@ const M3U_MANAGER_PAGE_HTML = `
 
         async function loadStatus() {
             try {
-                const response = await fetch('/m3u-manager/status');
-                const status = await response.json();
+                const [statusRes, lineupsRes] = await Promise.all([
+                    fetch('/m3u-manager/status'),
+                    fetch('/m3u-manager/channels-dvr-lineups')
+                ]);
+                const status = await statusRes.json();
 
                 document.getElementById('lastUpdate').textContent = status.lastUpdate
                     ? new Date(status.lastUpdate).toLocaleString()
                     : 'Never';
+
+                const select = document.getElementById('channelsDvrSource');
+                if (lineupsRes.ok) {
+                    const lineups = await lineupsRes.json();
+                    if (lineups.success && lineups.sources.length > 0) {
+                        select.innerHTML = '<option value="">-- Select M3U Source --</option>' +
+                            lineups.sources.map(s => '<option value="' + s.replace(/^M3U-/i, '') + '">' + s.replace(/^M3U-/i, '') + '</option>').join('');
+                        if (status.channelsDvrSourceName) {
+                            select.value = status.channelsDvrSourceName;
+                        }
+                    } else {
+                        select.innerHTML = '<option value="">-- No X-M3U sources found --</option>';
+                    }
+                } else {
+                    select.innerHTML = '<option value="">-- Could not reach Channels DVR --</option>';
+                }
             } catch (error) {
                 console.error('Error loading status:', error);
+                document.getElementById('channelsDvrSource').innerHTML =
+                    '<option value="">-- Error loading sources --</option>';
+            }
+        }
+
+        async function refreshChannelsDvr() {
+            const sourceName = document.getElementById('channelsDvrSource').value.trim();
+            if (!sourceName) {
+                alert('Please select an M3U source from the dropdown.');
+                return;
+            }
+            const btn = event.target;
+            btn.disabled = true;
+            btn.textContent = 'Refreshing...';
+            try {
+                const response = await fetch('/m3u-manager/refresh-channels-dvr', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ sourceName })
+                });
+                const result = await response.json();
+                if (result.success) {
+                    btn.textContent = '✅ Refreshed!';
+                    setTimeout(() => { btn.textContent = '🔄 Refresh M3U'; btn.disabled = false; }, 2000);
+                } else {
+                    alert('Refresh failed: ' + (result.error || 'Unknown error'));
+                    btn.textContent = '🔄 Refresh M3U';
+                    btn.disabled = false;
+                }
+            } catch (error) {
+                alert('Refresh failed: ' + error.message);
+                btn.textContent = '🔄 Refresh M3U';
+                btn.disabled = false;
             }
         }
 
@@ -4775,31 +4869,50 @@ const M3U_MANAGER_PAGE_HTML = `
 
             // Show/hide and populate Stream URL field for custom channels only
             const streamUrlGroup = document.getElementById('editStreamUrlGroup');
+            const ccGroup = document.getElementById('editCcGroup');
             if (channel.service === 'custom') {
                 // Show stream URL field for custom channels
                 streamUrlGroup.style.display = 'block';
 
-                // Extract the URL without the CH4C wrapper prefix
+                // Extract the actual URL (without the CH4C wrapper prefix and &cc= param)
                 const streamUrl = channel.streamUrl || '';
                 const ch4cAddress = window.location.hostname;
                 const prefix = \`http://\${ch4cAddress}:${CH4C_PORT}/stream?url=\`;
 
-                // Check if URL starts with the prefix and extract the actual URL
                 let extractedUrl = streamUrl;
+                let extractedCc = '';
                 if (streamUrl.startsWith(prefix)) {
-                    extractedUrl = decodeURIComponent(streamUrl.substring(prefix.length));
+                    const rest = streamUrl.substring(prefix.length);
+                    // Split off &cc= if present
+                    const ccIdx = rest.indexOf('&cc=');
+                    if (ccIdx !== -1) {
+                        extractedUrl = decodeURIComponent(rest.substring(0, ccIdx));
+                        extractedCc = decodeURIComponent(rest.substring(ccIdx + 4));
+                    } else {
+                        extractedUrl = decodeURIComponent(rest);
+                    }
                 }
 
                 document.getElementById('editStreamUrl').value = extractedUrl;
+                document.getElementById('editCc').value = extractedCc;
+                ccGroup.style.display = 'block';
 
                 // Allow editing name for custom channels
                 nameField.removeAttribute('readonly');
                 nameField.style.background = '';
-            } else {
-                // Hide stream URL field for non-custom channels
+            } else if (channel.service === 'sling') {
+                // Show CC for Sling channels; populate from stored cc field
                 streamUrlGroup.style.display = 'none';
+                ccGroup.style.display = 'block';
+                document.getElementById('editCc').value = channel.cc || '';
 
-                // Make name readonly for non-custom channels
+                nameField.setAttribute('readonly', 'readonly');
+                nameField.style.background = '#f7fafc';
+            } else {
+                // Hide CC and stream URL for other services
+                streamUrlGroup.style.display = 'none';
+                ccGroup.style.display = 'none';
+
                 nameField.setAttribute('readonly', 'readonly');
                 nameField.style.background = '#f7fafc';
             }
@@ -4835,10 +4948,12 @@ const M3U_MANAGER_PAGE_HTML = `
 
             const epgMode = document.getElementById('customEpgMode').value;
             const userEnteredUrl = document.getElementById('customUrl').value.trim();
+            const customCc = document.getElementById('customCc').value;
 
-            // Prepend the CH4C stream wrapper URL
+            // Prepend the CH4C stream wrapper URL, appending &cc= if set
             const ch4cAddress = window.location.hostname;
-            const fullStreamUrl = \`http://\${ch4cAddress}:${CH4C_PORT}/stream?url=\${encodeURIComponent(userEnteredUrl)}\`;
+            const ccParam = customCc ? \`&cc=\${encodeURIComponent(customCc)}\` : '';
+            const fullStreamUrl = \`http://\${ch4cAddress}:${CH4C_PORT}/stream?url=\${encodeURIComponent(userEnteredUrl)}\${ccParam}\`;
 
             const channelData = {
                 name: document.getElementById('customName').value,
@@ -4881,23 +4996,26 @@ const M3U_MANAGER_PAGE_HTML = `
             const epgMode = document.getElementById('editEpgMode').value;
             const nameField = document.getElementById('editName');
 
+            const editCc = document.getElementById('editCc').value;
+
             const updates = {
                 channelNumber: document.getElementById('editNumber').value || null,
                 callSign: document.getElementById('editCallSign').value || null,
                 stationId: epgMode === 'stationId' ? (document.getElementById('editStationId').value || null) : null,
                 duration: epgMode === 'placeholder' ? (parseInt(document.getElementById('editDuration').value) || 180) : null,
                 category: document.getElementById('editCategory').value,
-                logo: document.getElementById('editLogo').value || null
+                logo: document.getElementById('editLogo').value || null,
+                cc: editCc || null
             };
 
-            // For custom channels, include name and stream URL
+            // For custom channels, include name and stream URL (with cc= baked in)
             if (service === 'custom') {
                 updates.name = nameField.value;
 
-                // Prepend the CH4C stream wrapper URL to the user-entered URL
                 const userEnteredUrl = document.getElementById('editStreamUrl').value.trim();
                 const ch4cAddress = window.location.hostname;
-                const fullStreamUrl = \`http://\${ch4cAddress}:${CH4C_PORT}/stream?url=\${encodeURIComponent(userEnteredUrl)}\`;
+                const ccParam = editCc ? \`&cc=\${encodeURIComponent(editCc)}\` : '';
+                const fullStreamUrl = \`http://\${ch4cAddress}:${CH4C_PORT}/stream?url=\${encodeURIComponent(userEnteredUrl)}\${ccParam}\`;
                 updates.streamUrl = fullStreamUrl;
             }
 
