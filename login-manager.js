@@ -42,7 +42,21 @@ const LOGIN_SITES = [
     checkUrl: 'https://www.sling.com/',
     loggedOutUrlFragment: '/sign-in',
   },
-  // ── 2–13. Remaining sites (alphabetical) ─────────────────────────────────
+  // ── 2. DirecTV Stream ─────────────────────────────────────────────────────
+  {
+    id: 'directv',
+    name: 'DirecTV Stream',
+    type: 'direct',
+    // DirecTV may redirect to auth.directv.com or another AT&T auth domain when not
+    // logged in. pollForUrlRedirect polls the URL and also checks for a login form in
+    // the DOM so it catches both a redirect-based and an inline-overlay login page.
+    checkUrl: 'https://stream.directv.com/guide',
+    // Match any redirect away from stream.directv.com (covers auth.directv.com, att.com, etc.)
+    loggedOutUrlFragment: 'directv.com/sign',
+    pollForUrlRedirect: true,
+    checkLoginWaitMs: 12000,
+  },
+  // ── 3–14. Remaining sites (alphabetical) ──────────────────────────────────
   {
     id: 'abc',
     name: 'ABC',
@@ -552,6 +566,33 @@ async function checkLogin(page, siteConfig) {
       return el === null;
     }
 
+    // URL-redirect polling mode: for SPAs (e.g. DirecTV) that redirect logged-out users
+    // asynchronously after domcontentloaded. Polls every 500 ms for:
+    //   (a) URL redirect away from the check domain, or
+    //   (b) a login form appearing inline in the DOM.
+    // Times out and reports "logged in" only if neither signal fires.
+    if (siteConfig.pollForUrlRedirect) {
+      const checkDomain = new URL(siteConfig.checkUrl).hostname;
+      const deadline = Date.now() + waitMs;
+      while (Date.now() < deadline) {
+        const currentUrl = page.url();
+        // Signal (a): URL redirect away from the original domain
+        if (!currentUrl.includes(checkDomain)) {
+          logTS(`checkLogin [${siteConfig.id}]: redirected to ${currentUrl} — not logged in`);
+          return false;
+        }
+        // Signal (b): login form visible inline (covers overlay-based auth flows)
+        const hasLoginForm = await page.$(USERNAME_SELECTOR).catch(() => null);
+        if (hasLoginForm) {
+          logTS(`checkLogin [${siteConfig.id}]: inline login form detected — not logged in`);
+          return false;
+        }
+        await delay(500);
+      }
+      logTS(`checkLogin [${siteConfig.id}]: post-poll URL: ${page.url()} — no login signals, assuming logged in`);
+      return true;
+    }
+
     // Standard single-check mode
     await delay(waitMs);
 
@@ -623,6 +664,230 @@ async function loginSling(page, username, password) {
       });
       return { success: false, message: errorMsg || 'Login failed — check credentials' };
     }
+    return { success: true };
+  } catch (e) {
+    return { success: false, message: e.message };
+  }
+}
+
+/**
+ * Handle DirecTV post-login interstitials: profile selector and sports-scores preference.
+ * Both screens are optional — if absent this is a near-instant no-op.
+ *
+ * Profile: detected by URL (/user-profiles). This is an immediate check — no polling.
+ *   If the page is already there, handle it; otherwise the session already has a profile.
+ * Scores: overlay appears after profile selection. Only polled when a profile was clicked.
+ *
+ * This function is called both after a fresh login AND when already logged in
+ * (the "already logged in" path in loginEncoders), so both cases are handled.
+ */
+async function handleDirectvPostLogin(page) {
+  let profileWasClicked = false;
+
+  // ── Profile selector ─────────────────────────────────────────────────────────
+  // DirecTV sends unauthenticated-profile sessions straight to /user-profiles.
+  // Immediate URL check — if we're there, wait for tiles to render and click the first one.
+  // If we're not there, profile is already selected; skip instantly.
+  try {
+    const url = page.url();
+    if (url.includes('/user-profiles')) {
+      logTS(`[DirecTV] Profile selector page (${url}) — waiting for tiles`);
+      await page.waitForFunction(
+        () => document.querySelectorAll('[role="button"], button, li[tabindex], div[tabindex]').length > 0,
+        { timeout: 8000, polling: 300 }
+      ).catch(() => {});
+
+      // Diagnostic: show what interactive elements exist so we can refine if needed
+      const diagInfo = await page.evaluate(() => {
+        return Array.from(document.querySelectorAll(
+          '[role="button"], button, li[tabindex], div[tabindex], a[href*="profile"]'
+        )).slice(0, 10).map(el => ({
+          tag: el.tagName,
+          role: el.getAttribute('role') || '',
+          text: el.textContent.trim().slice(0, 40),
+          tabindex: el.getAttribute('tabindex') || ''
+        }));
+      }).catch(() => []);
+      logTS(`[DirecTV] Profile page elements: ${JSON.stringify(diagInfo)}`);
+
+      const profileClicked = await page.evaluate(() => {
+        // Profile tiles show: letter-initial square + profile name. No images.
+        // Skip "Add Profile", "+", and anything inside nav/header/footer.
+        const isCandidate = (el) => {
+          const text = el.textContent.trim();
+          return text.length > 0 && text.length < 60
+            && !/^add\s*profile|^\+|sign.?out|settings|help/i.test(text)
+            && !el.closest('nav, header, footer');
+        };
+        const roleBtn = Array.from(document.querySelectorAll('[role="button"]')).find(isCandidate);
+        if (roleBtn) { roleBtn.click(); return 'role-button: ' + roleBtn.textContent.trim().slice(0, 30); }
+        const btn = Array.from(document.querySelectorAll('button')).find(isCandidate);
+        if (btn) { btn.click(); return 'button: ' + btn.textContent.trim().slice(0, 30); }
+        const tile = Array.from(document.querySelectorAll('li[tabindex], div[tabindex]')).find(isCandidate);
+        if (tile) { tile.click(); return 'tile: ' + tile.textContent.trim().slice(0, 30); }
+        const link = document.querySelector('a[href*="profile" i], a[href*="user" i]');
+        if (link && isCandidate(link)) { link.click(); return 'link: ' + link.textContent.trim().slice(0, 30); }
+        return null;
+      });
+      logTS(`[DirecTV] Profile selector: ${profileClicked || 'no clickable profile found'}`);
+      if (profileClicked) {
+        profileWasClicked = true;
+        await delay(3000); // allow post-profile navigation to begin before polling for scores
+      }
+    } else {
+      logTS(`[DirecTV] Profile already selected (page: ${url}) — skipping profile step`);
+    }
+  } catch (e) {
+    logTS(`[DirecTV] Profile selector error: ${e.message}`);
+  }
+
+  // ── Sports scores screen ──────────────────────────────────────────────────────
+  // The scores overlay appears on the page that loads after profile selection.
+  // Only poll when a profile was just clicked — if no profile was clicked this session,
+  // the overlay won't appear (it's tied to the initial profile-selection flow).
+  if (!profileWasClicked) {
+    logTS('[DirecTV] No profile clicked — skipping sports scores check');
+    return;
+  }
+  try {
+    let scoresFound = false;
+    const scoresDeadline = Date.now() + 12000;
+    while (Date.now() < scoresDeadline) {
+      const found = await page.evaluate(() => {
+        const all = Array.from(document.querySelectorAll('button, [role="button"], a'));
+        return all.some(el => /hide.{0,6}score/i.test(el.textContent));
+      }).catch(() => false);
+      if (found) { scoresFound = true; break; }
+      await delay(400);
+    }
+
+    if (scoresFound) {
+      logTS('[DirecTV] Sports scores overlay detected — clicking Hide Scores');
+      const clicked = await page.evaluate(() => {
+        const all = Array.from(document.querySelectorAll('button, [role="button"], a'));
+        const btn = all.find(el => /hide.{0,6}score/i.test(el.textContent));
+        if (btn) { btn.click(); return btn.textContent.trim().slice(0, 40); }
+        return null;
+      });
+      logTS(`[DirecTV] Sports scores: ${clicked ? `clicked "${clicked}"` : 'button not found after poll'}`);
+      await delay(1000);
+    } else {
+      logTS('[DirecTV] Sports scores overlay not detected — skipping');
+    }
+  } catch (e) {
+    logTS(`[DirecTV] Sports scores error: ${e.message}`);
+  }
+}
+
+async function loginDirectv(page, username, password) {
+  try {
+    // Navigate to the DirecTV Stream home page. If not logged in the SPA may redirect
+    // to auth.directv.com or show an inline sign-in overlay.
+    await page.goto('https://stream.directv.com/guide', { waitUntil: 'domcontentloaded', timeout: 25000 });
+
+    // Poll for up to 12 s for either:
+    //   (a) a URL redirect away from stream.directv.com (auth redirect), OR
+    //   (b) the email/username input to appear in the DOM (inline login overlay)
+    // Either signal means "not logged in — proceed with login form."
+    let loginFormVisible = false;
+    const pollDeadline = Date.now() + 12000;
+    while (Date.now() < pollDeadline) {
+      const currentUrl = page.url();
+      // Signal (a): redirected away from stream.directv.com
+      if (!currentUrl.includes('stream.directv.com')) {
+        loginFormVisible = true;
+        logTS(`[DirecTV] Auth redirect detected: ${currentUrl}`);
+        break;
+      }
+      // Signal (b): login form appeared inline on stream.directv.com
+      const hasLoginInput = await page.$(USERNAME_SELECTOR).catch(() => null);
+      if (hasLoginInput) {
+        loginFormVisible = true;
+        logTS(`[DirecTV] Inline login form detected on ${currentUrl}`);
+        break;
+      }
+      await delay(500);
+    }
+
+    logTS(`[DirecTV] Post-navigation URL: ${page.url()} | loginFormVisible=${loginFormVisible}`);
+
+    if (!loginFormVisible) {
+      // No login signals after 12 s — already logged in.
+      await handleDirectvPostLogin(page);
+      return { success: true };
+    }
+
+    // Login form is present — either via redirect or inline overlay.
+    logTS(`[DirecTV] Login page: ${page.url()}`);
+
+    // ── Step 1: Username/email page ────────────────────────────────────────────
+    // DirecTV's known email selector; fall back to the generic USERNAME_SELECTOR.
+    const emailSel = 'input[name="emailAddress"]';
+    await page.waitForSelector(`${emailSel}, ${USERNAME_SELECTOR}`, { timeout: 15000 });
+    const emailInput = await page.$(emailSel) ? emailSel : USERNAME_SELECTOR;
+    await page.click(emailInput, { clickCount: 3 });
+    await page.type(emailInput, username, { delay: 50 });
+    await delay(300);
+    logTS(`[DirecTV] Typed username into ${emailInput}`);
+
+    // Click the Continue/Next button on the username page.
+    // DirecTV's auth platform may use a non-submit button; find by text content first.
+    await delay(500);
+    const continueClicked = await page.evaluate(() => {
+      const byAttr = document.querySelector('button[data-ui="continue"], button[data-testid*="continue" i], button[data-testid*="next" i]');
+      if (byAttr) { byAttr.click(); return byAttr.getAttribute('data-ui') || byAttr.getAttribute('data-testid') || 'attr-match'; }
+      const byText = Array.from(document.querySelectorAll('button, [role="button"]'))
+        .find(el => /^(continue|next|sign[\s-]?in)$/i.test(el.textContent.trim()));
+      if (byText) { byText.click(); return `text:${byText.textContent.trim()}`; }
+      const byType = document.querySelector('button[type="submit"], input[type="submit"]');
+      if (byType) { byType.click(); return 'type-submit'; }
+      return null;
+    });
+    if (!continueClicked) throw new Error('DirecTV: could not find Continue button on username page');
+    logTS(`[DirecTV] Clicked Continue (${continueClicked}) after username`);
+
+    // ── Step 2: Password page ──────────────────────────────────────────────────
+    // Wait for the password field — it appears after a page navigation or DOM swap.
+    await page.waitForSelector(PASSWORD_SELECTOR, { timeout: 15000 });
+    await delay(300);
+    logTS('[DirecTV] Password field visible');
+    await page.click(PASSWORD_SELECTOR, { clickCount: 3 });
+    await page.type(PASSWORD_SELECTOR, password, { delay: 50 });
+    await delay(300);
+
+    // Submit the password step — same text-content approach as the username step.
+    await delay(500);
+    const submitClicked = await page.evaluate(() => {
+      const byAttr = document.querySelector('button[data-ui="continue"], button[data-testid*="continue" i], button[data-testid*="sign-in" i], button[data-testid*="signin" i]');
+      if (byAttr) { byAttr.click(); return byAttr.getAttribute('data-ui') || byAttr.getAttribute('data-testid') || 'attr-match'; }
+      const byText = Array.from(document.querySelectorAll('button, [role="button"]'))
+        .find(el => /^(continue|sign[\s-]?in|log[\s-]?in|submit)$/i.test(el.textContent.trim()));
+      if (byText) { byText.click(); return `text:${byText.textContent.trim()}`; }
+      const byType = document.querySelector('button[type="submit"], input[type="submit"]');
+      if (byType) { byType.click(); return 'type-submit'; }
+      return null;
+    });
+    if (!submitClicked) throw new Error('DirecTV: could not find Submit button on password page');
+    logTS(`[DirecTV] Clicked Submit (${submitClicked}) after password`);
+
+    // Wait for the SPA to navigate away from the auth domain on success.
+    await Promise.race([
+      page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20000 }),
+      delay(12000)
+    ]);
+    await delay(2000);
+
+    const url = page.url();
+    logTS(`[DirecTV] Post-submit URL: ${url}`);
+    if (!url.includes('stream.directv.com')) {
+      const errorMsg = await page.evaluate(() => {
+        const el = document.querySelector('[role="alert"], [class*="error" i], [class*="alert" i]');
+        return el ? el.textContent.trim() : null;
+      });
+      return { success: false, message: errorMsg || 'Login failed — check credentials' };
+    }
+
+    await handleDirectvPostLogin(page);
     return { success: true };
   } catch (e) {
     return { success: false, message: e.message };
@@ -1960,6 +2225,9 @@ async function performLogin(page, siteConfig, credentials) {
     if (siteConfig.id === 'sling') {
       return await loginSling(page, username, password);
     }
+    if (siteConfig.id === 'directv') {
+      return await loginDirectv(page, username, password);
+    }
     if (siteConfig.id === 'peacock') {
       return await loginPeacock(page, username, password);
     }
@@ -2133,6 +2401,12 @@ async function loginEncoders({
       const isLoggedIn = await checkLogin(page, siteConfig);
 
       if (isLoggedIn) {
+        // For DirecTV, checkLogin may leave the page at /user-profiles or with a scores
+        // overlay pending. handleDirectvPostLogin is a near-instant no-op when neither
+        // interstitial is present, so it's safe to call on every "already logged in" result.
+        if (siteConfig.id === 'directv') {
+          await handleDirectvPostLogin(page);
+        }
         statusCallback({ type: 'already_logged_in', encoderIndex, encoderUrl });
         successCount++;
         continue;
@@ -2180,4 +2454,4 @@ async function loginEncoders({
   statusCallback({ type: 'complete', success: successCount, failed: failCount });
 }
 
-module.exports = { LOGIN_SITES, loginEncoders, loginSling };
+module.exports = { LOGIN_SITES, loginEncoders, loginSling, loginDirectv };
