@@ -5518,7 +5518,55 @@ async function fullScreenVideoNatGeo(page) {
   logTS("finished NatGeo fullscreen setup");
 }
 
-async function fullScreenVideoDiscovery(page) {
+async function selectDiscoveryClosedCaptions(page, ccOption) {
+  try {
+    // Open the Audio and Subtitles menu
+    const opened = await page.evaluate(() => {
+      const btn = Array.from(document.querySelectorAll('button[aria-haspopup="menu"]'))
+        .find(b => b.querySelector('svg[aria-label="Audio and Subtitles"]'));
+      if (btn) { btn.click(); return true; }
+      return false;
+    });
+    if (!opened) {
+      logTS('Discovery CC: Audio and Subtitles button not found');
+      return false;
+    }
+    await delay(400);
+
+    // Click the matching menu item — "Off" or contains "English"
+    const clicked = await page.evaluate((cc) => {
+      const items = document.querySelectorAll('button.MenuItem-hwIqtb');
+      const target = cc === 'Off' ? 'Off' : 'English';
+      for (const item of items) {
+        const text = item.textContent?.trim() || '';
+        if (text === target || (target === 'English' && text.toLowerCase().includes('english'))) {
+          item.click();
+          return text;
+        }
+      }
+      return null;
+    }, ccOption);
+
+    if (clicked) {
+      logTS(`Discovery CC: selected "${clicked}"`);
+      await delay(300);
+      // Close the menu by re-clicking the Audio and Subtitles button
+      await page.evaluate(() => {
+        const btn = Array.from(document.querySelectorAll('button[aria-haspopup="menu"]'))
+          .find(b => b.querySelector('svg[aria-label="Audio and Subtitles"]'));
+        if (btn) btn.click();
+      });
+      return true;
+    }
+    logTS(`Discovery CC: option "${ccOption}" not found in menu`);
+    return false;
+  } catch (err) {
+    logTS(`Discovery CC error: ${err.message}`);
+    return false;
+  }
+}
+
+async function fullScreenVideoDiscovery(page, closedCaptions = '') {
   logTS("URL contains Discovery, setting up fullscreen");
 
   // Wait for video element to have enough data to play (readyState >= 3)
@@ -5622,6 +5670,22 @@ async function fullScreenVideoDiscovery(page) {
   });
 
   logTS(`Discovery fullscreen status: ${fullscreenResult}`);
+
+  if (closedCaptions) {
+    const discoveryCcValue = closedCaptions;
+    const firstAttempt = await selectDiscoveryClosedCaptions(page, discoveryCcValue);
+    if (!firstAttempt) {
+      (async () => {
+        for (let attempt = 2; attempt <= 6; attempt++) {
+          await delay(30000);
+          logTS(`Discovery CC: retry attempt ${attempt}/6 for "${discoveryCcValue}"`);
+          const success = await selectDiscoveryClosedCaptions(page, discoveryCcValue);
+          if (success) return;
+        }
+      })().catch(err => logTS(`Discovery CC background error: ${err.message}`));
+    }
+  }
+
   logTS("finished Discovery fullscreen setup");
 }
 
@@ -9198,7 +9262,7 @@ async function handleSiteSpecificFullscreen(targetUrl, page, encoderConfig = nul
       await fullScreenVideoAETV(page);
     } else if (targetUrl.includes("go.discovery.com")) {
       logTS("Handling Discovery video");
-      await fullScreenVideoDiscovery(page);
+      await fullScreenVideoDiscovery(page, closedCaptions);
     } else if (targetUrl.includes("cbs.com")) {
       logTS("Handling CBS video");
       await fullScreenVideoCBS(page);

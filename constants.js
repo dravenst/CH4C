@@ -2301,8 +2301,9 @@ const INSTANT_PAGE_HTML = `
                     document.getElementById('recording_summary').value    = result.summary         || '';
                     // Show original duration and buffer amount
                     const durationHint = document.getElementById('duration_hint');
-                    if (result.originalDurationMinutes) {
-                        durationHint.textContent = result.originalDurationMinutes + ' mins + buffer';
+                    if (result.originalDurationMinutes && result.durationMinutes) {
+                        const buffer = result.durationMinutes - result.originalDurationMinutes;
+                        durationHint.textContent = result.originalDurationMinutes + ' mins + ' + buffer + ' buffer';
                     } else {
                         durationHint.textContent = '';
                     }

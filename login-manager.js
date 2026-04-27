@@ -389,6 +389,7 @@ const LOGIN_SITES = [
     providerPageTriggers2: ['button.taui-viewallbutton'],
     searchSelector: 'input.taui-mvpdsearch',
     resultSelector: 'div.taui-searchpane ul.taui-mvpdsbyname li, .taui-mvpdsbyname li',
+    redirectWindowOpen: true,
   },
   {
     id: 'tnt',
@@ -403,6 +404,7 @@ const LOGIN_SITES = [
     providerPageTriggers2: ['button.taui-viewallbutton'],
     searchSelector: 'input.taui-mvpdsearch',
     resultSelector: 'div.taui-searchpane ul.taui-mvpdsbyname li, .taui-mvpdsbyname li',
+    redirectWindowOpen: true,
   },
   {
     id: 'usa',
@@ -461,6 +463,27 @@ const CONTINUE_SELECTOR = [
 
 const PASSWORD_SELECTOR = 'input[type="password"]';
 
+async function dismissWBDTermsBanner(page, logPrefix) {
+  try {
+    await page.waitForSelector('[aria-labelledby="wbd-ltp-title"] a', { timeout: 3000, visible: true });
+    const agreeEl = await page.evaluateHandle(() => {
+      return Array.from(document.querySelectorAll('[aria-labelledby="wbd-ltp-title"] a'))
+        .find(a => a.textContent.trim().toLowerCase() === 'agree') || null;
+    });
+    const el = agreeEl.asElement();
+    if (el) {
+      logTS(`${logPrefix}: dismissing WBD legal terms banner`);
+      const box = await el.boundingBox();
+      if (box) {
+        await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+      } else {
+        await el.evaluate(e => e.click());
+      }
+      await delay(500);
+    }
+  } catch (_) {}
+}
+
 // ─── Login status check ───────────────────────────────────────────────────────
 
 async function checkLogin(page, siteConfig) {
@@ -479,6 +502,8 @@ async function checkLogin(page, siteConfig) {
         await delay(400);
       } catch (_) {}
     }
+
+    await dismissWBDTermsBanner(page, `checkLogin(${siteConfig.id})`);
 
     const waitMs = siteConfig.checkLoginWaitMs ?? 3000;
 
@@ -1102,6 +1127,39 @@ async function loginTve(page, siteConfig, tveProviderName, tveProviderUsername, 
     await page.goto(siteConfig.providerPageUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
     await delay(2000);
 
+    await dismissWBDTermsBanner(page, `TVE(${siteConfig.id})`);
+
+    // Intercept window.open() on TAUI-based sites (TBS, TNT) — the TAUI provider picker
+    // calls window.open('about:blank') then sets popup.location.href = providerUrl on the
+    // returned object. We return a fake window whose location setter redirects the main tab,
+    // keeping the SAML chain in the current tab so the post-click polling loop can track it.
+    if (siteConfig.redirectWindowOpen) {
+      try {
+        await page.evaluate(() => {
+          window.open = (url) => {
+            if (url && url !== 'about:blank' && url !== '') {
+              window.location.href = url;
+              return null;
+            }
+            // Return a fake window object — TAUI will set location.href on it next
+            const locObj = {
+              get href() { return 'about:blank'; },
+              set href(val) { if (val && val !== 'about:blank' && val !== '') window.location.href = val; },
+            };
+            return {
+              get location() { return locObj; },
+              set location(val) {
+                const href = typeof val === 'string' ? val : val && val.href;
+                if (href && href !== 'about:blank' && href !== '') window.location.href = href;
+              },
+              focus: () => {}, close: () => {}, closed: false, opener: window,
+            };
+          };
+        });
+        logTS(`TVE: window.open redirect injected for ${siteConfig.id}`);
+      } catch (_) {}
+    }
+
     // Remove the one-shot localStorage clear script so subsequent navigations
     // (e.g. checkUrl) don't re-clear the auth token AccessEnabler just wrote.
     if (localStorageClearScriptId) {
@@ -1376,6 +1434,11 @@ async function loginTve(page, siteConfig, tveProviderName, tveProviderUsername, 
       }
 
       await page.waitForSelector(siteConfig.searchSelector, { timeout: 15000, visible: true });
+
+      // Scroll back to top — prior scrollIntoView calls on trigger buttons may have
+      // shifted the page, pushing the provider search modal out of the visible area.
+      await page.evaluate(() => window.scrollTo(0, 0));
+      await delay(300);
 
       // Simulate human: briefly explore the page before focusing the search box
       const vp = page.viewport() || { width: 1280, height: 720 };
