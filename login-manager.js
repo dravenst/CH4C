@@ -279,10 +279,10 @@ const LOGIN_SITES = [
     name: 'HBO Max',
     type: 'direct',
     // Navigate to hbomax.com; logged in when the Sign In link is absent from the header.
-    // <a id="header-secondary-cta" href="https://auth.hbomax.com/login?flow=login">Sign In</a>
+    // <a href="https://auth.hbomax.com/login?flow=login">Sign In</a> (no id in current markup)
     // The link is only rendered when the user is not authenticated.
     checkUrl: 'https://www.hbomax.com/',
-    loggedOutIndicator: 'a#header-secondary-cta',
+    loggedOutIndicator: 'a[href*="auth.hbomax.com/login"]',
     // HBO Max SPA takes a few seconds to settle auth state after page load
     checkLoginWaitMs: 5000,
   },
@@ -835,7 +835,7 @@ async function loginHboMax(page, username, password) {
     // Check DOM presence of the Sign In link — it's absent when logged in.
     // Do NOT use boundingBox(): on narrow screens the link collapses into a hamburger
     // menu (display:none) but stays in the DOM — DOM presence alone is the signal.
-    const signInLink = await page.$('a#header-secondary-cta');
+    const signInLink = await page.$('a[href*="auth.hbomax.com/login"]');
     if (!signInLink) return { success: true }; // link absent = already logged in
 
     // Navigate directly to the auth URL from the link's href.
@@ -934,7 +934,7 @@ async function loginHboMax(page, username, password) {
 
     // Verify: Sign In link absent from DOM = logged in.
     // DOM presence only (not boundingBox) — hamburger menu hides it on narrow screens.
-    const stillSignedOut = await page.$('a#header-secondary-cta').catch(() => null);
+    const stillSignedOut = await page.$('a[href*="auth.hbomax.com/login"]').catch(() => null);
     if (stillSignedOut) {
       return { success: false, message: 'Login failed — check credentials' };
     }
