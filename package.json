@@ -43,7 +43,7 @@
   },
   "pkg": {
     "assets": [
-      "node_modules/@novnc/novnc/**/*"
+      "vendor/novnc/**/*"
     ]
   },
   "scripts": {
