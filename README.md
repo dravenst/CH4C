@@ -191,6 +191,7 @@ For services not listed in the Login Manager, use [Remote Access](#remote-access
 Use the [M3U Manager](#m3u-manager) (`http://<CH4C_IP>:2442/m3u-manager`) to build your channel lineup:
 
 - **Refresh Sling TV** to automatically sync channels from the Sling TV guide
+- **Refresh DirecTV Stream** to automatically sync the full DirecTV Stream channel lineup (~500+ channels)
 - **Add Custom Channel** for any streaming service URL (see [Sample Channel URLs](#sample-custom-channel-urls) below)
 
 After adding channels, use the **M3U Refresh** section on the M3U Manager page to trigger Channels DVR to reload the playlist — select your M3U source from the dropdown and click **Refresh M3U**.
@@ -235,7 +236,7 @@ Navigate to `http://<CH4C_IP>:<CH4C_PORT>/settings` to configure:
 ### M3U Manager
 
 Navigate to `http://<CH4C_IP>:<CH4C_PORT>/m3u-manager` to:
-- Synchronize the channel guide from Sling TV (Favorites only recommended)
+- Synchronize the channel guide from Sling TV (Favorites only recommended) or DirecTV Stream (~500+ channels auto-discovered)
 - Add popular network channels from the Networks tab
 - Create custom channels for any streaming service with deep links
 - Search for station IDs by callsign or channel name
@@ -243,7 +244,7 @@ Navigate to `http://<CH4C_IP>:<CH4C_PORT>/m3u-manager` to:
 
 ![M3U Manager Main](./assets/m3umanagermain.jpg)
 
-**Refresh Sling TV to automatically sync channels from the Sling TV guide:**
+**Refresh Sling TV or DirecTV Stream to automatically sync channels from the service guide:**
 
 ![Refresh Sling Service](./assets/refreshslingservice.jpg)
 
