@@ -8960,12 +8960,6 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
       }
 
       if (result && result.url) {
-        // Add buffer: 2 extra minutes per 10 minutes of content
-        if (result.durationMinutes) {
-          const originalDuration = result.durationMinutes;
-          result.durationMinutes += Math.floor(result.durationMinutes / 10) * 2;
-          result.originalDurationMinutes = originalDuration;
-        }
         return res.json({ success: true, ...result });
       } else {
         return res.status(404).json({ success: false, error: 'No results found for your search' });
