@@ -608,7 +608,8 @@ const PAUSE_MONITOR_INTERVAL = config.PAUSE_MONITOR_INTERVAL
 const BROWSER_HEALTH_INTERVAL = config.BROWSER_HEALTH_INTERVAL
 
 // path to create recording jobs on Channels
-const CHANNELS_POST_URL = CHANNELS_URL ? `${CHANNELS_URL}:${CHANNELS_PORT}/dvr/jobs/new` : null
+const _cdvrBase = CHANNELS_URL ? CHANNELS_URL.replace(/\/+$/, '').replace(/:\d+$/, '') : null;
+const CHANNELS_POST_URL = _cdvrBase ? `${_cdvrBase}:${CHANNELS_PORT}/dvr/jobs/new` : null
 
 const START_PAGE_HTML = `
 <!DOCTYPE html>
@@ -4034,6 +4035,7 @@ const M3U_MANAGER_PAGE_HTML = `
         <div class="service-tabs">
             <button class="tab active" data-service="all" onclick="switchTab('all')">All Channels</button>
             <button class="tab" data-service="sling" onclick="switchTab('sling')">Sling TV</button>
+            <button class="tab" data-service="directv" onclick="switchTab('directv')">DirecTV Stream</button>
             <button class="tab" data-service="networks" onclick="switchTab('networks')">Networks</button>
             <button class="tab" data-service="custom" onclick="switchTab('custom')">Custom Entries</button>
         </div>
@@ -4046,10 +4048,21 @@ const M3U_MANAGER_PAGE_HTML = `
                 <button class="btn btn-primary" onclick="refreshService('sling')">🔄 Refresh Sling TV</button>
                 <span style="font-size: 11px; color: #718096;">Last Updated: <span id="lastUpdate">Never</span></span>
             </div>
-            <label style="display: flex; align-items: center; gap: 8px; margin-left: auto; cursor: pointer; user-select: none;">
-                <input type="checkbox" id="showEnabledOnly" onchange="toggleEnabledFilter()" style="width: auto; cursor: pointer;">
-                <span style="font-size: 14px; color: #2d3748; font-weight: 600;">Show Enabled Only</span>
-            </label>
+            <div style="display: flex; flex-direction: column; gap: 4px; align-items: flex-start; min-height: 54px;">
+                <button class="btn btn-primary" onclick="refreshService('directv')">🔄 Refresh DirecTV</button>
+                <span style="font-size: 11px; color: #718096;">Last Updated: <span id="direcTVLastUpdate">Never</span></span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 16px; margin-left: auto;">
+                <div id="bulkToggleBar" style="display: none; align-items: center; gap: 8px;">
+                    <span id="bulkToggleLabel" style="font-size: 12px; color: #718096; white-space: nowrap;"></span>
+                    <button class="btn btn-primary btn-small" onclick="bulkSetEnabled(true)">✅ Enable All</button>
+                    <button class="btn btn-secondary btn-small" onclick="bulkSetEnabled(false)">🚫 Disable All</button>
+                </div>
+                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none;">
+                    <input type="checkbox" id="showEnabledOnly" onchange="toggleEnabledFilter()" style="width: auto; cursor: pointer;">
+                    <span style="font-size: 14px; color: #2d3748; font-weight: 600;">Show Enabled Only</span>
+                </label>
+            </div>
         </div>
 
         <div id="networksPanel" class="networks-panel">
@@ -4362,6 +4375,7 @@ const M3U_MANAGER_PAGE_HTML = `
             { group: 'NBC', name: 'NBC News Now', url: 'https://nbc.com/live?brand=nbc-news&callsign=nbcnews', category: 'News', callSign: 'NBCNEWS' },
             { group: 'NBC', name: 'Bravo', url: 'https://www.nbc.com/live?brand=bravo&callsign=bravo_east', category: 'Drama', callSign: 'BRAVOHD' },
             { group: 'ABC', name: 'FreeForm', url: 'https://abc.com/watch-live/885c669e-fa9a-4039-b42e-6c85c90cc86d', category: 'Drama', callSign: 'FREE' },
+            { group: 'ABC', name: 'Freeform (Pacific)', url: 'https://abc.com/watch-live/3507c750-e86a-4c0f-8ff4-dd23c4859009', category: 'Drama', stationId: '63324' },
             { group: 'USA Network', name: 'USA Network', url: 'https://www.usanetwork.com/live#USA_East', category: 'Drama', callSign: 'USAHD', stationId: '58452' },
             { group: 'USA Network', name: 'SYFY', url: 'https://www.usanetwork.com/live#Syfy_East', category: 'Drama', callSign: 'SYFYHD', stationId: '58623' },
             { group: 'USA Network', name: 'Oxygen', url: 'https://www.usanetwork.com/live#Oxygen_East', category: 'Crime', callSign: 'OXYGN' },
@@ -4402,6 +4416,11 @@ const M3U_MANAGER_PAGE_HTML = `
 
                 document.getElementById('lastUpdate').textContent = status.lastUpdate
                     ? new Date(status.lastUpdate).toLocaleString()
+                    : 'Never';
+
+                const direcTVRefresh = status.services && status.services.directv && status.services.directv.lastRefresh;
+                document.getElementById('direcTVLastUpdate').textContent = direcTVRefresh
+                    ? new Date(direcTVRefresh).toLocaleString()
                     : 'Never';
 
                 const select = document.getElementById('channelsDvrSource');
@@ -4542,6 +4561,17 @@ const M3U_MANAGER_PAGE_HTML = `
             const networksPanel = document.getElementById('networksPanel');
             const tableContainer = document.getElementById('channelsTableContainer');
             const actionsBar = document.querySelector('.actions-bar');
+            const bulkBar = document.getElementById('bulkToggleBar');
+            const bulkLabel = document.getElementById('bulkToggleLabel');
+
+            // Show bulk enable/disable bar only for services with large channel lists
+            const bulkServices = { directv: 'DirecTV', sling: 'Sling TV' };
+            if (bulkServices[service]) {
+                bulkBar.style.display = 'flex';
+                bulkLabel.textContent = bulkServices[service] + ' channels';
+            } else {
+                bulkBar.style.display = 'none';
+            }
 
             if (service === 'networks') {
                 networksPanel.classList.add('active');
@@ -4665,6 +4695,30 @@ const M3U_MANAGER_PAGE_HTML = `
 
         let pendingRefreshService = null;
 
+        async function bulkSetEnabled(enabled) {
+            if (!currentService || currentService === 'all' || currentService === 'networks') {
+                alert('Please select a specific service tab first.');
+                return;
+            }
+            const label = document.getElementById('bulkToggleLabel').textContent;
+            const action = enabled ? 'enable' : 'disable';
+            if (!confirm(\`Are you sure you want to \${action} all \${label}?\`)) return;
+
+            try {
+                const response = await fetch(\`/m3u-manager/channels/\${currentService}/bulk-enable\`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled })
+                });
+                const result = await response.json();
+                await loadChannels();
+                await loadStatus();
+                console.log(\`Bulk \${action}: \${result.count} channels updated\`);
+            } catch (error) {
+                alert('Error updating channels: ' + error.message);
+            }
+        }
+
         function refreshService(serviceName) {
             pendingRefreshService = serviceName;
             document.getElementById('refreshServiceName').textContent = serviceName;
@@ -4677,6 +4731,11 @@ const M3U_MANAGER_PAGE_HTML = `
                 document.getElementById('refreshFavoritesOnly').checked = true;
             } else {
                 slingOptionsGroup.style.display = 'none';
+            }
+
+            // Update modal title for DirecTV
+            if (serviceName === 'directv') {
+                document.getElementById('refreshServiceName').textContent = 'DirecTV Stream';
             }
 
             document.getElementById('refreshServiceModal').style.display = 'block';
@@ -4900,6 +4959,13 @@ const M3U_MANAGER_PAGE_HTML = `
                 // Allow editing name for custom channels
                 nameField.removeAttribute('readonly');
                 nameField.style.background = '';
+            } else if (channel.service === 'directv') {
+                // DirecTV channels: name and channel identifier are auto-discovered — both read-only.
+                streamUrlGroup.style.display = 'none';
+                ccGroup.style.display = 'none';
+
+                nameField.setAttribute('readonly', 'readonly');
+                nameField.style.background = '#f7fafc';
             } else if (channel.service === 'sling') {
                 // Show CC for Sling channels; populate from stored cc field
                 streamUrlGroup.style.display = 'none';

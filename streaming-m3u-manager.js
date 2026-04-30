@@ -19,6 +19,7 @@ class StreamingM3UManager {
 
     this.isRefreshing = false;
     this.lastUpdate = null;
+    this.serviceLastRefresh = {};
     this.channelsDvrSourceName = '';
 
     // Known callsign aliases - map common channel names to their Channels DVR callsigns
@@ -157,6 +158,7 @@ class StreamingM3UManager {
       const parsed = JSON.parse(data);
       this.channels = parsed.channels || [];
       this.lastUpdate = parsed.lastUpdate;
+      this.serviceLastRefresh = parsed.serviceLastRefresh || {};
       this.channelsDvrSourceName = parsed.channelsDvrSourceName || '';
       console.log(`[M3U Manager] Loaded ${this.channels.length} channels from disk`);
     } catch (error) {
@@ -172,6 +174,7 @@ class StreamingM3UManager {
     const data = {
       channels: this.channels,
       lastUpdate: this.lastUpdate,
+      serviceLastRefresh: this.serviceLastRefresh,
       channelsDvrSourceName: this.channelsDvrSourceName
     };
     await fs.writeFile(this.dataFile, JSON.stringify(data, null, 2));
@@ -179,11 +182,26 @@ class StreamingM3UManager {
   }
 
   /**
+   * Build a Channels DVR API URL from the configured base URL and port.
+   * Strips trailing slashes and any port already embedded in the base URL,
+   * then re-appends the configured port so the path is always correct.
+   */
+  buildCdvrUrl(path) {
+    if (!Constants.CHANNELS_URL || !Constants.CHANNELS_PORT) return null;
+    const base = Constants.CHANNELS_URL.replace(/\/+$/, '').replace(/:\d+$/, '');
+    return `${base}:${Constants.CHANNELS_PORT}${path}`;
+  }
+
+  /**
    * Fetch Channels DVR guide stations for enrichment
    */
   async fetchChannelsStations() {
+    const url = this.buildCdvrUrl('/dvr/guide/stations');
+    if (!url) {
+      console.warn('[M3U Manager] Channels DVR URL not configured — skipping station enrichment');
+      return null;
+    }
     try {
-      const url = `${Constants.CHANNELS_URL}:${Constants.CHANNELS_PORT}/dvr/guide/stations`;
       const response = await fetch(url);
       const stations = await response.json();
       this.channelsStations = stations;
@@ -597,8 +615,12 @@ class StreamingM3UManager {
       return [];
     }
 
+    const url = this.buildCdvrUrl(`/tms/stations/${encodeURIComponent(query)}`);
+    if (!url) {
+      console.warn('[M3U Manager] Channels DVR URL not configured — skipping TMS search');
+      return [];
+    }
     try {
-      const url = `${Constants.CHANNELS_URL}:${Constants.CHANNELS_PORT}/tms/stations/${encodeURIComponent(query)}`;
       console.log(`[M3U Manager] Searching TMS stations: ${url}`);
 
       const response = await fetch(url);
@@ -686,6 +708,7 @@ class StreamingM3UManager {
   autoAssignChannelNumber(service) {
     const baseNumbers = {
       'sling': 2400,
+      'directv': 2450,
       'peacock': 2500,
       'nbc': 2600,
       'custom': 2410
@@ -770,6 +793,24 @@ class StreamingM3UManager {
             // Preserve manual fields: channelNumber (if manually set), stationId, duration, category, logo
             updatedAt: new Date().toISOString()
           };
+          // Always sync service-managed identifier fields (e.g. DirecTV channel name stored in cc).
+          // Only apply when the new channel actually has a value to avoid overwriting user-set Sling CC tracks.
+          if (newChannel.cc !== undefined) {
+            channelToAdd.cc = newChannel.cc;
+          }
+          // Sync service-provided stationId (e.g. DirecTV externalListingId = TMS station ID).
+          // Only update if the new data has a value and the user hasn't manually overridden it.
+          if (newChannel.stationId && !existing.manualStationId) {
+            channelToAdd.stationId = newChannel.stationId;
+          }
+          // Sync service-provided channel number if not manually set by the user.
+          if (newChannel.channelNumber && !existing.manualChannelNumber) {
+            channelToAdd.channelNumber = newChannel.channelNumber;
+          }
+          // Sync service-provided logo if present and user hasn't customised it.
+          if (newChannel.logo && !existing.manualLogo) {
+            channelToAdd.logo = newChannel.logo;
+          }
         } else {
           // New channel: enrich it
           channelToAdd = await this.enrichChannel(newChannel);
@@ -794,6 +835,7 @@ class StreamingM3UManager {
     }
 
     this.lastUpdate = new Date().toISOString();
+    this.serviceLastRefresh[serviceName] = this.lastUpdate;
     await this.saveToDisk();
 
     return {
@@ -935,19 +977,24 @@ class StreamingM3UManager {
   }
 
   /**
-   * Generate M3U playlist
+   * Generate M3U playlist.
+   * @param {string} replaceHost - Hostname to embed in stream URLs
+   * @param {string[]|null} services - If provided, only include channels from these services
+   * @param {string} sort - 'number' (default) or 'name'
    */
-  generateM3U(replaceHost = 'CH4C_IP_ADDRESS') {
+  generateM3U(replaceHost = 'CH4C_IP_ADDRESS', services = null, sort = 'number') {
     const ch4cPort = Constants.CH4C_PORT;
+    const serviceFilter = Array.isArray(services) && services.length > 0 ? new Set(services) : null;
 
-    // Get all enabled channels, sorted by channel number
+    const sorters = {
+      number: (a, b) => (parseFloat(a.channelNumber) || 9999) - (parseFloat(b.channelNumber) || 9999),
+      name:   (a, b) => (a.name || '').localeCompare(b.name || ''),
+    };
+    const sortFn = sorters[sort] || sorters.number;
+
     const enabledChannels = this.channels
-      .filter(ch => ch.enabled !== false)
-      .sort((a, b) => {
-        const aNum = parseFloat(a.channelNumber) || 9999;
-        const bNum = parseFloat(b.channelNumber) || 9999;
-        return aNum - bNum;
-      });
+      .filter(ch => ch.enabled !== false && (!serviceFilter || serviceFilter.has(ch.service)))
+      .sort(sortFn);
 
     let m3u = `#EXTM3U\n\n`;
 
@@ -992,10 +1039,14 @@ class StreamingM3UManager {
 
       m3u += `#EXTINF:-1 tvg-id="${tvgId}" tvg-name="${tvgName}" tvg-logo="${tvgLogo}"${guideAttribute} channel-number="${channelNum}"${genreAttribute}${tagsAttribute},${displayName}\n`;
 
-      // Encoder channels (custom service) use direct URLs (cc= already baked in),
-      // streaming services use proxy wrapper with optional &cc= for Sling
+      // Encoder channels (custom service) use direct URLs (cc= already baked in).
+      // DirecTV uses &channel= for the channel name (no per-channel URL exists).
+      // Sling uses &cc= for optional closed-caption track selection.
       if (ch.service === 'custom') {
         m3u += `${ch.streamUrl}\n\n`;
+      } else if (ch.service === 'directv') {
+        const channelParam = ch.cc || ch.name;
+        m3u += `http://${replaceHost}:${ch4cPort}/stream?url=${encodeURIComponent(ch.streamUrl)}&channel=${encodeURIComponent(channelParam)}\n\n`;
       } else {
         const ccParam = (ch.service === 'sling' && ch.cc) ? `&cc=${encodeURIComponent(ch.cc)}` : '';
         m3u += `http://${replaceHost}:${ch4cPort}/stream?url=${encodeURIComponent(ch.streamUrl)}${ccParam}\n\n`;
@@ -1008,13 +1059,27 @@ class StreamingM3UManager {
   /**
    * Get manager status
    */
+  async setAllEnabled(serviceName, enabled) {
+    let count = 0;
+    for (const ch of this.channels) {
+      if (ch.service === serviceName) {
+        ch.enabled = enabled;
+        count++;
+      }
+    }
+    this.lastUpdate = new Date().toISOString();
+    await this.saveToDisk();
+    return { service: serviceName, enabled, count };
+  }
+
   getStatus() {
     const serviceStats = {};
     for (const serviceName of Object.keys(this.services)) {
       const serviceChannels = this.getChannelsByService(serviceName);
       serviceStats[serviceName] = {
         total: serviceChannels.length,
-        enabled: serviceChannels.filter(ch => ch.enabled !== false).length
+        enabled: serviceChannels.filter(ch => ch.enabled !== false).length,
+        lastRefresh: this.serviceLastRefresh[serviceName] || null
       };
     }
 

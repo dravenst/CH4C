@@ -38,6 +38,7 @@ const { AudioDeviceManager, DisplayManager } = require('./audio-device-manager')
 const { CONFIG_METADATA, ENCODER_FIELDS, validateAllSettings, validateEncoder, saveConfig, loadConfig, getDefaults } = require('./config-manager');
 const { LOGIN_SITES, loginEncoders, loginSling } = require('./login-manager');
 const credentialsStore = require('./credentials-store');
+const { DIRECTV_GUIDE_URL, TUNE_TIMEOUT: DIRECTV_TUNE_TIMEOUT } = require('./services/directv-service');
 
 let chromeDataDir, chromePath;
 let browsers = new Map(); // key: encoderUrl, value: {browser, page}
@@ -2708,6 +2709,308 @@ async function navigateSlingWithModalHandling(page, url, maxAttempts = 10, expec
   }
 
   return false;
+}
+
+/**
+ * DirecTV Stream: navigates to the guide, waits for the Redux store channel lineup via
+ * page.evaluate polling, then dispatches playConsumable in-page. Falls back to logo-click
+ * DOM strategy if any step fails.
+ *
+ * Uses page.evaluate / page.waitForFunction instead of evaluateOnNewDocument + console
+ * bridging because rebrowser-puppeteer-core suppresses Runtime.enable (the CDP command
+ * Puppeteer uses to forward console events), making page.on('console') unreliable.
+ * Runtime.evaluate (used by page.evaluate/waitForFunction) is unaffected.
+ *
+ * @param {Page} page - Puppeteer page object.
+ * @param {string} channelName - Channel display name (e.g., "CNN", "ESPN").
+ * @param {string} encoderUrl - Encoder URL for logging.
+ * @returns {Promise<boolean>} - True if the channel is playing.
+ */
+async function navigateDirectvStream(page, channelName, encoderUrl = 'unknown') {
+  logTS(`[${encoderUrl}] DirecTV: tuning to "${channelName}"`);
+
+  // Shared BFS function string — inlined into both waitForFunction and evaluate because each
+  // Puppeteer call serializes its own closure and cannot share Node.js function references.
+  const FIND_STORE_AND_CHANNELS = () => {
+    const PREFIXES = ['__reactContainer$', '__reactFiber$', '__reactInternalInstance$'];
+    const findKey = (el) => Object.keys(el).find(k => PREFIXES.some(p => k.startsWith(p)));
+    let mountEl = document.getElementById('app-root');
+    let rk = mountEl ? findKey(mountEl) : null;
+    if (!rk) {
+      mountEl = null;
+      for (const c of Array.from(document.body.children)) {
+        const k = findKey(c); if (k) { mountEl = c; rk = k; break; }
+      }
+    }
+    if (!mountEl || !rk) return false;
+    const val = mountEl[rk];
+    const root = val && typeof val.current === 'object' ? val.current : val;
+    if (!root) return false;
+    const q = [root]; let v = 0;
+    while (q.length && v < 5000) {
+      const n = q.shift(); if (!n) break; v++;
+      const p = n.pendingProps;
+      const candidate = p && (p.store || (p.value && p.value.store));
+      if (candidate && typeof candidate.getState === 'function') {
+        const st = candidate.getState();
+        const cs = st.channels;
+        if (cs) {
+          const arr = cs.channelArrays || cs.lineup || cs.channels || cs.allChannels;
+          if (Array.isArray(arr) && arr.length > 0) return true;
+        }
+        return false;
+      }
+      if (n.child) q.push(n.child);
+      if (n.sibling) q.push(n.sibling);
+    }
+    return false;
+  };
+
+  try {
+    await page.goto(DIRECTV_GUIDE_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    logTS(`[${encoderUrl}] DirecTV: page loading, waiting for Redux channel data...`);
+
+    // Poll for Redux store + channel lineup (channels populate async after store init).
+    // Handle execution-context-destroyed in case the SPA does a full reload to /player.
+    let channelsReady = false;
+    try {
+      await page.waitForFunction(FIND_STORE_AND_CHANNELS, { timeout: 15000, polling: 400 });
+      channelsReady = true;
+    } catch (waitErr) {
+      if (waitErr.message && waitErr.message.includes('context')) {
+        try {
+          await page.waitForFunction(FIND_STORE_AND_CHANNELS, { timeout: 8000, polling: 400 });
+          channelsReady = true;
+        } catch { /* fall through to logo click */ }
+      }
+    }
+
+    if (!channelsReady) {
+      logTS(`[${encoderUrl}] DirecTV: channel data not available — trying logo click fallback`);
+      return await directvLogoClickFallback(page, channelName, encoderUrl);
+    }
+
+    logTS(`[${encoderUrl}] DirecTV: Redux ready, dispatching playConsumable for "${channelName}"`);
+
+    const result = await page.evaluate((targetName) => {
+      const PREFIXES = ['__reactContainer$', '__reactFiber$', '__reactInternalInstance$'];
+      const findKey = (el) => Object.keys(el).find(k => PREFIXES.some(p => k.startsWith(p)));
+
+      let mountEl = document.getElementById('app-root');
+      let rk = mountEl ? findKey(mountEl) : null;
+      if (!rk) {
+        mountEl = null;
+        for (const c of Array.from(document.body.children)) {
+          const k = findKey(c); if (k) { mountEl = c; rk = k; break; }
+        }
+      }
+      if (!mountEl || !rk) return { ok: false, reason: 'no-react-mount' };
+
+      const val = mountEl[rk];
+      const root = val && typeof val.current === 'object' ? val.current : val;
+      if (!root) return { ok: false, reason: 'no-fiber-root' };
+
+      const q = [root]; let store = null; let v = 0;
+      while (q.length && v < 5000) {
+        const n = q.shift(); if (!n) break; v++;
+        const p = n.pendingProps;
+        const candidate = p && (p.store || (p.value && p.value.store));
+        if (candidate && typeof candidate.dispatch === 'function' && typeof candidate.getState === 'function') {
+          store = candidate; break;
+        }
+        if (n.child) q.push(n.child);
+        if (n.sibling) q.push(n.sibling);
+      }
+      if (!store) return { ok: false, reason: 'no-redux-store', visited: v };
+
+      const state = store.getState();
+      let channels = [];
+      if (state.channels) {
+        const cs = state.channels;
+        channels = cs.channelArrays || cs.lineup || cs.channels || cs.allChannels || [];
+      }
+      if (!channels.length && state.channelLineup) {
+        const li = state.channelLineup;
+        channels = li.channelArrays || li.channels || [];
+      }
+      if (!channels.length) return { ok: false, reason: 'no-channels' };
+
+      const norm = (s) => s.trim().replace(/\s+/g, ' ').toLowerCase();
+      const t = norm(targetName);
+      const target = channels.find(ch => norm(ch.channelName || '') === t) ||
+        channels.filter(ch => norm(ch.channelName || '').startsWith(t + '-'))
+          .sort((a, b) => norm(a.channelName || '').localeCompare(norm(b.channelName || '')))[0];
+
+      if (!target) return { ok: false, reason: 'channel-not-found', count: channels.length };
+
+      // Capture __webpack_require__ via synthetic chunk push
+      const chunkArr = window.webpackChunk_directv_web;
+      if (!chunkArr) return { ok: false, reason: 'no-webpack-chunk' };
+      const h = { r: null };
+      try { chunkArr.push([['__ch4c__'], {}, (fn) => { h.r = fn; }]); } catch (e) {
+        return { ok: false, reason: 'chunk-error', error: String(e) };
+      }
+      const wreq = h.r;
+      if (!wreq) return { ok: false, reason: 'no-wreq' };
+
+      // Find playConsumable module by scanning webpack factory sources
+      let playFn = null;
+      for (const id of Object.keys(wreq.m)) {
+        if (typeof wreq.m[id] !== 'function') continue;
+        let src; try { src = wreq.m[id].toString(); } catch { continue; }
+        if (!src.includes('playConsumable') || !src.includes('playAsset')) continue;
+        try {
+          const ex = wreq(id);
+          playFn = typeof ex.playConsumable === 'function' ? ex.playConsumable
+            : Object.values(ex).find(fn => typeof fn === 'function' && fn.toString().includes('playConsumable')) || null;
+        } catch (e) { return { ok: false, reason: 'module-load-error', error: String(e) }; }
+        break;
+      }
+      if (!playFn) return { ok: false, reason: 'no-playConsumable' };
+
+      // playConsumable is self-dispatching: it takes dispatch/getState as part of its payload.
+      // Do NOT wrap in store.dispatch() — it is not a Redux action creator.
+      try {
+        playFn({
+          consumable: {
+            augmentation: { constraints: { isPlayable: true } },
+            badges: ['OnNow'],
+            consumableType: 'LINEAR',
+            duration: 3600,
+            programChannelId: target.resourceId || ''
+          },
+          consumableResourceId: target.resourceId || '',
+          dispatch: store.dispatch,
+          getState: store.getState,
+          makeFullscreen: true,
+          restart: false
+        });
+        return { ok: true, channelName: target.channelName };
+      } catch (e) {
+        return { ok: false, reason: 'dispatch-error', error: String(e) };
+      }
+    }, channelName);
+
+    logTS(`[${encoderUrl}] DirecTV tune result: ${JSON.stringify(result)}`);
+
+    if (result.ok) {
+      logTS(`[${encoderUrl}] DirecTV: successfully tuned to "${result.channelName}"`);
+      return true;
+    }
+
+    logTS(`[${encoderUrl}] DirecTV: ${result.reason} — trying logo click fallback`);
+    return await directvLogoClickFallback(page, channelName, encoderUrl);
+  } catch (error) {
+    logTS(`[${encoderUrl}] DirecTV navigation error: ${error.message}`);
+    return false;
+  }
+}
+
+/**
+ * DirecTV fallback: scroll the guide grid to find the channel logo and click it,
+ * then click the mini-guide play button. Used when the webpack interceptor fails.
+ * @param {Page} page - Puppeteer page object.
+ * @param {string} channelName - Channel display name.
+ * @param {string} encoderUrl - Encoder URL for logging.
+ * @returns {Promise<boolean>} - True if playback started.
+ */
+async function directvLogoClickFallback(page, channelName, encoderUrl = 'unknown') {
+  logTS(`[${encoderUrl}] DirecTV logo-click fallback for "${channelName}"`);
+
+  try {
+    await page.waitForSelector('[aria-label^="view "]', { timeout: 15000, visible: true });
+  } catch {
+    logTS(`[${encoderUrl}] DirecTV: guide grid did not load (no channel logos found)`);
+    return false;
+  }
+
+  const found = await page.evaluate((name) => {
+    const lowerName = name.toLowerCase();
+    const logos = Array.from(document.querySelectorAll('[aria-label^="view "]')).map(el => ({
+      el,
+      label: (el.getAttribute('aria-label') || '').slice('view '.length).toLowerCase()
+    }));
+
+    let logo = logos.find(l => l.label === lowerName)?.el || null;
+
+    if (!logo) {
+      const prefixMatches = logos
+        .filter(l => l.label.startsWith(lowerName + '-'))
+        .sort((a, b) => a.label.localeCompare(b.label));
+      if (prefixMatches.length > 0) logo = prefixMatches[0].el;
+    }
+
+    if (!logo) return false;
+
+    logo.setAttribute('data-ch4c-target', '1');
+    logo.scrollIntoView({ behavior: 'instant', block: 'center' });
+    return true;
+  }, channelName);
+
+  if (!found) {
+    logTS(`[${encoderUrl}] DirecTV: channel "${channelName}" not found in guide grid`);
+    return false;
+  }
+
+  await delay(300);
+
+  const clicked = await page.evaluate(() => {
+    const logo = document.querySelector('[data-ch4c-target="1"]');
+    if (!logo) return false;
+    logo.removeAttribute('data-ch4c-target');
+    logo.click();
+    return true;
+  });
+
+  if (!clicked) return false;
+
+  try {
+    await page.waitForSelector('[aria-label^="on now,"]', { timeout: 15000, visible: true });
+  } catch {
+    logTS(`[${encoderUrl}] DirecTV: mini-guide play button did not appear for "${channelName}"`);
+    return false;
+  }
+
+  await delay(200);
+
+  const playClicked = await page.evaluate(() => {
+    const onNow = document.querySelector('[aria-label^="on now,"]');
+    if (!onNow) return false;
+    const pressable = onNow.querySelector('[tabindex="0"]') || onNow;
+    pressable.click();
+    return true;
+  });
+
+  if (playClicked) logTS(`[${encoderUrl}] DirecTV: logo-click fallback succeeded for "${channelName}"`);
+  return playClicked;
+}
+
+/**
+ * DirecTV Stream fullscreen/audio setup. The webpack interceptor passes makeFullscreen:true
+ * to the player, so fullscreen is already handled. This function unmutes the video and
+ * optionally selects a closed-caption track.
+ */
+async function fullScreenVideoDirectv(page, encoderConfig = null, closedCaptions = '') {
+  logTS('URL contains stream.directv.com, setting up audio');
+
+  const videoHandle = await page.waitForSelector('video', { timeout: 15000 }).catch(() => null);
+
+  if (videoHandle) {
+    await page.evaluate((video) => {
+      video.muted = false;
+      video.volume = 1.0;
+    }, videoHandle);
+    logTS('DirecTV: video unmuted');
+  }
+
+  if (encoderConfig && encoderConfig.audioDevice) {
+    const { frameHandle, videoHandle: vh } = await findVideoElement(page);
+    if (frameHandle && vh) {
+      await setupAudioMonitor(frameHandle, vh, encoderConfig.audioDevice, encoderConfig.url);
+    }
+  }
+
+  await hideCursor(page);
 }
 
 /**
@@ -7387,6 +7690,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
   // Initialize M3U Manager
   const { StreamingM3UManager } = require('./streaming-m3u-manager');
   const { SlingService } = require('./services/sling-service');
+  const { DirecTVService } = require('./services/directv-service');
   const { CustomService } = require('./services/custom-service');
 
   const m3uManager = new StreamingM3UManager();
@@ -7395,8 +7699,9 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
   await m3uManager.initialize();
 
   m3uManager.registerService('sling', new SlingService(browsers, Constants));
+  m3uManager.registerService('directv', new DirecTVService(browsers, Constants));
   m3uManager.registerService('custom', new CustomService());
-  logTS('[M3U Manager] Initialized with Sling and Custom services');
+  logTS('[M3U Manager] Initialized with Sling, DirecTV, and Custom services');
 
   // Auto-create custom channels for each encoder
   await createEncoderChannels(m3uManager);
@@ -7611,6 +7916,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
 
     targetUrl = getFullUrl(req);
     const closedCaptions = req.query.cc || '';
+    const channelName = req.query.channel || '';
     logTS(`[DEBUG] /stream endpoint - req.query.url: ${req.query.url}`);
     logTS(`[DEBUG] /stream endpoint - getFullUrl result: ${targetUrl}`);
 
@@ -7707,8 +8013,23 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
         const maxNavRetries = 2;
         let navSuccess = false;
 
+        // Special handling for DirecTV — webpack interceptor must be installed before navigation
+        if (targetUrl.includes("stream.directv.com") && channelName) {
+          logTS(`[${availableEncoder.url}] DirecTV URL detected - using interceptor navigation`);
+
+          try {
+            const dtvSuccess = await navigateDirectvStream(page, channelName, availableEncoder.url);
+            if (!dtvSuccess) {
+              throw new Error(`Failed to tune DirecTV channel: ${channelName}`);
+            }
+            logTS(`[${availableEncoder.url}] DirecTV: successfully tuned to "${channelName}"`);
+            navSuccess = true;
+          } catch (dtvError) {
+            logTS(`[${availableEncoder.url}] DirecTV navigation error: ${dtvError.message}`);
+            throw dtvError;
+          }
         // Special handling for Sling - use human-like navigation to avoid rate limiting
-        if (targetUrl.includes("watch.sling.com")) {
+        } else if (targetUrl.includes("watch.sling.com")) {
           logTS(`[${availableEncoder.url}] Sling URL detected - using navigation flow`);
 
           try {
@@ -8272,13 +8593,25 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
     }
   });
 
+  // PATCH /m3u-manager/channels/:service/bulk-enable - Enable or disable all channels for a service
+  app.patch('/m3u-manager/channels/:service/bulk-enable', async (req, res) => {
+    try {
+      const enabled = req.body.enabled !== false; // default true
+      const result = await m3uManager.setAllEnabled(req.params.service, enabled);
+      res.json(result);
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // GET /m3u-manager/channels-dvr-lineups - Fetch X-M3U source names from Channels DVR
   app.get('/m3u-manager/channels-dvr-lineups', async (req, res) => {
     try {
       if (!Constants.CHANNELS_URL || !Constants.CHANNELS_PORT) {
         return res.status(400).json({ success: false, error: 'Channels DVR URL is not configured' });
       }
-      const lineupsUrl = `${Constants.CHANNELS_URL}:${Constants.CHANNELS_PORT}/dvr/lineups`;
+      const cdvrBase = Constants.CHANNELS_URL.replace(/\/+$/, '').replace(/:\d+$/, '');
+      const lineupsUrl = `${cdvrBase}:${Constants.CHANNELS_PORT}/dvr/lineups`;
       const response = await fetch(lineupsUrl);
       if (!response.ok) {
         return res.status(502).json({ success: false, error: `Channels DVR returned ${response.status}` });
@@ -8309,7 +8642,8 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
       m3uManager.channelsDvrSourceName = sourceName.trim();
       await m3uManager.saveToDisk();
 
-      const refreshUrl = `${Constants.CHANNELS_URL}:${Constants.CHANNELS_PORT}/providers/m3u/sources/${encodeURIComponent(sourceName.trim())}/refresh`;
+      const cdvrBase = Constants.CHANNELS_URL.replace(/\/+$/, '').replace(/:\d+$/, '');
+      const refreshUrl = `${cdvrBase}:${Constants.CHANNELS_PORT}/providers/m3u/sources/${encodeURIComponent(sourceName.trim())}/refresh`;
       logTS(`[M3U Manager] Triggering Channels DVR M3U refresh: ${refreshUrl}`);
 
       const response = await fetch(refreshUrl, { method: 'POST' });
@@ -8328,9 +8662,15 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
   });
 
   // GET /m3u-manager/playlist.m3u - Generate M3U playlist
+  // Optional ?services=directv,sling,custom  filters to only those service(s)
+  // Optional ?sort=number (default) | name
   app.get('/m3u-manager/playlist.m3u', (req, res) => {
-    const host = req.get('host').split(':')[0]; // Get hostname without port
-    const m3u = m3uManager.generateM3U(host);
+    const host = req.get('host').split(':')[0];
+    const services = req.query.services
+      ? req.query.services.split(',').map(s => s.trim()).filter(Boolean)
+      : null;
+    const sort = req.query.sort || 'number';
+    const m3u = m3uManager.generateM3U(host, services, sort);
     res.type('audio/x-mpegurl');
     res.setHeader('Content-Disposition', 'attachment; filename="streaming_channels.m3u"');
     res.send(m3u);
@@ -9208,7 +9548,10 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
 // Helper function to consolidate site-specific fullscreen logic
 async function handleSiteSpecificFullscreen(targetUrl, page, encoderConfig = null, closedCaptions = '') {
   try {
-    if (targetUrl.includes("youtube.com") || targetUrl.includes("youtu.be")) {
+    if (targetUrl.includes("stream.directv.com")) {
+      logTS("Handling DirecTV Stream video");
+      await fullScreenVideoDirectv(page, encoderConfig, closedCaptions);
+    } else if (targetUrl.includes("youtube.com") || targetUrl.includes("youtu.be")) {
       logTS("Handling YouTube video");
       await fullScreenVideoYouTube(page, closedCaptions);
     } else if (targetUrl.includes("amazon.com")) {
