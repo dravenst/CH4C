@@ -8664,13 +8664,20 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
   // GET /m3u-manager/playlist.m3u - Generate M3U playlist
   // Optional ?services=directv,sling,custom  filters to only those service(s)
   // Optional ?sort=number (default) | name
+  // Optional ?genres=news,sports  filters to only those category/genres (case-insensitive)
+  // Optional ?genres=-spanish,-religious  prefix with - to exclude those genres (include everything else)
+  // Optional ?fast=false  excludes DirecTV channels in the 4000 channel number range
   app.get('/m3u-manager/playlist.m3u', (req, res) => {
     const host = req.get('host').split(':')[0];
     const services = req.query.services
       ? req.query.services.split(',').map(s => s.trim()).filter(Boolean)
       : null;
     const sort = req.query.sort || 'number';
-    const m3u = m3uManager.generateM3U(host, services, sort);
+    const genres = req.query.genres
+      ? req.query.genres.split(',').map(s => s.trim()).filter(Boolean)
+      : null;
+    const fast = req.query.fast === 'false' ? false : true;
+    const m3u = m3uManager.generateM3U(host, services, sort, genres, fast);
     res.type('audio/x-mpegurl');
     res.setHeader('Content-Disposition', 'attachment; filename="streaming_channels.m3u"');
     res.send(m3u);

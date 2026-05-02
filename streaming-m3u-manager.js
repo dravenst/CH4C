@@ -790,7 +790,9 @@ class StreamingM3UManager {
             ...existing,
             // Update stream URL in case it changed
             streamUrl: newChannel.streamUrl,
-            // Preserve manual fields: channelNumber (if manually set), stationId, duration, category, logo
+            // Sync service-derived category so rule changes take effect on refresh
+            category: newChannel.category,
+            // Preserve manual fields: channelNumber (if manually set), stationId, duration, logo
             updatedAt: new Date().toISOString()
           };
           // Always sync service-managed identifier fields (e.g. DirecTV channel name stored in cc).
@@ -982,9 +984,17 @@ class StreamingM3UManager {
    * @param {string[]|null} services - If provided, only include channels from these services
    * @param {string} sort - 'number' (default) or 'name'
    */
-  generateM3U(replaceHost = 'CH4C_IP_ADDRESS', services = null, sort = 'number') {
+  generateM3U(replaceHost = 'CH4C_IP_ADDRESS', services = null, sort = 'number', genres = null, fast = true) {
     const ch4cPort = Constants.CH4C_PORT;
     const serviceFilter = Array.isArray(services) && services.length > 0 ? new Set(services) : null;
+    let genreIncludes = null;
+    let genreExcludes = null;
+    if (Array.isArray(genres) && genres.length > 0) {
+      const excl = genres.filter(g => g.startsWith('-')).map(g => g.slice(1).toLowerCase());
+      const incl = genres.filter(g => !g.startsWith('-')).map(g => g.toLowerCase());
+      if (incl.length > 0) genreIncludes = new Set(incl);
+      if (excl.length > 0) genreExcludes = new Set(excl);
+    }
 
     const sorters = {
       number: (a, b) => (parseFloat(a.channelNumber) || 9999) - (parseFloat(b.channelNumber) || 9999),
@@ -993,7 +1003,11 @@ class StreamingM3UManager {
     const sortFn = sorters[sort] || sorters.number;
 
     const enabledChannels = this.channels
-      .filter(ch => ch.enabled !== false && (!serviceFilter || serviceFilter.has(ch.service)))
+      .filter(ch => ch.enabled !== false
+        && (!serviceFilter || serviceFilter.has(ch.service))
+        && (!genreIncludes || genreIncludes.has((ch.category || '').toLowerCase()))
+        && (!genreExcludes || !genreExcludes.has((ch.category || '').toLowerCase()))
+        && !(fast === false && ch.service === 'directv' && parseFloat(ch.channelNumber) >= 4000 && parseFloat(ch.channelNumber) < 5000))
       .sort(sortFn);
 
     let m3u = `#EXTM3U\n\n`;
@@ -1007,13 +1021,26 @@ class StreamingM3UManager {
       // Channels DVR supported genres: Movies, Sports, Drama, News, Children
       // "Other" means no genre - tvc-guide-genres tag will be omitted
       const genreMap = {
-        'Entertainment': 'Drama',
+        'Entertainment': 'Entertainment',
         'Kids': 'Children',
         'Movies': 'Movies',
         'Sports': 'Sports',
         'News': 'News',
         'Drama': 'Drama',
         'Children': 'Children',
+        'Shopping': 'Shopping',
+        'Food': 'Cooking',
+        'Home': 'Home',
+        'Music': 'Music',
+        'Comedy': 'Comedy',
+        'Educational': 'Educational',
+        'Local': 'Local',
+        'Spanish': 'Spanish',
+        'Lifestyle': 'Lifestyle',
+        'Religious': 'Religious',
+        'Reality': 'Reality',
+        'True Crime': 'True Crime',
+        'Game Show': 'Game Show',
         'Other': null  // null means don't write genre tag
       };
       const genre = genreMap[ch.category] !== undefined ? genreMap[ch.category] : 'Other';
