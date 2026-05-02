@@ -3867,7 +3867,20 @@ const M3U_MANAGER_PAGE_HTML = `
         .badge-drama { background: #c6f6d5; color: #22543d; }
         .badge-children { background: #faf089; color: #744210; }
         .badge-kids { background: #faf089; color: #744210; }
-        .badge-entertainment { background: #c6f6d5; color: #22543d; }
+        .badge-entertainment { background: #c7d2fe; color: #312e81; }
+        .badge-shopping { background: #fbb6ce; color: #702459; }
+        .badge-food { background: #fed7aa; color: #7c2d12; }
+        .badge-home { background: #e8d5b7; color: #744210; }
+        .badge-music { background: #d6bcfa; color: #44337a; }
+        .badge-comedy { background: #fda4af; color: #9f1239; }
+        .badge-educational { background: #a7f3d0; color: #065f46; }
+        .badge-local { background: #fde68a; color: #78350f; }
+        .badge-spanish { background: #cffafe; color: #155e75; }
+        .badge-lifestyle { background: #fce7f3; color: #9d174d; }
+        .badge-religious { background: #fef9c3; color: #713f12; }
+        .badge-reality { background: #fdba74; color: #92400e; }
+        .badge-true-crime { background: #94a3b8; color: #1e293b; }
+        .badge-game-show { background: #f472b6; color: #831843; }
         .badge-other { background: #e2e8f0; color: #2d3748; }
 
         .toggle-switch {
@@ -4032,6 +4045,17 @@ const M3U_MANAGER_PAGE_HTML = `
             <button class="btn btn-primary btn-small" onclick="refreshChannelsDvr()">🔄 Refresh M3U</button>
         </div>
 
+        <details style="margin-bottom: 16px; font-size: 13px; color: #718096;">
+            <summary style="cursor: pointer; user-select: none;">URL filter options</summary>
+            <div style="display: grid; grid-template-columns: auto 1fr; gap: 3px 16px; margin-top: 6px; padding-left: 4px;">
+                <code style="color: #4a5568;">?services=</code><span>directv, sling, custom &mdash; comma-separated, filters to those services</span>
+                <code style="color: #4a5568;">?sort=</code><span>number (default) or name</span>
+                <code style="color: #4a5568;">?genres=</code><span>news,sports &mdash; include only; prefix with <code>-</code> to exclude (e.g. <code>-spanish,-religious</code>)</span>
+                <code style="color: #4a5568;">?fast=false</code><span>exclude DirecTV FAST channels (4000&ndash;4999)</span>
+                <code style="color: #4a5568;">Example:</code><span><code>?services=directv&amp;genres=-spanish,-religious&amp;fast=false</code></span>
+            </div>
+        </details>
+
         <div class="service-tabs">
             <button class="tab active" data-service="all" onclick="switchTab('all')">All Channels</button>
             <button class="tab" data-service="sling" onclick="switchTab('sling')">Sling TV</button>
@@ -4125,11 +4149,24 @@ const M3U_MANAGER_PAGE_HTML = `
                     <div class="form-group" style="margin: 0;">
                         <label>Genre</label>
                         <select id="customCategory">
-                            <option value="Sports">Sports</option>
-                            <option value="News">News</option>
-                            <option value="Movies">Movies</option>
+                            <option value="Comedy">Comedy</option>
                             <option value="Drama">Drama</option>
-                            <option value="Children">Children</option>
+                            <option value="Educational">Educational</option>
+                            <option value="Entertainment">Entertainment</option>
+                            <option value="Food">Food</option>
+                            <option value="Game Show">Game Show</option>
+                            <option value="Kids">Kids</option>
+                            <option value="Lifestyle">Lifestyle</option>
+                            <option value="Local">Local</option>
+                            <option value="Movies">Movies</option>
+                            <option value="Music">Music</option>
+                            <option value="News">News</option>
+                            <option value="Reality">Reality</option>
+                            <option value="Religious">Religious</option>
+                            <option value="Shopping">Shopping</option>
+                            <option value="Spanish">Spanish</option>
+                            <option value="Sports">Sports</option>
+                            <option value="True Crime">True Crime</option>
                             <option value="Other">Other</option>
                         </select>
                     </div>
@@ -4205,11 +4242,24 @@ const M3U_MANAGER_PAGE_HTML = `
                     <div class="form-group" style="margin: 0;">
                         <label>Genre</label>
                         <select id="editCategory">
-                            <option value="Sports">Sports</option>
-                            <option value="News">News</option>
-                            <option value="Movies">Movies</option>
+                            <option value="Comedy">Comedy</option>
                             <option value="Drama">Drama</option>
-                            <option value="Children">Children</option>
+                            <option value="Educational">Educational</option>
+                            <option value="Entertainment">Entertainment</option>
+                            <option value="Food">Food</option>
+                            <option value="Game Show">Game Show</option>
+                            <option value="Kids">Kids</option>
+                            <option value="Lifestyle">Lifestyle</option>
+                            <option value="Local">Local</option>
+                            <option value="Movies">Movies</option>
+                            <option value="Music">Music</option>
+                            <option value="News">News</option>
+                            <option value="Reality">Reality</option>
+                            <option value="Religious">Religious</option>
+                            <option value="Shopping">Shopping</option>
+                            <option value="Spanish">Spanish</option>
+                            <option value="Sports">Sports</option>
+                            <option value="True Crime">True Crime</option>
                             <option value="Other">Other</option>
                         </select>
                     </div>
@@ -4389,6 +4439,7 @@ const M3U_MANAGER_PAGE_HTML = `
 
         // Load channels on page load
         document.addEventListener('DOMContentLoaded', () => {
+            applyStoredSort('all');
             loadChannels();
             loadStatus();
             updateCustomUrlPrefix();
@@ -4542,7 +4593,7 @@ const M3U_MANAGER_PAGE_HTML = `
                     <td>\${ch.logo ? \`<img src="\${ch.logo}" class="channel-logo" onerror="this.style.display='none'">\` : '-'}</td>
                     <td><strong>\${ch.name}</strong></td>
                     <td>\${ch.service}</td>
-                    <td><span class="badge badge-\${(ch.category || 'other').toLowerCase()}">\${ch.category || 'Other'}</span></td>
+                    <td><span class="badge badge-\${(ch.category || 'other').toLowerCase().split(' ').join('-')}">\${ch.category || 'Other'}</span></td>
                     <td>\${ch.stationId ? ch.stationId : (ch.duration ? \`\${ch.duration}min placeholder\` : '-')}</td>
                     <td>
                         <button class="btn btn-secondary btn-small" onclick="showEditModal('\${ch.id}')">✏️ Edit</button>
@@ -4582,6 +4633,7 @@ const M3U_MANAGER_PAGE_HTML = `
                 networksPanel.classList.remove('active');
                 tableContainer.style.display = '';
                 actionsBar.style.display = '';
+                applyStoredSort(service);
                 renderChannels();
             }
         }
@@ -4755,7 +4807,7 @@ const M3U_MANAGER_PAGE_HTML = `
             closeModal('refreshServiceModal');
 
             // Show loading modal
-            const serviceDisplayName = serviceName.charAt(0).toUpperCase() + serviceName.slice(1);
+            const serviceDisplayName = serviceName === 'directv' ? 'DirecTV' : serviceName.charAt(0).toUpperCase() + serviceName.slice(1);
             document.getElementById('loadingModalTitle').textContent = 'Refreshing ' + serviceDisplayName + '...';
             document.getElementById('loadingModalMessage').textContent = serviceName === 'sling'
                 ? 'Please wait while we scrape channel data from Sling TV guide. This may take a minute.'
@@ -4781,7 +4833,7 @@ const M3U_MANAGER_PAGE_HTML = `
                 document.getElementById('loadingCompleteContainer').style.display = 'block';
                 document.getElementById('loadingModalTitle').textContent = 'Refresh Complete!';
 
-                let message = 'Successfully refreshed ' + result.channelCount + ' channels from ' + serviceName;
+                let message = 'Successfully refreshed ' + result.channelCount + ' channels from ' + serviceDisplayName;
                 if (resetEdits) {
                     message += ' (all edits reset)';
                 } else {
@@ -4812,7 +4864,13 @@ const M3U_MANAGER_PAGE_HTML = `
         async function toggleChannel(id) {
             try {
                 await fetch(\`/m3u-manager/channels/\${id}/toggle\`, { method: 'PATCH' });
-                await loadChannels();
+                const ch = allChannels.find(c => c.id === id);
+                if (ch) ch.enabled = ch.enabled === false;
+                if (showEnabledOnly) {
+                    const scrollY = window.scrollY;
+                    renderChannels();
+                    requestAnimationFrame(() => window.scrollTo(0, scrollY));
+                }
                 await loadStatus();
             } catch (error) {
                 alert('Error toggling channel: ' + error.message);
@@ -4879,6 +4937,20 @@ const M3U_MANAGER_PAGE_HTML = `
             }
         }
 
+        function applyStoredSort(service) {
+            const stored = localStorage.getItem('m3u_sort_' + service);
+            currentSort = stored ? JSON.parse(stored) : { field: null, direction: 'asc' };
+            document.querySelectorAll('th.sortable').forEach(th => {
+                th.classList.remove('sort-asc', 'sort-desc');
+                if (currentSort.field) {
+                    const onclick = th.getAttribute('onclick') || '';
+                    if (onclick.includes(currentSort.field)) {
+                        th.classList.add(currentSort.direction === 'asc' ? 'sort-asc' : 'sort-desc');
+                    }
+                }
+            });
+        }
+
         function sortChannels(field) {
             // Toggle sort direction if clicking same field
             if (currentSort.field === field) {
@@ -4903,6 +4975,7 @@ const M3U_MANAGER_PAGE_HTML = `
             });
 
             renderChannels();
+            localStorage.setItem('m3u_sort_' + currentService, JSON.stringify(currentSort));
         }
 
         function showAddCustomModal() {

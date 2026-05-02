@@ -338,11 +338,24 @@ class DirecTVService extends BaseService {
 
   categorizeChannel(name) {
     const n = name.toLowerCase();
-    if (/nfl|nba|mlb|nhl|espn|fox sports|fs1|fs2|btn|golf|bein|acc|big ten|sec network|nascar|olympic/i.test(n)) return 'Sports';
-    if (/cnn|fox news|msnbc|cnbc|headline|bloomberg|al jazeera|pbs newshour/i.test(n)) return 'News';
-    if (/hbo|showtime|starz|mgm|amc|movie|cinema|paramount network/i.test(n)) return 'Movies';
-    if (/bravo|fx$|fxm|fxx|hallmark|lifetime|a&e|aetv|history|investigation/i.test(n)) return 'Drama';
-    if (/nick|disney|cartoon|boomerang|kids|family/i.test(n)) return 'Kids';
+    if (/nfl|nba|mlb|nhl|espn|fox sports|fs1|fs2|btn|golf|bein|acc |big ten|big 12|sec network|nascar|olympic|racer|tennis|altitude|sports|fanduel|tudn|draft.?kings|red bull|fuel tv|wrestling|combat|fight|dazn|ringside|poker|pickleball|billiard|stadium|racing|torque|speedvision|waypoint|wired.*fish|pursuit up|surfer|jim rome|tna|players/i.test(n)) return 'Sports';
+    if (/cnn(?! en)|msnbc|cnbc|bloomberg|al jazeera|hln|c-span|business|news|ms now|weather|e!|grio|the first|localish|finance|20\/20|today/i.test(n)) return 'News';
+    if (/hbo|showtime|starz|mgm|amc|movie|cinema|paramount network|tcm|ifc|reelz|shorts tv|documentary|tribeca|50 cent|sphere|horror by alter|western/i.test(n)) return 'Movies';
+    if (/fx$|fxm|fxx|hallmark|(?<!by )lifetime|investigation(?! discovery)|\bion\b|paramount tv|syfy|bbc america|metv(?! toons)|cozi|grit|start|sundance|tv land|freeform|bet|(?<!military )heroes|bounce|soaps|acorn|walking dead/i.test(n)) return 'Drama';
+    if (/nick|disney|cartoon|boomerang|kids|toon|baby|yu.?gi.?oh/i.test(n)) return 'Kids';
+    if (/(?<!repair )shop|qvc|jewelry|deal zone/i.test(n)) return 'Shopping';
+    if (/food|cooking|recipe|tastemade(?! home| travel)|test kitchen|gusto|jamie oliver|drool/i.test(n)) return 'Food';
+    if (/vh1|mtv|axs|cmt|fuse/i.test(n)) return 'Music';
+    if (/comedy|snl|funny|funniest|stooges|portlandia|fail.?army|anger management|are we there yet/i.test(n)) return 'Comedy';
+    if (/crime|crmz|court tv|dateline|cold case|investigation discovery/i.test(n)) return 'True Crime';
+    if (/history|geo|discover|tlc|animal|science|earthx|nature|cosmic|mythbuster|curiosity|magellan|military|declassified|earth touch|modern marvels|wonder/i.test(n)) return 'Educational';
+    if (/buzzr|gsn|make a deal|price is right|family feud|supermarket/i.test(n)) return 'Game Show';
+    if (/cw-|cbs-|pbs-|abc-|nbc-|mnt-|fox-/i.test(n)) return 'Local';
+    if (/univision|galavision|unimas|telemundo|tmo-|cnn en|novelas/i.test(n)) return 'Spanish';
+    if (/pop|vice|usa|up|great|el rey|fox soul|ebony|lionsgate|horror|unexplained|unxplained|insp|bravo(?! vault)|a&e|aetv|tru|tbs|tnt|family entertainment|\bdust\b|ghosts are real|mysterious worlds|infast/i.test(n)) return 'Entertainment';
+    if (/own|rfd|pursuit|cleo|hgtv|house|handyman|rvtv|meateater|beach day|sweet escapes|design network|powernation|how to|repair shop|tastemade home|travel|bob ross|pet collective/i.test(n)) return 'Lifestyle';
+    if (/scientology|daystar|osteen|pureflix|dove channel|dove tv/i.test(n)) return 'Religious';
+    if (/justice|tv one|we tv|nosey|got talent|housewives|duck dynasty|ice road|masked singer|lockup|reality|ax men|car chase|danger tv|got away with it|living with evil|love kills|million dollar listing|rig tv|say yes to the dress|dog whisperer|bravo vault|by lifetime/i.test(n)) return 'Reality';
     return 'Other';
   }
 }
