@@ -21,7 +21,7 @@ const os = require('os');
 const { exec } = require('child_process');
 const https = require('https');
 const selfsigned = require('selfsigned');
-const { logTS, getLogBuffer } = require('./logger');
+const { logTS, getLogBuffer, initLogger } = require('./logger');
 
 const {
   EncoderHealthMonitor,
@@ -2326,7 +2326,8 @@ async function checkForRunningChromeWithProfiles() {
 async function cleanStaleLocks(profileDir) {
   const lockFiles = ['Singleton', 'SingletonLock', 'SingletonCookie', 'SingletonSocket', 'lockfile'];
   let cleaned = false;
-  
+  let locked = false;
+
   for (const lockFile of lockFiles) {
     const lockPath = path.join(profileDir, lockFile);
     if (fs.existsSync(lockPath)) {
@@ -2335,12 +2336,14 @@ async function cleanStaleLocks(profileDir) {
         logTS(`Removed stale lock file: ${lockFile}`);
         cleaned = true;
       } catch (e) {
-        // Can't delete - might be in use
+        // Can't delete - file is held open by a running Chrome process
+        logTS(`Cannot remove lock file ${lockFile} - Chrome may still be running`);
+        locked = true;
       }
     }
   }
-  
-  return cleaned;
+
+  return { cleaned, locked };
 }
 
 /**
@@ -2385,10 +2388,21 @@ async function testChromeLaunch(profileDir, chromePath) {
       const isActuallyRunning = runningWithProfile.some(p => p.profileDir === profileDir);
       
       if (!isActuallyRunning) {
-        // No Chrome is actually using it, try to clean stale locks
+        // No Chrome process found via WMIC - try to clean stale locks to verify
         logTS(`No Chrome process found using ${profileDir}, cleaning stale locks...`);
-        const cleaned = await cleanStaleLocks(profileDir);
-        
+        const { cleaned, locked } = await cleanStaleLocks(profileDir);
+
+        if (locked) {
+          // Lock files exist but can't be deleted - a Chrome process is holding them open
+          // WMIC missed it (common on modern Windows where WMIC is deprecated)
+          logTS(`Lock files are held open by a running Chrome process (WMIC missed it)`);
+          return {
+            success: false,
+            reason: 'Chrome process is actively using this profile',
+            actuallyRunning: true
+          };
+        }
+
         if (cleaned) {
           // Try to launch again after cleaning
           try {
@@ -2404,8 +2418,8 @@ async function testChromeLaunch(profileDir, chromePath) {
             logTS(`Successfully launched after cleaning stale locks`);
             return { success: true };
           } catch (e2) {
-            return { 
-              success: false, 
+            return {
+              success: false,
               reason: 'Profile appears corrupted or locked',
               actuallyRunning: false
             };
@@ -7434,6 +7448,8 @@ async function main() {
     // Constants module exited early (help/error), so don't start the server
     return;
   }
+
+  initLogger(Constants.DATA_DIR);
 
   const app = express();
   app.use(express.json());
