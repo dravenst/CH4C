@@ -211,6 +211,7 @@ CH4C can also be configured via command-line parameters or a JSON configuration 
 Navigate to `http://<CH4C_IP>:<CH4C_PORT>/` to view:
 - Getting Started guide
 - Encoder health and active streams
+- Scheduled recordings (upcoming Record Later entries, with cancel option)
 - Display configuration visual with screen offsets
 - Available audio devices
 - How CH4C Works overview
@@ -276,6 +277,7 @@ http://<CH4C_IP>:2442/stream?url=https%3A%2F%2Fwww.espn.com%2Fwatch%2F...&cc=Eng
 Navigate to `http://<CH4C_IP>:<CH4C_PORT>/instant` to:
 - Instantly start recording any URL and it will automatically try to enable full screen video
 - Tune your encoder to a URL without recording (watch in Channels on the encoder's channel number)
+- **Record Later**: schedule a recording for a future date and time. Click **🕐 Record Later**, pick a date/time, and click **📅 Schedule Recording**. Scheduled recordings survive a CH4C restart and are listed on both the Instant Recording page and the home page. Cancel any scheduled recording from either page.
 - Add your own show metadata that will be visible in the Channels DVR Recordings
 - **Show Search**: automatically look up a specific episode or movie from a supported streaming service and pre-fill all recording metadata (title, episode, duration, artwork, and direct watch URL)
 - **Closed Captions**: select Default, English, or Off from the CC dropdown. Default leaves the service's caption state unchanged. English or Off will open the player's subtitle menu and apply the selection after playback starts. If the CC menu is unavailable at startup (e.g., during pre-roll ads), CH4C retries in the background for up to 3 minutes. Supported on Prime Video, Disney+, Peacock, Max (HBO Max), Sling TV, ESPN, Apple TV+, and YouTube.
