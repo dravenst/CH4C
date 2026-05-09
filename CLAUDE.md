@@ -12,7 +12,7 @@ Before implementing:
 
 **Minimum code that solves the problem. Nothing speculative.**
 
-- No features beyond what was asked.
+- No features beyond what was asked, but suggest obvious opportunities where similar updates might need to be made
 - No abstractions for single-use code.
 - No "flexibility" or "configurability" that wasn't requested.
 - No error handling for impossible scenarios.
@@ -56,6 +56,7 @@ Chrome HDMI for Channels (CH4C) is a Node.js application that captures web strea
 ## Development Standards
 - Use Node.js (no TypeScript - project uses vanilla JavaScript)
 - Focus on the Windows and Mac platforms, but may want to add Linux compatibility in the future.
+- Web Admin UI needs to support phone, tablet, desktop
 
 ## Build & Test Commands
 - **Build**: `npm run build` (creates Windows executable using pkg)

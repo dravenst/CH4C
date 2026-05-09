@@ -873,6 +873,11 @@ const START_PAGE_HTML = `
             </div>
         </div>
 
+        <div class="section" id="scheduled-recordings-home-section" style="display:none;">
+            <h2 class="section-title">📅 Scheduled Recordings</h2>
+            <div id="scheduled-recordings-home"></div>
+        </div>
+
         <div class="section">
             <h2 class="section-title">Login Manager</h2>
             <p style="color:#718096;font-size:13px;margin-bottom:16px;">
@@ -1199,6 +1204,50 @@ const START_PAGE_HTML = `
             }
         }
 
+        async function loadScheduledRecordingsHome() {
+            try {
+                const response = await fetch('/api/scheduled-recordings');
+                const data = await response.json();
+                const section = document.getElementById('scheduled-recordings-home-section');
+                const container = document.getElementById('scheduled-recordings-home');
+                if (!section || !container) return;
+
+                if (data.length === 0) {
+                    section.style.display = 'none';
+                    return;
+                }
+
+                section.style.display = 'block';
+                container.innerHTML = data.map(entry => {
+                    const scheduledDate = new Date(entry.scheduledTime).toLocaleString();
+                    return \`
+                        <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;background:#ebf8ff;border:1px solid #90cdf4;border-radius:8px;margin-bottom:8px;">
+                            <div style="flex:1;min-width:0;">
+                                <div style="font-weight:600;color:#2d3748;">\${entry.name}</div>
+                                <div style="font-size:12px;color:#718096;">\${scheduledDate}</div>
+                                <div style="font-size:11px;color:#a0aec0;">\${entry.duration} min</div>
+                            </div>
+                            <button onclick="cancelScheduledRecordingHome('\${entry.id}')" style="padding:8px 16px;background:#fc8181;color:white;border:none;border-radius:6px;font-size:13px;font-weight:600;margin-left:12px;flex-shrink:0;cursor:pointer;">Cancel</button>
+                        </div>
+                    \`;
+                }).join('');
+            } catch (e) {
+                console.error('Error loading scheduled recordings:', e);
+            }
+        }
+
+        async function cancelScheduledRecordingHome(id) {
+            if (!confirm('Cancel this scheduled recording?')) return;
+            try {
+                const res = await fetch('/api/scheduled-recordings/' + id, { method: 'DELETE' });
+                const data = await res.json();
+                if (!data.success) alert(data.error || 'Failed to cancel');
+                loadScheduledRecordingsHome();
+            } catch (e) {
+                alert('Error cancelling scheduled recording: ' + e.message);
+            }
+        }
+
         // Fetch and display audio devices
         async function loadAudioDevices() {
             try {
@@ -1329,12 +1378,14 @@ const START_PAGE_HTML = `
 
         // Load data on page load
         loadEncoderStatus();
+        loadScheduledRecordingsHome();
         loadAudioDevices();
         loadDisplays();
         updateM3UConfig();
 
         // Refresh status every 30 seconds
         setInterval(loadEncoderStatus, 30000);
+        setInterval(loadScheduledRecordingsHome, 15000);
 
         // Login Manager — populate site dropdown on load
         (async () => {
@@ -1746,6 +1797,28 @@ const INSTANT_PAGE_HTML = `
             background: #f7fafc;
             transform: translateY(-2px);
             box-shadow: 0 8px 16px rgba(102, 126, 234, 0.2);
+        }
+
+        #record_later_btn {
+            background: linear-gradient(135deg, #38b2ac 0%, #2c7a7b 100%);
+            color: white;
+            border-color: transparent;
+        }
+
+        #record_later_btn:hover {
+            background: linear-gradient(135deg, #38b2ac 0%, #2c7a7b 100%);
+            box-shadow: 0 8px 16px rgba(56, 178, 172, 0.4);
+        }
+
+        #tune_button {
+            background: linear-gradient(135deg, #4299e1 0%, #2b6cb0 100%);
+            color: white;
+            border-color: transparent;
+        }
+
+        #tune_button:hover {
+            background: linear-gradient(135deg, #4299e1 0%, #2b6cb0 100%);
+            box-shadow: 0 8px 16px rgba(66, 153, 225, 0.4);
         }
 
         .btn:active {
@@ -2180,19 +2253,35 @@ const INSTANT_PAGE_HTML = `
                 <button type="submit" name="button_record" value="Start Recording" class="btn btn-primary">
                     📹 Start Recording
                 </button>
+                <button type="button" id="record_later_btn" class="btn btn-secondary">
+                    🕐 Record Later
+                </button>
                 <button type="submit" name="button_tune" value="Tune" class="btn btn-secondary" id="tune_button">
                     📺 Tune to Channel
                 </button>
             </div>
 
+            <div id="record_later_row" style="display:none;" class="form-group">
+                <label>Start Time <span id="tz_label" style="font-weight:400;color:#718096;font-size:12px;"></span></label>
+                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                    <input type="datetime-local" id="record_later_time" name="record_later_time" style="flex:1;min-width:200px;" />
+                    <button type="submit" name="button_record_later" value="Record Later" class="btn btn-primary" id="schedule_btn">
+                        📅 Schedule Recording
+                    </button>
+                    <button type="button" id="cancel_later_btn" class="btn btn-secondary">Cancel</button>
+                </div>
+            </div>
+
             <div class="info-box">
                 <p>
                     <strong>📹 Start Recording:</strong> Creates a scheduled recording in Channels DVR and begins streaming the URL.<br>
+                    <strong>🕐 Record Later:</strong> Schedules a future recording. An encoder will be auto-selected when the scheduled time arrives.<br>
                     <strong>📺 Tune to Channel:</strong> Simply loads the URL on an available encoder without recording. The stream will be available on the encoder's channel number in Channels DVR. Optional: specify duration for auto-stop, or leave blank for indefinite streaming.
                 </p>
             </div>
         </form>
         <<active_streams>>
+        <<scheduled_recordings>>
     </div>
 
     <!-- Modal for confirmations -->
@@ -2214,6 +2303,10 @@ const INSTANT_PAGE_HTML = `
         const durationInput = document.getElementById('recording_duration');
         const encoderSelect = document.getElementById('selected_encoder');
         const tuneButton = document.getElementById('tune_button');
+        const recordLaterBtn = document.getElementById('record_later_btn');
+        const cancelLaterBtn = document.getElementById('cancel_later_btn');
+        const recordLaterRow = document.getElementById('record_later_row');
+        const recordLaterTimeInput = document.getElementById('record_later_time');
 
         // Update tune button text based on selected encoder
         function updateTuneButtonText() {
@@ -2239,6 +2332,39 @@ const INSTANT_PAGE_HTML = `
         // Update on page load and when selection changes
         updateTuneButtonText();
         encoderSelect.addEventListener('change', updateTuneButtonText);
+
+        function toLocalDateTimeString(date) {
+            const pad = n => String(n).padStart(2, '0');
+            return \`\${date.getFullYear()}-\${pad(date.getMonth()+1)}-\${pad(date.getDate())}T\${pad(date.getHours())}:\${pad(date.getMinutes())}\`;
+        }
+
+        // Record Later toggle
+        recordLaterBtn.addEventListener('click', function() {
+            const url = document.getElementById('recording_url').value.trim();
+            if (!url) {
+                showModal('error', '⚠️', 'URL Required',
+                    'Please enter a URL before scheduling a recording.', '',
+                    [{ text: 'OK', action: () => { hideModal(); document.getElementById('recording_url').focus(); } }]);
+                return;
+            }
+            const dur = parseInt(durationInput.value);
+            if (!durationInput.value || isNaN(dur) || dur <= 0) {
+                showModal('error', '⚠️', 'Duration Required',
+                    'Please enter a duration before scheduling a recording.', '',
+                    [{ text: 'OK', action: () => { hideModal(); durationInput.focus(); } }]);
+                return;
+            }
+            recordLaterTimeInput.min = toLocalDateTimeString(new Date());
+            recordLaterTimeInput.value = toLocalDateTimeString(new Date());
+            const tz = Intl.DateTimeFormat(undefined, { timeZoneName: 'short' }).format(new Date()).split(' ').pop();
+            document.getElementById('tz_label').textContent = '(' + tz + ')';
+            recordLaterRow.style.display = 'block';
+            recordLaterBtn.style.display = 'none';
+        });
+        cancelLaterBtn.addEventListener('click', function() {
+            recordLaterRow.style.display = 'none';
+            recordLaterBtn.style.display = '';
+        });
 
         // Content Search — allow pressing Enter in the search query field
         document.getElementById('search_query').addEventListener('keydown', function(e) {
@@ -2356,12 +2482,22 @@ const INSTANT_PAGE_HTML = `
             e.preventDefault();
             const submitButton = e.submitter;
 
-            if (submitButton && submitButton.name === 'button_record') {
+            if (submitButton && (submitButton.name === 'button_record' || submitButton.name === 'button_record_later')) {
                 // Recording requires duration
                 if (!durationInput.value || parseInt(durationInput.value) <= 0) {
                     showModal('error', '⚠️', 'Duration Required',
                         'Please enter a duration for the recording.', '',
                         [{ text: 'OK', action: () => { hideModal(); durationInput.focus(); } }]);
+                    return;
+                }
+            }
+
+            if (submitButton && submitButton.name === 'button_record_later') {
+                const scheduledTime = new Date(recordLaterTimeInput.value).getTime();
+                if (isNaN(scheduledTime) || scheduledTime <= Date.now()) {
+                    showModal('error', '⚠️', 'Invalid Time',
+                        'Scheduled time must be in the future.', '',
+                        [{ text: 'OK', action: () => { hideModal(); recordLaterTimeInput.focus(); } }]);
                     return;
                 }
             }
@@ -2381,6 +2517,11 @@ const INSTANT_PAGE_HTML = `
                     urlEncodedData.append(key, value);
                 }
 
+                // Convert datetime-local to UTC timestamp so the server gets an unambiguous time
+                if (submitButton.name === 'button_record_later') {
+                    urlEncodedData.set('record_later_time', new Date(recordLaterTimeInput.value).getTime().toString());
+                }
+
                 const response = await fetch('/instant', {
                     method: 'POST',
                     body: urlEncodedData,
@@ -2394,6 +2535,7 @@ const INSTANT_PAGE_HTML = `
 
                 if (result.success) {
                     const isRecording = submitButton.name === 'button_record';
+                    const isScheduled = submitButton.name === 'button_record_later';
 
                     // Only show modal for recordings; tune silently starts
                     if (isRecording) {
@@ -2409,6 +2551,25 @@ const INSTANT_PAGE_HTML = `
                         document.getElementById('recording_summary').value = '';
                         document.getElementById('season_number').value = '';
                         document.getElementById('episode_number').value = '';
+                    } else if (isScheduled) {
+                        showModal('success', '📅', 'Recording Scheduled',
+                            result.message || '', result.detail || '',
+                            [{ text: 'OK', action: hideModal }]);
+
+                        // Reset Record Later row
+                        recordLaterRow.style.display = 'none';
+                        recordLaterBtn.style.display = '';
+
+                        // Clear form
+                        document.getElementById('recording_url').value = '';
+                        document.getElementById('recording_name').value = '';
+                        document.getElementById('recording_image').value = '';
+                        document.getElementById('episode_title').value = '';
+                        document.getElementById('recording_summary').value = '';
+                        document.getElementById('season_number').value = '';
+                        document.getElementById('episode_number').value = '';
+
+                        refreshScheduledRecordings();
                     }
 
                     // Refresh active streams
@@ -2516,9 +2677,56 @@ const INSTANT_PAGE_HTML = `
             }
         }
 
+        async function refreshScheduledRecordings() {
+            try {
+                const response = await fetch('/api/scheduled-recordings');
+                const data = await response.json();
+                const container = document.getElementById('scheduled-recordings-container');
+                if (!container) return;
+
+                if (data.length > 0) {
+                    let html = '<h3>Scheduled Recordings</h3><div class="stream-list">';
+                    data.forEach(entry => {
+                        const scheduledDate = new Date(entry.scheduledTime).toLocaleString();
+                        html += \`
+                            <div class="stream-item">
+                                <div class="stream-info">
+                                    <strong>\${entry.name}</strong>
+                                    <span class="stream-url">\${scheduledDate}</span>
+                                    <span class="stream-duration">\${entry.duration} min</span>
+                                </div>
+                                <button class="btn-stop" onclick="cancelScheduledRecording('\${entry.id}')">Cancel</button>
+                            </div>
+                        \`;
+                    });
+                    html += '</div>';
+                    container.innerHTML = html;
+                    container.style.display = 'block';
+                } else {
+                    container.innerHTML = '';
+                    container.style.display = 'none';
+                }
+            } catch (e) {
+                console.error('Error refreshing scheduled recordings:', e);
+            }
+        }
+
+        async function cancelScheduledRecording(id) {
+            try {
+                const res = await fetch('/api/scheduled-recordings/' + id, { method: 'DELETE' });
+                const data = await res.json();
+                showStopStatus(data.message || 'Scheduled recording cancelled.', !data.success);
+                refreshScheduledRecordings();
+            } catch (err) {
+                showStopStatus('Error cancelling scheduled recording: ' + err.message, true);
+            }
+        }
+
         // Initial load and refresh every 5 seconds
         refreshActiveStreams();
+        refreshScheduledRecordings();
         setInterval(refreshActiveStreams, 5000);
+        setInterval(refreshScheduledRecordings, 5000);
     </script>
 </body>
 </html>

@@ -59,6 +59,120 @@ function clearEncoderDurationTimer(encoderUrl) {
   }
 }
 
+// Scheduled recordings — persisted to disk so they survive restarts
+const scheduledRecordings = new Map(); // key: id, value: { params, scheduledTime, timerId, appLocals }
+
+function getScheduledRecordingsFile() {
+  return path.join(Constants.DATA_DIR || __dirname, 'scheduled_recordings.json');
+}
+
+function saveScheduledRecordings() {
+  const data = Array.from(scheduledRecordings.entries()).map(([id, entry]) => ({
+    id,
+    scheduledTime: entry.scheduledTime,
+    params: entry.params,
+  }));
+  try {
+    fs.writeFileSync(getScheduledRecordingsFile(), JSON.stringify(data, null, 2));
+  } catch (e) {
+    logTS(`Failed to save scheduled recordings: ${e.message}`);
+  }
+}
+
+async function executeScheduledRecording(params, appLocals) {
+  const { recording_name, recording_url, recording_duration, episode_title,
+          recording_summary, season_number, episode_number, recording_image,
+          closed_captions, selected_encoder } = params;
+  const recordingName = recording_name || 'Scheduled Recording';
+  const { cleanupManager, healthMonitor, browserHealthMonitor, streamMonitor } = appLocals;
+
+  let availableEncoder;
+  if (selected_encoder) {
+    availableEncoder = Constants.ENCODERS.find(encoder =>
+      encoder.url === selected_encoder &&
+      browsers.has(encoder.url) &&
+      cleanupManager.canStartBrowser(encoder.url) &&
+      healthMonitor.isEncoderHealthy(encoder.url) &&
+      browserHealthMonitor.isBrowserHealthy(encoder.url)
+    );
+    if (!availableEncoder) {
+      logTS(`Scheduled recording "${recordingName}": selected encoder unavailable, falling back to auto-select`);
+    }
+  }
+  if (!availableEncoder) {
+    availableEncoder = Constants.ENCODERS.find(encoder =>
+      browsers.has(encoder.url) &&
+      cleanupManager.canStartBrowser(encoder.url) &&
+      healthMonitor.isEncoderHealthy(encoder.url) &&
+      browserHealthMonitor.isBrowserHealthy(encoder.url)
+    );
+  }
+  if (!availableEncoder) {
+    logTS(`Scheduled recording "${recordingName}" failed: no encoders available at scheduled time`);
+    return;
+  }
+
+  const duration = parseInt(recording_duration);
+  const recordingStarted = await startRecording(recordingName, duration, availableEncoder.channel,
+    episode_title, recording_summary, season_number, episode_number, recording_image);
+
+  if (recordingStarted) {
+    streamMonitor.startMonitoring(availableEncoder.url, recording_url, { skipHealthCheck: true });
+    const totalDurationMs = (duration * 60 + 15) * 1000;
+    setEncoderDurationTimer(availableEncoder.url, async () => {
+      logTS(`Recording duration expired for ${recordingName}, stopping stream on ${availableEncoder.channel}...`);
+      clearEncoderDurationTimer(availableEncoder.url);
+      try { await cleanupManager.cleanup(availableEncoder.url, null); }
+      catch (e) { logTS(`Cleanup error on scheduled recording timeout: ${e.message}`); }
+    }, totalDurationMs);
+
+    const streamUrl = `http://localhost:${Constants.CH4C_PORT}/stream?url=${encodeURIComponent(recording_url)}&encoder=${encodeURIComponent(availableEncoder.url)}${closed_captions ? '&cc=' + encodeURIComponent(closed_captions) : ''}`;
+    fetch(streamUrl).catch(err => logTS(`Scheduled recording stream fetch error: ${err.message}`));
+    logTS(`Scheduled recording "${recordingName}" started on Channel ${availableEncoder.channel}`);
+  } else {
+    logTS(`Scheduled recording "${recordingName}" failed: could not start Channels DVR recording`);
+  }
+}
+
+function scheduleRecording(id, params, scheduledTime, appLocals) {
+  const delayMs = Math.max(0, scheduledTime - Date.now());
+  const timerId = setTimeout(async () => {
+    scheduledRecordings.delete(id);
+    saveScheduledRecordings();
+    await executeScheduledRecording(params, appLocals);
+  }, delayMs);
+  scheduledRecordings.set(id, { params, scheduledTime, timerId, appLocals });
+  saveScheduledRecordings();
+}
+
+function cancelScheduledRecording(id) {
+  const entry = scheduledRecordings.get(id);
+  if (!entry) return false;
+  clearTimeout(entry.timerId);
+  scheduledRecordings.delete(id);
+  saveScheduledRecordings();
+  return true;
+}
+
+function loadAndRescheduleRecordings(appLocals) {
+  const filePath = getScheduledRecordingsFile();
+  if (!fs.existsSync(filePath)) return;
+  try {
+    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    const now = Date.now();
+    let count = 0;
+    for (const entry of data) {
+      if (entry.scheduledTime > now) {
+        scheduleRecording(entry.id, entry.params, entry.scheduledTime, appLocals);
+        count++;
+      }
+    }
+    if (count > 0) logTS(`Loaded ${count} scheduled recording(s) from file`);
+  } catch (e) {
+    logTS(`Failed to load scheduled recordings: ${e.message}`);
+  }
+}
+
 /**
  * Cleanup all browsers on exit - prevents orphaned Chrome processes
  */
@@ -159,14 +273,21 @@ async function searchPrimeVideo(page, query) {
     return null;
   }
 
-  // Capture image from the first search result card's JPEG srcset (highest-res entry)
-  const searchResultImageUrl = await page.evaluate(() => {
+  // Capture image and date/time label from the first search result card
+  const { searchResultImageUrl, searchResultDateTime } = await page.evaluate(() => {
     const article = document.querySelector('[data-testid="search"] article');
-    const srcSet = article?.querySelector('picture source[type="image/jpeg"]')?.srcset;
-    if (!srcSet) return null;
-    const entries = srcSet.trim().split(/,\s+/);
-    const last = entries[entries.length - 1];
-    return last ? last.split(' ')[0] : null;
+    if (!article) return { searchResultImageUrl: null, searchResultDateTime: null };
+    const source = article.querySelector('picture source[type="image/jpeg"]')
+                || article.querySelector('picture source[type="image/png"]');
+    let imageUrl = null;
+    if (source?.srcset) {
+      const entries = source.srcset.trim().split(/,\s+/);
+      const last = entries[entries.length - 1];
+      if (last) imageUrl = last.split(' ')[0];
+    }
+    if (!imageUrl) imageUrl = article.querySelector('img[data-testid="base-image"]')?.src || null;
+    const dateTime = article.querySelector('p.dateTime-qKxeGx')?.textContent?.trim() || null;
+    return { searchResultImageUrl: imageUrl, searchResultDateTime: dateTime };
   });
 
   const resultHref = await page.evaluate(el => el.href, firstResultLink);
@@ -222,7 +343,9 @@ async function searchPrimeVideo(page, query) {
       const synopsisEl  = item.querySelector('div[data-automation-id^="synopsis-"]')
                        || item.querySelector('[data-automation-id^="synopsis-"] span');
       let imageUrl = null;
-      const srcSet = item.querySelector('[data-testid="episode-packshot"] picture source[type="image/jpeg"]')?.srcset;
+      const packshotSource = item.querySelector('[data-testid="episode-packshot"] picture source[type="image/jpeg"]')
+                          || item.querySelector('[data-testid="episode-packshot"] picture source[type="image/png"]');
+      const srcSet = packshotSource?.srcset;
       if (srcSet) {
         const entries = srcSet.trim().split(/,\s+/);
         const last = entries[entries.length - 1];
@@ -320,7 +443,9 @@ async function searchPrimeVideo(page, query) {
         const synopsisEl = item.querySelector('div[data-automation-id^="synopsis-"]')
                         || item.querySelector('[data-automation-id^="synopsis-"] span');
         let imageUrl = null;
-        const srcSet = item.querySelector('[data-testid="episode-packshot"] picture source[type="image/jpeg"]')?.srcset;
+        const packshotSource = item.querySelector('[data-testid="episode-packshot"] picture source[type="image/jpeg"]')
+                          || item.querySelector('[data-testid="episode-packshot"] picture source[type="image/png"]');
+      const srcSet = packshotSource?.srcset;
         if (srcSet) {
           const entries = srcSet.trim().split(/,\s+/);
           const last = entries[entries.length - 1];
@@ -453,19 +578,45 @@ async function searchPrimeVideo(page, query) {
     return {
       url:             finalUrl,
       title:           showTitle,
-      episodeTitle:    foundEpisodeMeta?.episodeTitle                        || null,
-      seasonNumber:    foundEpisodeMeta?.seasonNumber  ?? targetSeason       ?? null,
-      episodeNumber:   foundEpisodeMeta?.episodeNumber ?? targetEpisode      ?? null,
+      episodeTitle:    foundEpisodeMeta?.episodeTitle  || searchResultDateTime || null,
+      seasonNumber:    foundEpisodeMeta?.seasonNumber  ?? targetSeason        ?? null,
+      episodeNumber:   foundEpisodeMeta?.episodeNumber ?? targetEpisode       ?? null,
       durationMinutes: parseDurationMinutes(foundEpisodeMeta?.durationStr || durationStr),
-      summary:         foundEpisodeMeta?.summary         || summary,
-      imageUrl:        foundEpisodeMeta?.imageUrl        || searchResultImageUrl,
+      summary:         foundEpisodeMeta?.summary       || summary,
+      imageUrl:        foundEpisodeMeta?.imageUrl      || searchResultImageUrl,
     };
   }
 
-  // Fallback: return the detail page URL itself with whatever title we can get
-  const fallbackTitle = await page.evaluate(() => document.querySelector('meta[property="og:title"]')?.content || null);
+  // Fallback: no playable button found (e.g. content not yet available) — scrape whatever metadata is on the detail page
+  const fallbackMeta = await page.evaluate(() => {
+    const rawTitle = document.querySelector('meta[property="og:title"]')?.content
+                  || document.querySelector('h1[data-automation-id="title"]')?.textContent?.trim()
+                  || document.title || '';
+    return {
+      rawTitle,
+      durationStr: document.querySelector('[data-automation-id="runtime-badge"]')?.textContent?.trim()
+                || document.querySelector('[data-testid="runtime"]')?.textContent?.trim() || null,
+      summary:     document.querySelector('.dv-dp-node-synopsis span._1H6ABQ')?.textContent?.trim()
+                || document.querySelector('.dv-dp-node-synopsis')?.textContent?.trim()
+                || document.querySelector('span._1H6ABQ')?.textContent?.trim()
+                || null,
+    };
+  });
+  const fallbackTitle = fallbackMeta.rawTitle
+    .replace(/^Watch\s+/i, '')
+    .replace(/\s*[-|]\s*(Amazon|Prime\s*Video|Watch|Stream).*$/i, '')
+    .trim() || null;
   logTS(`Watch Now button not found, returning detail page URL: ${page.url()}`);
-  return { url: page.url(), title: fallbackTitle, episodeTitle: null, seasonNumber: null, episodeNumber: null, durationMinutes: null, imageUrl: searchResultImageUrl };
+  return {
+    url:             page.url(),
+    title:           fallbackTitle,
+    episodeTitle:    foundEpisodeMeta?.episodeTitle || searchResultDateTime || null,
+    seasonNumber:    foundEpisodeMeta?.seasonNumber    ?? targetSeason  ?? null,
+    episodeNumber:   foundEpisodeMeta?.episodeNumber   ?? targetEpisode ?? null,
+    durationMinutes: parseDurationMinutes(foundEpisodeMeta?.durationStr || fallbackMeta.durationStr),
+    summary:         foundEpisodeMeta?.summary         || fallbackMeta.summary,
+    imageUrl:        foundEpisodeMeta?.imageUrl        || searchResultImageUrl,
+  };
 }
 
 /**
@@ -750,7 +901,8 @@ async function searchAppleTV(page, query) {
 
   // Capture any pre-existing first result title so we can detect when results actually update
   const initialTitle = await page.evaluate(() => {
-    const el = document.querySelector('[data-testid="shelf-item-list"] li[data-index="0"] span.visually-hidden');
+    const el = document.querySelector('a[data-testid="lockup"] div.title') ||
+               document.querySelector('[data-testid="shelf-item-list"] li[data-index="0"] span.visually-hidden');
     return el ? el.textContent.trim() : '__none__';
   });
 
@@ -760,7 +912,8 @@ async function searchAppleTV(page, query) {
   // the pre-search state. The li container appears quickly, but content loads asynchronously.
   await page.waitForFunction(
     (prev) => {
-      const el = document.querySelector('[data-testid="shelf-item-list"] li[data-index="0"] span.visually-hidden');
+      const el = document.querySelector('a[data-testid="lockup"] div.title') ||
+                 document.querySelector('[data-testid="shelf-item-list"] li[data-index="0"] span.visually-hidden');
       return el && el.textContent.trim().length > 0 && el.textContent.trim() !== prev;
     },
     { timeout: 20000 },
@@ -770,39 +923,75 @@ async function searchAppleTV(page, query) {
   // Extra settle time for images and additional tiles to render
   await delay(1000);
 
-  // Extract title and poster image from the first search result.
-  // Note: img.src is a lazy-load placeholder (/assets/artwork/1x1.gif) — use the jpeg source srcset.
-  // Apple TV srcsets have no space after commas: split on ",(?=https)" not "/,\s+/".
-  const { firstResultTitle, searchResultImageUrl } = await page.evaluate(() => {
-    const item = document.querySelector('[data-testid="shelf-item-list"] li[data-index="0"]');
-    if (!item) return { firstResultTitle: null, searchResultImageUrl: null };
-    const titleEl = item.querySelector('span.visually-hidden');
-    const srcset = item.querySelector('picture source[type="image/jpeg"]')?.srcset || '';
+  // Extract title, event time badge, and poster image from the first search result.
+  // New DOM: title in a[data-testid="lockup"] div.title, webp srcset; old DOM: span.visually-hidden + jpeg srcset.
+  const { firstResultTitle, firstResultHref, searchResultImageUrl, eventTimeBadge } = await page.evaluate(() => {
+    const lockup = document.querySelector('a[data-testid="lockup"]');
+    const oldItem = document.querySelector('[data-testid="shelf-item-list"] li[data-index="0"]');
+    let titleEl = null, srcset = '', timeBadge = null;
+    if (lockup) {
+      titleEl = lockup.querySelector('div.title') || lockup.querySelector('span.visually-hidden');
+      srcset = lockup.querySelector('picture source[type="image/webp"]')?.srcset ||
+               lockup.querySelector('picture source[type="image/jpeg"]')?.srcset || '';
+      const timeEl = lockup.closest('li')?.querySelector('div[data-testid="event-time-badge"] time');
+      if (timeEl) timeBadge = timeEl.textContent.trim() || null;
+    } else if (oldItem) {
+      titleEl = oldItem.querySelector('span.visually-hidden');
+      srcset = oldItem.querySelector('picture source[type="image/jpeg"]')?.srcset || '';
+    }
     const entries = srcset.trim().split(/,(?=https)/);
     const last = entries[entries.length - 1];
     const imageUrl = last ? last.split(' ')[0] : null;
     return {
       firstResultTitle: titleEl ? titleEl.textContent.trim() : null,
+      firstResultHref: lockup ? lockup.href : null,
       searchResultImageUrl: imageUrl || null,
+      eventTimeBadge: timeBadge,
     };
   });
   logTS(`Apple TV+: first result: "${firstResultTitle}"`);
 
-  // Click the first result
-  const firstResult = await page.$('[data-testid="shelf-item-list"] li[data-index="0"] [data-testid="lockup"]');
+  // Click the first result — try new DOM structure first, then old
+  const firstResult = await page.$('a[data-testid="lockup"]') ||
+                      await page.$('[data-testid="shelf-item-list"] li[data-index="0"] [data-testid="lockup"]');
   if (!firstResult) throw new Error('No search results found on Apple TV+');
 
-  await Promise.all([
-    page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 20000 }),
-    firstResult.click(),
-  ]);
+  // Clicking can navigate directly OR open a version picker dialog (live/concurrent events).
+  // Race to detect which happens first, then handle accordingly.
+  let versionPickerDialogTitle = null;
+  firstResult.click();
+  const clickOutcome = await Promise.race([
+    page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).then(() => 'navigated'),
+    page.waitForSelector('[data-testid="version-picker-title"]', { timeout: 15000 }).then(() => 'dialog'),
+  ]).catch(() => 'timeout');
+
+  if (clickOutcome === 'dialog') {
+    // Live event — clicking opens a version picker dialog instead of navigating.
+    // The lockup href is the sporting event URL; that's all we need. Return early.
+    versionPickerDialogTitle = await page.evaluate(() =>
+      document.querySelector('h1[data-testid="version-picker-title"]')?.textContent?.trim() || null
+    );
+    const liveTitle = versionPickerDialogTitle || firstResultTitle || firstResultHref?.split('/').pop() || null;
+    logTS(`Apple TV+: live event dialog — title: "${liveTitle}", url: ${firstResultHref}`);
+    return {
+      url:             firstResultHref,
+      title:           liveTitle,
+      episodeTitle:    'Live',
+      seasonNumber:    null,
+      episodeNumber:   null,
+      durationMinutes: null,
+      imageUrl:        searchResultImageUrl,
+    };
+  } else if (clickOutcome === 'timeout') {
+    logTS('Apple TV+: click produced neither navigation nor dialog within 15s');
+  }
 
   const detailUrl = page.url();
   logTS(`Apple TV+ navigated to detail page: ${detailUrl}`);
 
-  // Use the title already captured from the search result's span.visually-hidden as the
-  // primary show title — og:title on Apple TV returns a generic "Apple TV+" value.
-  const showTitle = firstResultTitle || await page.evaluate(() => {
+  // Use the title from the version picker dialog (live events), search result tile, or detail page h1.
+  // og:title on Apple TV returns a generic "Apple TV+" value so we avoid it.
+  let showTitle = versionPickerDialogTitle || firstResultTitle || await page.evaluate(() => {
     const raw = document.querySelector('h1')?.textContent?.trim() || document.title || '';
     return raw.replace(/\s*[|\-–]\s*Apple TV\+?.*$/i, '').trim() || null;
   });
@@ -971,12 +1160,12 @@ async function searchAppleTV(page, query) {
     }
   }
 
-  // No episode tiles found — return the show detail page (movie or unavailable series)
-  logTS(`Apple TV+: returning detail page: ${detailUrl} | showTitle: "${showTitle}"`);
+  // No episode tiles found — return the show detail page (movie or upcoming event)
+  logTS(`Apple TV+: returning detail page: ${detailUrl} | showTitle: "${showTitle}" | eventTime: "${eventTimeBadge}"`);
   return {
     url:             detailUrl,
     title:           showTitle,
-    episodeTitle:    null,
+    episodeTitle:    eventTimeBadge || null,
     seasonNumber:    null,
     episodeNumber:   null,
     durationMinutes: null,
@@ -1275,14 +1464,19 @@ async function searchMax(page, query) {
   }
 
   // Movie or show without episode — extract metadata and click the main play button
-  const { durationStr, movieSummary } = await page.evaluate(() => {
-    // Duration uses same testid as episode tiles
-    const durEl = document.querySelector('span[data-testid="metadata_duration"]');
+  const { durationStr, movieSummary, startTime } = await page.evaluate(() => {
+    const infoBlock = document.querySelector('[data-testid="infoBlockFullContent"]');
+    // Scope duration to infoBlock to avoid picking up trailer/preview tile durations elsewhere on page
+    const durEl = infoBlock?.querySelector('span[data-testid="metadata_duration"]');
     // Description is a direct child p[dir="auto"] of the info block (not the hidden metadata label)
-    const descEl = document.querySelector('[data-testid="infoBlockFullContent"] > p[dir="auto"]');
+    const descEl = infoBlock?.querySelector(':scope > p[dir="auto"]');
+    // Start time for upcoming events: first p[dir="auto"] inside the header (e.g. "Today, 3:30 PM")
+    const headerTimeEl = infoBlock?.querySelector('header p[dir="auto"]');
+    const startTime = headerTimeEl?.textContent?.replace(/[⁦-⁩]/g, '').trim() || null;
     return {
       durationStr:  durEl?.textContent?.trim() || null,
       movieSummary: descEl?.textContent?.trim() || null,
+      startTime,
     };
   });
 
@@ -1290,6 +1484,8 @@ async function searchMax(page, query) {
   // The main button is inside div[data-capability="default"], the trailer button is not.
   let playUrl = detailUrl;
   const playBtnExists = await page.$('div[data-capability="default"] button[data-testid="play_button"]').then(el => !!el).catch(() => false);
+  const isUpcoming = await page.$('[id^="upcoming-"]').then(el => !!el).catch(() => false);
+
   if (playBtnExists) {
     await Promise.all([
       page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {}),
@@ -1297,21 +1493,22 @@ async function searchMax(page, query) {
     ]);
     playUrl = page.url();
     if (!playUrl || playUrl === 'about:blank') playUrl = detailUrl;
-  } else {
-    // Fallback: look for a direct video anchor link
+  } else if (!isUpcoming) {
+    // Fallback for available content with no standard play button: look for a direct video anchor link
     const videoHref = await page.evaluate(() => {
       const a = document.querySelector('a[href*="/video/watch/"]');
       return a?.getAttribute('href') || null;
     });
     if (videoHref) playUrl = videoHref.startsWith('http') ? videoHref : `https://www.max.com${videoHref}`;
   }
+  // Upcoming events: playUrl stays as detailUrl — the correct page to navigate to when the event starts
 
-  logTS(`Max: url="${playUrl}" duration="${durationStr}"`);
+  logTS(`Max: url="${playUrl}" duration="${durationStr}" startTime="${startTime}"`);
 
   return {
     url:             playUrl,
     title:           showTitle,
-    episodeTitle:    null,
+    episodeTitle:    startTime || null,
     seasonNumber:    targetSeason,
     episodeNumber:   targetEpisode,
     durationMinutes: parseDurationMinutes(durationStr),
@@ -3525,40 +3722,56 @@ async function setupBrowserAudio(page, encoderConfig, targetUrl = null) {
       clearInterval(activityUpdateInterval);
     }
   } else if (targetUrl && targetUrl.includes("tv.apple.com")) {
-    // Apple TV+ episode pages show a static details page — wait for Svelte to fully mount
-    // (the button appears in DOM before its event handlers are attached), then click play.
+    // Apple TV+ has two play entry points:
+    //   - Live sporting events: version picker dialog with Watch Live / Catch Up / Watch from Start
+    //   - VOD / series episodes: capsule play button (Svelte-mounted, needs handler settle time)
     logTS("Apple TV+ detected, waiting for page to fully load before clicking play");
 
-    // Wait for the capsule button to appear in the DOM, then give Svelte a moment to attach handlers.
-    await page.waitForSelector('button[data-testid="capsule-button"]', { timeout: 15000 }).catch(() => {});
+    const clickOutcome = await Promise.race([
+      page.waitForSelector('[data-testid="version-picker-cta-en-0"]', { timeout: 15000 }).then(() => 'dialog'),
+      page.waitForSelector('button[data-testid="capsule-button"]', { timeout: 15000 }).then(() => 'capsule'),
+    ]).catch(() => 'timeout');
 
-    let playClicked = false;
-    for (let i = 0; i < 20; i++) {
-      const btnFound = await page.evaluate(() => {
-        return !!document.querySelector('button[data-testid="capsule-button"]');
-      });
-      if (btnFound) {
-        logTS(`Apple TV+: capsule button found on attempt ${i + 1}, waiting 2s for Svelte to attach handlers`);
-        await delay(2000);
-        // Use a real mouse click at the button's center so Svelte pointer events fire
-        const rect = await page.evaluate(() => {
-          const btn = document.querySelector('button[data-testid="capsule-button"]');
-          if (!btn) return null;
-          const r = btn.getBoundingClientRect();
-          return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
-        });
-        if (rect) {
-          await page.mouse.click(rect.x, rect.y);
-          logTS(`Apple TV+: mouse clicked capsule button at (${Math.round(rect.x)}, ${Math.round(rect.y)})`);
-          playClicked = true;
-          break;
+    if (clickOutcome === 'dialog') {
+      logTS('Apple TV+: version picker dialog — clicking Watch Live');
+      await page.click('button[data-testid="version-picker-cta-en-0"]');
+    } else if (clickOutcome === 'capsule') {
+      // Svelte attaches event handlers slightly after the button appears in DOM — wait 2s then click.
+      let playClicked = false;
+      for (let i = 0; i < 20; i++) {
+        const btnFound = await page.evaluate(() => !!document.querySelector('button[data-testid="capsule-button"]'));
+        if (btnFound) {
+          logTS(`Apple TV+: capsule button found on attempt ${i + 1}, waiting 2s for Svelte to attach handlers`);
+          await delay(2000);
+          const rect = await page.evaluate(() => {
+            const btn = document.querySelector('button[data-testid="capsule-button"]');
+            if (!btn) return null;
+            const r = btn.getBoundingClientRect();
+            return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+          });
+          if (rect) {
+            await page.mouse.click(rect.x, rect.y);
+            logTS(`Apple TV+: mouse clicked capsule button at (${Math.round(rect.x)}, ${Math.round(rect.y)})`);
+            playClicked = true;
+            break;
+          }
         }
+        await delay(500);
       }
-      await delay(500);
-    }
-
-    if (!playClicked) {
-      logTS("Apple TV+: capsule play button not found, pressing Space as fallback");
+      if (!playClicked) {
+        logTS("Apple TV+: capsule play button not found, pressing Space as fallback");
+        await page.keyboard.press('Space');
+      }
+      // Clicking the capsule on a live sporting event opens a version picker dialog.
+      // Check for it and click Watch Live if present.
+      const dialogAfterCapsule = await page.waitForSelector('[data-testid="version-picker-cta-en-0"]', { timeout: 5000 })
+        .catch(() => null);
+      if (dialogAfterCapsule) {
+        logTS('Apple TV+: version picker appeared after capsule click — clicking Watch Live');
+        await page.click('button[data-testid="version-picker-cta-en-0"]');
+      }
+    } else {
+      logTS("Apple TV+: neither version picker nor capsule button appeared within 15s, pressing Space");
       await page.keyboard.press('Space');
     }
 
@@ -4710,6 +4923,10 @@ async function selectPeacockClosedCaptionsWithRetry(page, ccOption) {
   const retryDelay = 30000; // 30s — covers typical pre-roll ad breaks
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (page.isClosed()) {
+      logTS('Peacock CC: page closed, stopping retries');
+      return;
+    }
     logTS(`Peacock CC: Attempt ${attempt}/${maxAttempts} for "${ccOption}"`);
     const success = await selectPeacockClosedCaptions(page, ccOption);
     if (success) return;
@@ -5426,6 +5643,10 @@ async function fullScreenVideoAppleTV(page, encoderConfig = null, closedCaptions
       (async () => {
         for (let attempt = 2; attempt <= 6; attempt++) {
           await delay(30000);
+          if (page.isClosed()) {
+            logTS('Apple TV+ CC: page closed, stopping retries');
+            return;
+          }
           logTS(`Apple TV+ CC: retry attempt ${attempt}/6 for "${appleTVCcValue}"`);
           const success = await selectAppleTVClosedCaptions(page, appleTVCcValue);
           if (success) return;
@@ -6724,6 +6945,10 @@ async function selectMaxClosedCaptionsWithRetry(page, ccOption) {
   const retryDelay = 30000; // 30s — covers typical pre-roll ad breaks
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (page.isClosed()) {
+      logTS('Max CC: page closed, stopping retries');
+      return;
+    }
     logTS(`Max CC: Attempt ${attempt}/${maxAttempts} for "${ccOption}"`);
     const success = await selectMaxClosedCaptions(page, ccOption);
     if (success) return;
@@ -6849,6 +7074,10 @@ async function selectDisneyPlusClosedCaptionsWithRetry(page, ccOption) {
   const retryDelay = 30000; // 30s — covers typical pre-roll ad breaks
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (page.isClosed()) {
+      logTS('Disney+ CC: page closed, stopping retries');
+      return;
+    }
     logTS(`Disney+ CC: Attempt ${attempt}/${maxAttempts} for "${ccOption}"`);
     const success = await selectDisneyPlusClosedCaptions(page, ccOption);
     if (success) return;
@@ -7031,6 +7260,10 @@ async function selectAmazonClosedCaptionsWithRetry(page, ccOption) {
   const retryDelay = 30000; // 30s — covers typical pre-roll ad breaks
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (page.isClosed()) {
+      logTS('Amazon CC: page closed, stopping retries');
+      return;
+    }
     logTS(`Amazon CC: Attempt ${attempt}/${maxAttempts} for "${ccOption}"`);
     const success = await selectAmazonClosedCaptions(page, ccOption);
     if (success) return;
@@ -8300,14 +8533,15 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
     const html = Constants.INSTANT_PAGE_HTML
       .replaceAll('<<host>>', req.get('host'))
       .replaceAll('<<encoder_options>>', encoderOptions)
-      .replaceAll('<<active_streams>>', activeStreamsHtml);
+      .replaceAll('<<active_streams>>', activeStreamsHtml)
+      .replaceAll('<<scheduled_recordings>>', '<div id="scheduled-recordings-container" class="active-streams" style="display:none;"></div>');
 
     res.send(html);
   });
 
   // POST /instant - Handle instant recording or tuning
   app.post('/instant', async (req, res) => {
-    const { recording_name, recording_url, recording_duration, button_record, button_tune, episode_title, recording_summary, season_number, episode_number, selected_encoder, recording_image, closed_captions } = req.body;
+    const { recording_name, recording_url, recording_duration, button_record, button_tune, button_record_later, record_later_time, episode_title, recording_summary, season_number, episode_number, selected_encoder, recording_image, closed_captions } = req.body;
 
     // Check if client wants JSON response
     const wantsJson = req.headers.accept && req.headers.accept.includes('application/json');
@@ -8337,6 +8571,38 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
       targetUrl = new URL(recording_url).toString();
     } catch (e) {
       sendResponse(400, { success: false, error: 'Invalid URL format' });
+      return;
+    }
+
+    // Handle "Record Later" — schedule without needing an encoder now
+    if (button_record_later) {
+      const duration = parseInt(recording_duration);
+      if (isNaN(duration) || duration <= 0) {
+        sendResponse(400, { success: false, error: 'Invalid duration. Must be a positive number.' });
+        return;
+      }
+      const scheduledTime = parseInt(record_later_time);
+      if (isNaN(scheduledTime) || scheduledTime <= Date.now()) {
+        sendResponse(400, { success: false, error: 'Scheduled time must be in the future.' });
+        return;
+      }
+      const id = Date.now().toString();
+      const params = {
+        recording_name: recording_name || 'Scheduled Recording',
+        recording_url: targetUrl,
+        recording_duration: duration,
+        episode_title, recording_summary, season_number, episode_number,
+        recording_image, closed_captions, selected_encoder,
+      };
+      scheduleRecording(id, params, scheduledTime, req.app.locals);
+      const scheduledDate = new Date(scheduledTime).toLocaleString();
+      logTS(`Scheduled recording "${params.recording_name}" for ${scheduledDate}`);
+      sendResponse(200, {
+        success: true,
+        type: 'scheduled',
+        message: `${params.recording_name} — ${duration} min`,
+        detail: `Recording scheduled for ${scheduledDate}`,
+      });
       return;
     }
 
@@ -8733,6 +8999,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
       clearEncoderDurationTimer(encoderUrl);
       try {
         await cleanupManager.cleanup(encoderUrl, null);
+        streamMonitor.stopMonitoring(encoderUrl);
         logTS(`Stopped stream on ${encoderUrl}`);
       } catch (error) {
         logTS(`Error stopping stream on ${encoderUrl}: ${error.message}`);
@@ -8846,6 +9113,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
 
     try {
       await cleanupManager.cleanup(encoderUrl, null);
+      streamMonitor.stopMonitoring(encoderUrl);
       logTS(`Stopped stream on encoder ${encoderIndex} (${encoderUrl})`);
 
       if (wantsJson) return res.json({ success: true, message: `Stream on Channel ${encoderConfig.channel} stopped.` });
@@ -9261,6 +9529,27 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
     }
   });
 
+  // Scheduled Recordings API
+  app.get('/api/scheduled-recordings', (req, res) => {
+    const data = Array.from(scheduledRecordings.entries()).map(([id, entry]) => ({
+      id,
+      scheduledTime: entry.scheduledTime,
+      name: entry.params.recording_name || 'Scheduled Recording',
+      duration: entry.params.recording_duration,
+      url: entry.params.recording_url,
+    }));
+    res.json(data);
+  });
+
+  app.delete('/api/scheduled-recordings/:id', (req, res) => {
+    const cancelled = cancelScheduledRecording(req.params.id);
+    if (cancelled) {
+      res.json({ success: true, message: 'Scheduled recording cancelled' });
+    } else {
+      res.status(404).json({ success: false, error: 'Scheduled recording not found' });
+    }
+  });
+
   // Content Search API — uses an existing encoder browser to search a streaming service
   // and return the watch URL for the first matching result.
   app.post('/api/search-content', async (req, res) => {
@@ -9372,6 +9661,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
       logTS(`Instant recording/tuning available at http://localhost:${Constants.CH4C_PORT}/instant`);
     }
     logTS(`Configure settings at http://localhost:${Constants.CH4C_PORT}/settings`);
+    loadAndRescheduleRecordings(app.locals);
   });
 
   // Handle HTTP server startup errors
