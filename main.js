@@ -7279,6 +7279,37 @@ async function selectAmazonClosedCaptionsWithRetry(page, ccOption) {
 async function fullScreenVideoAmazon(page, closedCaptions = '') {
   logTS("URL contains amazon.com, setting up fullscreen for Amazon Prime Video");
 
+  // If we're on a detail page (not the player), click the play/Watch Live button first.
+  // Live events: circular-playbutton has no href and opens a stream-selector modal.
+  // VOD: dp-atf-play-button navigates directly to the player.
+  const onDetailPage = await page.evaluate(() =>
+    !!document.querySelector('a[data-testid="dp-atf-play-button"], a[data-testid="circular-playbutton"]')
+  );
+  if (onDetailPage) {
+    logTS('Amazon: detail page detected — clicking play button');
+    const playBtn = await page.$('a[data-testid="dp-atf-play-button"], a[data-testid="circular-playbutton"]');
+    if (playBtn) {
+      await playBtn.click();
+      // Wait for stream-selector modal (live events) or navigation (VOD)
+      await page.waitForSelector('[data-testid="stream-selector-content"]', { timeout: 4000 }).catch(() => {});
+      const liveLink = await page.evaluate(() => {
+        const modal = document.querySelector('[data-testid="stream-selector-content"]');
+        if (!modal) return null;
+        const a = modal.querySelector('a[href*="t=2147483647"]')
+               || [...modal.querySelectorAll('a[data-testid="play"]')]
+                    .find(el => el.textContent.toLowerCase().includes('watch live'));
+        return (a || modal.querySelector('a[data-testid="play"]'))?.href || null;
+      });
+      if (liveLink) {
+        logTS(`Amazon: live modal found — navigating to stream: ${liveLink}`);
+        await page.goto(liveLink, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      } else {
+        logTS('Amazon: no live modal — waiting for player navigation');
+        await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+      }
+    }
+  }
+
   // Wait a bit for the Amazon player to initialize
   await delay(2000);
 
