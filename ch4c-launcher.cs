@@ -29,6 +29,12 @@ internal static class Ch4cLauncher
     private const int  JobObjectExtendedLimitInformation = 9;
     private const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000;
     private const int  RETRY_DELAY_MS             = 5000;
+    // At boot the service starts before the network, audio devices, GPU and
+    // encoders are ready. If the machine booted recently, pause once so the
+    // system can settle before CH4C (and Chrome) launch. Skipped on manual
+    // restarts, where the system is already up.
+    private const int   SETTLE_DELAY_MS           = 30000;
+    private const ulong BOOT_SETTLE_WINDOW_MS     = 300000;
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct STARTUPINFO
@@ -127,6 +133,9 @@ internal static class Ch4cLauncher
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool CloseHandle(IntPtr hObject);
+
+    [DllImport("kernel32.dll")]
+    private static extern ulong GetTickCount64();
 
     private static void Log(string message)
     {
@@ -236,6 +245,14 @@ internal static class Ch4cLauncher
         }
 
         Log("CH4C launcher started. Target: " + commandLine);
+
+        if (GetTickCount64() < BOOT_SETTLE_WINDOW_MS)
+        {
+            Log("Recent boot detected; waiting " + (SETTLE_DELAY_MS / 1000) +
+                "s for the system to settle before launching CH4C...");
+            Thread.Sleep(SETTLE_DELAY_MS);
+        }
+
         while (true)
         {
             try
