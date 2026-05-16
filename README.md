@@ -89,13 +89,13 @@ node main.js --help
 
 ### Running CH4C at Startup
 
-Install CH4C as a service that starts automatically at login:
+Install CH4C as a service that starts automatically:
 
 ```bash
 ch4c service install          # or: node main.js service install if running from source
 ```
 
-**Windows** — creates a Task Scheduler entry that runs CH4C at user logon with a 30-second startup delay. Requires **Administrator privileges**:
+**Windows** — registers a real Windows service (visible in `services.msc`) using the [WinSW](https://github.com/winsw/winsw) wrapper, which is downloaded automatically on first install. The service runs as `LocalSystem`; its job is to launch CH4C inside your logged-in desktop session with a normal (non-elevated) token, so Chrome and audio devices behave exactly as they do during a manual launch — a service cannot run Chrome itself. No account or password is needed. CH4C starts whenever a user is logged in and restarts automatically if it exits. Requires **Administrator privileges**:
 ```powershell
 powershell -Command "Start-Process cmd -ArgumentList '/k cd /d C:\path\to\CH4C && ch4c service install' -Verb RunAs"
 ```

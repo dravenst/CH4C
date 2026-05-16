@@ -43,7 +43,8 @@
   },
   "pkg": {
     "assets": [
-      "vendor/novnc/**/*"
+      "vendor/novnc/**/*",
+      "ch4c-launcher.cs"
     ]
   },
   "scripts": {
