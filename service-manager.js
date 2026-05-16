@@ -106,7 +106,6 @@ function writeServiceXml(xmlPath, launcherExe, dataDir) {
   <arguments>${escapeXml(ch4cCommand)}</arguments>
   <workingdirectory>${escapeXml(workingDir)}</workingdirectory>
   <startmode>Automatic</startmode>
-  <delayedAutoStart/>
   <onfailure action="restart" delay="15 sec"/>
   <log mode="roll-by-size">
     <sizeThreshold>10240</sizeThreshold>
