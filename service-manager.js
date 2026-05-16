@@ -5,6 +5,7 @@ const fs = require('fs');
 const http = require('http');
 const os = require('os');
 const path = require('path');
+const readline = require('readline');
 
 const SERVICE_ID = 'CH4C';
 const MAC_LABEL = 'com.ch4c';
@@ -122,7 +123,8 @@ function writeServiceXml(xmlPath, launcherExe, dataDir) {
  * @returns {string|null}
  */
 function findCsc() {
-  const winDir = process.env.WINDIR || 'C:\\Windows';
+  const winDir = process.env.WINDIR || process.env.SystemRoot;
+  if (!winDir) return null;
   const candidates = [
     path.join(winDir, 'Microsoft.NET', 'Framework64', 'v4.0.30319', 'csc.exe'),
     path.join(winDir, 'Microsoft.NET', 'Framework', 'v4.0.30319', 'csc.exe'),
@@ -230,7 +232,65 @@ async function installWindows(dataDir) {
     console.error(`  ${startError.split('\n').join('\n  ')}`);
   } else {
     console.log(`\nThe service is running. CH4C starts whenever a user is logged in.`);
-    console.log(`Manage it with: ch4c service start | stop | status | uninstall`);
+    console.log(`Manage it with: ch4c service start | stop | status | logs | uninstall`);
+  }
+
+  await offerPathSetup();
+}
+
+/**
+ * Append a directory to the current user's PATH (persisted, not just this
+ * session). Returns 'added' or 'present'.
+ * @param {string} dir
+ */
+function addToPath(dir) {
+  const safeDir = dir.replace(/'/g, "''");
+  const ps = `$d='${safeDir}'; $p=[Environment]::GetEnvironmentVariable('Path','User'); `
+    + `if($null -eq $p){$p=''}; if(($p -split ';') -contains $d){'present'}`
+    + `else{[Environment]::SetEnvironmentVariable('Path',($p.TrimEnd(';')+';'+$d).TrimStart(';'),'User');'added'}`;
+  return execSync(`powershell -NoProfile -Command "${ps}"`, { encoding: 'utf8' }).trim();
+}
+
+/** Ask a Yes/No question. Returns `defaultYes` on a blank answer, false if non-interactive. */
+function askYesNo(question, defaultYes) {
+  if (!process.stdin.isTTY) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    rl.question(question, (answer) => {
+      rl.close();
+      const a = answer.trim().toLowerCase();
+      resolve(a === '' ? defaultYes : (a === 'y' || a === 'yes'));
+    });
+  });
+}
+
+/**
+ * After install, ask whether to add ch4c.exe's folder to the user's PATH so
+ * the `ch4c` command works from any terminal. Packaged executable only.
+ */
+async function offerPathSetup() {
+  const exePath = process.execPath;
+  const isPackaged = path.basename(exePath).toLowerCase().startsWith('ch4c');
+  if (!isPackaged) return; // running from source — nothing to add
+
+  const dir = path.dirname(exePath);
+  const yes = await askYesNo(
+    `\nWould you like to add CH4C to your PATH, so you can run the "ch4c"\n`
+    + `command (for example "ch4c service logs") from any terminal? [Y/n] `, true);
+
+  if (!yes) {
+    console.log(`\nOK, skipped. You can always run CH4C from:\n  ${dir}`);
+    return;
+  }
+  try {
+    if (addToPath(dir) === 'added') {
+      console.log(`\nAll set! Open a new terminal and "ch4c" will work from anywhere.`);
+    } else {
+      console.log(`\nCH4C is already on your PATH — you're good to go.`);
+    }
+  } catch (error) {
+    console.error(`\nSorry, couldn't update your PATH automatically (${error.message}).`);
+    console.error(`You can still run CH4C from:\n  ${dir}`);
   }
 }
 
@@ -553,6 +613,76 @@ async function stop() {
   }
 }
 
+// ─── Logs ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Resolve CH4C's data directory — where ch4c.log is written.
+ * Mirrors CH4C's own default (%APPDATA%\ch4c on Windows).
+ * @param {string|null} dataDir - Explicit -d value, if any
+ */
+function getDataDir(dataDir) {
+  if (dataDir) return dataDir;
+  if (process.platform === 'win32') {
+    // CH4C keeps using a legacy ./data folder next to the exe if one exists.
+    const legacy = path.join(path.dirname(process.execPath), 'data');
+    if (fs.existsSync(legacy)) return legacy;
+    return getWindowsServiceDir(null);
+  }
+  return path.join(os.homedir(), 'Library', 'Application Support', 'ch4c');
+}
+
+/** Print the last `maxLines` lines of a text file. */
+function printTail(file, maxLines) {
+  const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
+  if (lines.length && lines[lines.length - 1] === '') lines.pop();
+  console.log(lines.slice(-maxLines).join('\n'));
+}
+
+/**
+ * Tail CH4C's log live. The Windows service runs hidden with no console
+ * window, so this prints the current log and then streams new output until
+ * interrupted. Windows only.
+ * @returns {boolean} true if now tailing (caller must not exit)
+ */
+function logs(args) {
+  if (process.platform !== 'win32') {
+    console.log(`\n"ch4c service logs" is a Windows-only feature.`);
+    return false;
+  }
+
+  const dataDir = parseDataDir(args);
+  const logFile = path.join(getDataDir(dataDir), 'ch4c.log');
+  const serviceLog = path.join(getWindowsServiceDir(dataDir), 'ch4c-service.out.log');
+
+  console.log(`\nCH4C log: ${logFile}`);
+  console.log(`Service launcher log: ${serviceLog}`);
+
+  let pos = 0;
+  if (fs.existsSync(logFile)) {
+    console.log('');
+    const existing = fs.readFileSync(logFile);
+    process.stdout.write(existing);
+    pos = existing.length;
+  } else {
+    console.log(`\nCH4C has not logged yet — waiting for it to start...`);
+    if (fs.existsSync(serviceLog)) {
+      console.log(`\n--- service launcher log ---`);
+      printTail(serviceLog, 40);
+    }
+  }
+
+  console.log(`\n--- tailing live (press Ctrl+C to stop) ---`);
+  fs.watchFile(logFile, { interval: 1000 }, (curr) => {
+    if (curr.size < pos) pos = 0; // log was rotated on a CH4C restart
+    if (curr.size > pos) {
+      const stream = fs.createReadStream(logFile, { start: pos, end: curr.size - 1 });
+      stream.on('data', (chunk) => process.stdout.write(chunk));
+      pos = curr.size;
+    }
+  });
+  return true;
+}
+
 // ─── Usage ────────────────────────────────────────────────────────────────────
 
 function showUsage() {
@@ -566,14 +696,17 @@ Commands:
   status               Check if the service is installed and running
   start                Start the CH4C service
   stop                 Stop the CH4C service
+  logs [-d <path>]     Tail CH4C's log live (Windows; the service runs hidden)
 
 Examples (Windows):
   ch4c service install
-  ch4c service install -d C:\\ch4c-data
+  ch4c service install -d <data-folder>
+  ch4c service logs
 
 Examples (macOS):
   ch4c service install
   ch4c service install -d ~/ch4c-data
+  ch4c service logs
 `);
 }
 
@@ -595,6 +728,9 @@ async function handleServiceCommand(args) {
       break;
     case 'stop':
       await stop();
+      break;
+    case 'logs':
+      if (logs(args.slice(1))) return; // tailing — stay alive
       break;
     default:
       showUsage();

@@ -95,10 +95,13 @@ Install CH4C as a service that starts automatically:
 ch4c service install          # or: node main.js service install if running from source
 ```
 
-**Windows** — registers a real Windows service (visible in `services.msc`) using the [WinSW](https://github.com/winsw/winsw) wrapper, which is downloaded automatically on first install. The service runs as `LocalSystem`; its job is to launch CH4C inside your logged-in desktop session with a normal (non-elevated) token, so Chrome and audio devices behave exactly as they do during a manual launch — a service cannot run Chrome itself. No account or password is needed. CH4C starts whenever a user is logged in and restarts automatically if it exits. Requires **Administrator privileges**:
-```powershell
-powershell -Command "Start-Process cmd -ArgumentList '/k cd /d C:\path\to\CH4C && ch4c service install' -Verb RunAs"
+**Windows** — registers a real Windows service (visible in `services.msc`) using the [WinSW](https://github.com/winsw/winsw) wrapper, which is downloaded automatically on first install. The service runs as `LocalSystem`; its job is to launch CH4C inside your logged-in desktop session with a normal (non-elevated) token, so Chrome and audio devices behave exactly as they do during a manual launch — a service cannot run Chrome itself. No account or password is needed. CH4C starts whenever a user is logged in and restarts automatically if it exits.
+
+Installing the service needs **Administrator privileges**. Open Command Prompt as Administrator (right-click *Command Prompt* → *Run as administrator*), `cd` to wherever you saved `ch4c.exe`, and run:
 ```
+ch4c service install
+```
+During install you'll be asked whether to add `ch4c.exe` to your PATH, so you can run the `ch4c` command (e.g. `ch4c service logs`) from any terminal.
 
 **macOS** — installs a launchd agent at `~/Library/LaunchAgents/com.ch4c.plist`. No elevated privileges required:
 ```bash
@@ -112,8 +115,11 @@ ch4c service install -d ~/ch4c-data   # custom data directory
 ch4c service status      # Check if installed and running
 ch4c service start       # Start CH4C
 ch4c service stop        # Stop CH4C gracefully
+ch4c service logs        # Tail CH4C's log output live
 ch4c service uninstall   # Remove the service
 ```
+
+Because the service runs hidden with no console window, `ch4c service logs` is how you see CH4C's output. It prints the current log and then streams new output live until you press Ctrl+C.
 
 > **Default data directory locations:**
 > - **Windows**: `%APPDATA%\ch4c` (e.g. `C:\Users\<user>\AppData\Roaming\ch4c`). If a `data` folder exists in the CH4C install directory it will be used instead for backward compatibility.
