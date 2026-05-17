@@ -5314,6 +5314,25 @@ async function fullScreenVideoESPN(page, encoderConfig = null, closedCaptions = 
   // Setup error recovery monitor to handle hard errors (e.g. too many devices streaming)
   setupESPNErrorMonitor(page, encoderConfig);
 
+  // Hide cursor before CC task starts (CC task moves mouse to center, which would show cursor)
+  await hideCursor(page);
+  // Also inject cursor-hiding into ESPN's shadow DOM roots — shadow DOM scoped styles can
+  // override the inherited cursor:none from the main document
+  await page.evaluate(() => {
+    const sheet = new CSSStyleSheet();
+    sheet.insertRule('* { cursor: none !important }');
+    document.adoptedStyleSheets = [...(document.adoptedStyleSheets || []), sheet];
+    (function applyToShadowRoots(root) {
+      for (const el of root.querySelectorAll('*')) {
+        if (el.shadowRoot) {
+          el.shadowRoot.adoptedStyleSheets = [...(el.shadowRoot.adoptedStyleSheets || []), sheet];
+          applyToShadowRoots(el.shadowRoot);
+        }
+      }
+    })(document);
+  }).catch(() => {});
+  await page.mouse.move(0, 0);
+
   // Select closed captions — skip if Default (empty)
   const espnCcValue = closedCaptions || '';
   if (espnCcValue) (async () => {
@@ -5326,8 +5345,6 @@ async function fullScreenVideoESPN(page, encoderConfig = null, closedCaptions = 
     logTS(`ESPN CC: Could not select after 6 attempts`);
   })().catch(err => logTS(`ESPN CC background error: ${err.message}`));
 
-  await hideCursor(page);
-  await page.mouse.move(0, 0);
   logTS("finished ESPN fullscreen setup");
 }
 
