@@ -297,8 +297,43 @@ class DirecTVService extends BaseService {
       channels.push(normalized);
     }
 
+    this._resolveOverflowChannelNumbers(channels);
+
     channels.sort((a, b) => a.name.localeCompare(b.name));
     return channels;
+  }
+
+  /**
+   * Resolves duplicate channel numbers by suffixing overflow/alternate channels
+   * with a decimal (e.g. 206, 206.1, 206.2) — mirrors the bnhf adbtuner grabber's
+   * processAlternateChannelNumbers logic. Within a colliding group the primary
+   * (non-ALT) channel keeps the whole number; ALT/Overflow channels sort last
+   * and receive the decimal suffixes. Mutates the channel objects in place.
+   */
+  _resolveOverflowChannelNumbers(channels) {
+    const ALT_PATTERN = /ALT-|ALT |Alternate|Overflow/i;
+    const groups = new Map();
+
+    for (const ch of channels) {
+      if (ch.channelNumber === null || ch.channelNumber === undefined || ch.channelNumber === '') continue;
+      const key = String(ch.channelNumber);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(ch);
+    }
+
+    for (const [number, group] of groups) {
+      if (group.length < 2) continue;
+      group.sort((a, b) => {
+        const aAlt = ALT_PATTERN.test(a.name) ? 1 : 0;
+        const bAlt = ALT_PATTERN.test(b.name) ? 1 : 0;
+        if (aAlt !== bAlt) return aAlt - bAlt;
+        if (a.name.length !== b.name.length) return a.name.length - b.name.length;
+        return a.name.localeCompare(b.name);
+      });
+      group.forEach((ch, idx) => {
+        if (idx > 0) ch.channelNumber = `${number}.${idx}`;
+      });
+    }
   }
 
   getFallbackChannels() {
