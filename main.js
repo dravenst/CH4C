@@ -7293,7 +7293,7 @@ async function selectAmazonClosedCaptionsWithRetry(page, ccOption) {
   logTS(`Amazon CC: Could not select after ${maxAttempts} attempts`);
 }
 
-async function fullScreenVideoAmazon(page, closedCaptions = '') {
+async function fullScreenVideoAmazon(page, closedCaptions = '', encoderConfig = null) {
   logTS("URL contains amazon.com, setting up fullscreen for Amazon Prime Video");
 
   // If we're on a detail page (not the player), click the play/Watch Live button first.
@@ -7373,6 +7373,19 @@ async function fullScreenVideoAmazon(page, closedCaptions = '') {
   }
 
   if (videoHandle) {
+    // Re-apply audio device after navigating from detail page to player page — the player's
+    // video elements are new and didn't inherit the setSinkId set on the detail page videos.
+    if (encoderConfig && encoderConfig.audioDevice) {
+      await frameHandle.evaluate(async (video, audioDevice) => {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const targetDevice = devices.filter(d => d.kind === 'audiooutput').find(d => d.label.includes(audioDevice));
+        if (targetDevice && video.setSinkId) {
+          await video.setSinkId(targetDevice.deviceId).catch(() => {});
+        }
+      }, videoHandle, encoderConfig.audioDevice).catch(() => {});
+      logTS(`Amazon: re-applied audio device to player video: ${encoderConfig.audioDevice}`);
+    }
+
     // Wait for video to be ready - Amazon autoplays so we don't need to click play
     logTS("Waiting for Amazon video to be ready (autoplay expected)");
 
@@ -9917,7 +9930,7 @@ async function handleSiteSpecificFullscreen(targetUrl, page, encoderConfig = nul
       await fullScreenVideoYouTube(page, closedCaptions);
     } else if (targetUrl.includes("amazon.com")) {
       logTS("Handling Amazon Prime Video");
-      await fullScreenVideoAmazon(page, closedCaptions);
+      await fullScreenVideoAmazon(page, closedCaptions, encoderConfig);
     } else if (targetUrl.includes("watch.sling.com")) {
       logTS("Handling Sling video");
       await fullScreenVideoSling(page, encoderConfig, closedCaptions);
