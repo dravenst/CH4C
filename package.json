@@ -1,6 +1,6 @@
 {
   "name": "ch4c",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "bin": {
     "ch4c": "./main.js"
   },
@@ -43,7 +43,9 @@
   },
   "pkg": {
     "assets": [
-      "vendor/novnc/**/*"
+      "vendor/novnc/**/*",
+      "vendor/winsw/WinSW-x64.exe",
+      "ch4c-launcher.cs"
     ]
   },
   "scripts": {
