@@ -1,1 +1,4 @@
 * text eol=lf
+
+# Bundled binaries must be stored verbatim — never line-ending normalized.
+*.exe binary

@@ -12,8 +12,9 @@ const MAC_LABEL = 'com.ch4c';
 
 // WinSW (Windows Service Wrapper) — turns CH4C into a real Windows service
 // registered with the Service Control Manager (visible in services.msc).
-const WINSW_VERSION = 'v2.12.0';
-const WINSW_URL = `https://github.com/winsw/winsw/releases/download/${WINSW_VERSION}/WinSW-x64.exe`;
+// The wrapper executable is bundled with CH4C (vendor/winsw/WinSW-x64.exe,
+// pinned at v2.12.0) so installs work offline — no runtime download.
+const WINSW_BUNDLED = path.join(__dirname, 'vendor', 'winsw', 'WinSW-x64.exe');
 
 /**
  * Parse -d or --data-dir from install arguments.
@@ -52,17 +53,6 @@ function escapeXml(value) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&apos;');
-}
-
-/**
- * Download the WinSW wrapper executable to destPath.
- * Done once per machine on first install; cached alongside the XML config.
- */
-async function downloadWinSW(destPath) {
-  const fetch = require('node-fetch');
-  const res = await fetch(WINSW_URL);
-  if (!res.ok) throw new Error(`HTTP ${res.status} from ${WINSW_URL}`);
-  fs.writeFileSync(destPath, await res.buffer());
 }
 
 /**
@@ -168,12 +158,11 @@ async function installWindows(dataDir) {
   const xmlPath = path.join(serviceDir, 'ch4c-service.xml');
 
   if (!fs.existsSync(winswPath)) {
-    console.log('Downloading the Windows service wrapper (WinSW)...');
+    console.log('Installing the Windows service wrapper (WinSW)...');
     try {
-      await downloadWinSW(winswPath);
+      fs.writeFileSync(winswPath, fs.readFileSync(WINSW_BUNDLED));
     } catch (error) {
-      console.error(`\nFailed to download the service wrapper: ${error.message}`);
-      console.error('Check your internet connection and try again.');
+      console.error(`\nFailed to install the service wrapper: ${error.message}`);
       process.exit(1);
     }
   }
@@ -221,7 +210,7 @@ async function installWindows(dataDir) {
 
   console.log(`\nCH4C Windows service installed successfully.`);
   console.log(`  Service name: ${SERVICE_ID} (visible in services.msc)`);
-  console.log(`  Startup: Automatic (delayed)`);
+  console.log(`  Startup: Automatic`);
   console.log(`  Runs CH4C as: the logged-in user, in their interactive session`);
   if (dataDir) console.log(`  Data directory: ${dataDir}`);
   console.log(`  Files: ${serviceDir}`);
@@ -247,7 +236,10 @@ function addToPath(dir) {
   const ps = `$d='${safeDir}'; $p=[Environment]::GetEnvironmentVariable('Path','User'); `
     + `if($null -eq $p){$p=''}; if(($p -split ';') -contains $d){'present'}`
     + `else{[Environment]::SetEnvironmentVariable('Path',($p.TrimEnd(';')+';'+$d).TrimStart(';'),'User');'added'}`;
-  return execSync(`powershell -NoProfile -Command "${ps}"`, { encoding: 'utf8' }).trim();
+  // Pass the script as -EncodedCommand (base64 of UTF-16LE) so no characters in
+  // the install path can break out of the shell's command-line quoting.
+  const encoded = Buffer.from(ps, 'utf16le').toString('base64');
+  return execSync(`powershell -NoProfile -EncodedCommand ${encoded}`, { encoding: 'utf8' }).trim();
 }
 
 /** Ask a Yes/No question. Returns `defaultYes` on a blank answer, false if non-interactive. */
@@ -408,8 +400,14 @@ function uninstall(args) {
   if (process.platform === 'win32') {
     try {
       execSync(`sc stop ${SERVICE_ID}`, { stdio: 'pipe' });
-    } catch {
-      // Not running — fine
+    } catch (error) {
+      // A stop failure usually just means the service was not running. An
+      // access-denied error, though, means this needs to run elevated —
+      // surface it now rather than letting it resurface on sc delete.
+      if (error.message && error.message.includes('Access is denied')) {
+        console.error(`\nAccess denied. Run this command as Administrator.`);
+        process.exit(1);
+      }
     }
 
     let removed = false;

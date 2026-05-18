@@ -142,9 +142,40 @@ internal static class Ch4cLauncher
         Console.WriteLine("[" + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "] " + message);
     }
 
+    // Quote an argument for a Windows command line per the CommandLineToArgvW
+    // rules: wrap it in quotes when it contains a space or a quote, doubling the
+    // run of backslashes that precedes any embedded quote and escaping that
+    // quote as \".
     private static string Quote(string value)
     {
-        return value.IndexOf(' ') >= 0 ? "\"" + value + "\"" : value;
+        if (value.Length > 0 && value.IndexOf(' ') < 0 && value.IndexOf('"') < 0)
+            return value;
+
+        StringBuilder sb = new StringBuilder();
+        sb.Append('"');
+        int backslashes = 0;
+        foreach (char c in value)
+        {
+            if (c == '\\')
+            {
+                backslashes++;
+            }
+            else if (c == '"')
+            {
+                sb.Append('\\', backslashes * 2 + 1);
+                sb.Append('"');
+                backslashes = 0;
+            }
+            else
+            {
+                sb.Append('\\', backslashes);
+                sb.Append(c);
+                backslashes = 0;
+            }
+        }
+        sb.Append('\\', backslashes * 2);
+        sb.Append('"');
+        return sb.ToString();
     }
 
     // A job object that kills every process inside it once the last handle

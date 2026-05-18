@@ -44,6 +44,7 @@
   "pkg": {
     "assets": [
       "vendor/novnc/**/*",
+      "vendor/winsw/WinSW-x64.exe",
       "ch4c-launcher.cs"
     ]
   },
