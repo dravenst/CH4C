@@ -2,3 +2,8 @@
 
 # Bundled binaries must be stored verbatim — never line-ending normalized.
 *.exe binary
+*.jpg binary
+*.jpeg binary
+*.png binary
+*.gif binary
+*.ico binary
