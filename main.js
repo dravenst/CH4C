@@ -45,6 +45,15 @@ let browsers = new Map(); // key: encoderUrl, value: {browser, page}
 let launchMutex = new Map(); // key: encoderUrl, value: promise to prevent concurrent launches
 const encoderDurationTimers = new Map(); // key: encoderUrl, value: setTimeout handle
 
+// True when this process was launched by the CH4C Windows service (WinSW + ch4c-launcher).
+// sc query needs no special permissions and exits non-zero when the service doesn't exist.
+const runningAsService = process.platform === 'win32' && (() => {
+  try {
+    const out = execSync('sc query CH4C', { encoding: 'utf8', stdio: 'pipe' });
+    return /STATE\s*:\s*\d+\s+RUNNING/i.test(out);
+  } catch { return false; }
+})();
+
 function setEncoderDurationTimer(encoderUrl, fn, ms) {
   clearEncoderDurationTimer(encoderUrl);
   const handle = setTimeout(fn, ms);
@@ -9282,7 +9291,8 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
       defaults: { ...getDefaults(), dataDir: Constants.DEFAULT_DATA_DIR },
       cliOverrides: Constants.CLI_OVERRIDES || {},
       configSource: Constants.USING_CONFIG_FILE ? 'file' : 'cli',
-      configPath: Constants.CONFIG_FILE_PATH
+      configPath: Constants.CONFIG_FILE_PATH,
+      runningAsService
     });
   });
 

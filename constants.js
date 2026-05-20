@@ -1799,6 +1799,22 @@ const INSTANT_PAGE_HTML = `
             box-shadow: 0 8px 16px rgba(102, 126, 234, 0.2);
         }
 
+        .btn-warning {
+            background: linear-gradient(135deg, #f6ad55 0%, #ed8936 100%);
+            color: white;
+        }
+
+        .btn-warning:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 16px rgba(237, 137, 54, 0.4);
+        }
+
+        .btn-warning:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
         #record_later_btn {
             background: linear-gradient(135deg, #38b2ac 0%, #2c7a7b 100%);
             color: white;
@@ -6546,6 +6562,7 @@ const SETTINGS_PAGE_HTML = `
             html += '<div class="action-buttons">';
             html += '<button class="btn btn-secondary" onclick="cancelSettings()">Cancel</button>';
             html += '<button class="btn btn-primary" id="save-btn" onclick="saveSettings()" disabled>Save</button>';
+            html += '<button class="btn btn-warning" id="restart-btn" onclick="restartService()" style="display:none">Restart Now</button>';
             html += '</div></div>';
 
             return html;
@@ -7028,11 +7045,13 @@ const SETTINGS_PAGE_HTML = `
                 if (data.migratedFiles && data.migratedFiles.length > 0) {
                     successMsg += ' Migrated ' + data.migratedFiles.join(', ') + ' to new data directory.';
                 }
-                successMsg += ' Please restart CH4C for changes to take effect.';
+                successMsg += ' Restart CH4C to apply changes.';
                 showMessage(successMsg, 'success');
                 hasChanges = false;
                 var btn = document.getElementById('save-btn');
                 if (btn) btn.disabled = true;
+                var restartBtn = document.getElementById('restart-btn');
+                if (restartBtn && settingsData && settingsData.runningAsService) restartBtn.style.display = '';
             } catch (e) {
                 showMessage('Failed to save: ' + e.message, 'error');
             }
@@ -7042,6 +7061,28 @@ const SETTINGS_PAGE_HTML = `
             hasChanges = true;
             var btn = document.getElementById('save-btn');
             if (btn) btn.disabled = false;
+        }
+
+        async function restartService() {
+            var btn = document.getElementById('restart-btn');
+            if (btn) { btn.disabled = true; btn.textContent = 'Restarting…'; }
+            try {
+                await fetch('/api/settings/restart', { method: 'POST' });
+            } catch (_) { /* server going down is expected */ }
+            showMessage('Restarting… This page will reload when CH4C is back.', 'success');
+            var deadline = Date.now() + 60000;
+            var poll = setInterval(async function() {
+                if (Date.now() > deadline) {
+                    clearInterval(poll);
+                    showMessage('Restart timed out. Refresh manually when CH4C is ready.', 'error');
+                    if (btn) { btn.disabled = false; btn.textContent = 'Restart Now'; }
+                    return;
+                }
+                try {
+                    var r = await fetch('/api/settings', { cache: 'no-store' });
+                    if (r.ok) { clearInterval(poll); location.reload(); }
+                } catch (_) { /* still restarting */ }
+            }, 1500);
         }
 
         function checkDataDirChange() {
