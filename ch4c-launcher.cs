@@ -97,7 +97,29 @@ internal static class Ch4cLauncher
     private static extern uint WTSGetActiveConsoleSessionId();
 
     [DllImport("wtsapi32.dll", SetLastError = true)]
+    private static extern bool WTSEnumerateSessions(IntPtr hServer, uint Reserved, uint Version,
+        out IntPtr ppSessionInfo, out uint pCount);
+
+    [DllImport("wtsapi32.dll")]
+    private static extern void WTSFreeMemory(IntPtr pMemory);
+
+    [DllImport("wtsapi32.dll", SetLastError = true)]
     private static extern bool WTSQueryUserToken(uint sessionId, out IntPtr token);
+
+    private enum WTS_CONNECTSTATE_CLASS
+    {
+        WTSActive, WTSConnected, WTSConnectQuery, WTSShadow,
+        WTSDisconnected, WTSIdle, WTSListen, WTSReset, WTSDown, WTSInit
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct WTS_SESSION_INFO
+    {
+        public uint SessionId;
+        [MarshalAs(UnmanagedType.LPWStr)]
+        public string pWinStationName;
+        public WTS_CONNECTSTATE_CLASS State;
+    }
 
     [DllImport("advapi32.dll", SetLastError = true)]
     private static extern bool DuplicateTokenEx(IntPtr hExistingToken, uint dwDesiredAccess,
@@ -196,10 +218,45 @@ internal static class Ch4cLauncher
         return job;
     }
 
+    // Finds the best session with a logged-in interactive user.
+    // Enumerates all WTSActive sessions first (covers console and RDP), falling
+    // back to WTSGetActiveConsoleSessionId for the physical-console case.
+    // Returns INVALID_SESSION if no suitable session is found.
+    private static uint FindActiveUserSession()
+    {
+        IntPtr pSessions = IntPtr.Zero;
+        uint count = 0;
+        if (WTSEnumerateSessions(IntPtr.Zero, 0, 1, out pSessions, out count))
+        {
+            try
+            {
+                int stride = Marshal.SizeOf(typeof(WTS_SESSION_INFO));
+                for (uint i = 0; i < count; i++)
+                {
+                    WTS_SESSION_INFO info = (WTS_SESSION_INFO)Marshal.PtrToStructure(
+                        new IntPtr(pSessions.ToInt64() + i * stride), typeof(WTS_SESSION_INFO));
+                    if (info.State != WTS_CONNECTSTATE_CLASS.WTSActive || info.SessionId == 0)
+                        continue;
+                    IntPtr testToken;
+                    if (WTSQueryUserToken(info.SessionId, out testToken))
+                    {
+                        CloseHandle(testToken);
+                        return info.SessionId;
+                    }
+                }
+            }
+            finally
+            {
+                WTSFreeMemory(pSessions);
+            }
+        }
+        return WTSGetActiveConsoleSessionId();
+    }
+
     // Spawns CH4C in the active console session and blocks until it exits.
     private static void RunOnce(string exePath, string commandLine, string workingDir, IntPtr job)
     {
-        uint sessionId = WTSGetActiveConsoleSessionId();
+        uint sessionId = FindActiveUserSession();
         if (sessionId == INVALID_SESSION)
             throw new Exception("No interactive user session is currently attached.");
 
