@@ -240,6 +240,8 @@ Navigate to `http://<CH4C_IP>:<CH4C_PORT>/settings` to configure:
 
 ![Settings Page](./assets/settings-page.jpg)
 
+After saving, a **Restart Now** button appears (Windows service installs only) to apply changes immediately — CH4C exits and the service restarts it automatically.
+
 ### M3U Manager
 
 Navigate to `http://<CH4C_IP>:<CH4C_PORT>/m3u-manager` to:
