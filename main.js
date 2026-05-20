@@ -7744,6 +7744,7 @@ async function main() {
   }
 
   initLogger(Constants.DATA_DIR);
+  logTS(`Data directory: ${Constants.DATA_DIR}`);
 
   const app = express();
   app.use(express.json());
@@ -9278,7 +9279,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
       encoders: Constants.ENCODERS,
       metadata: CONFIG_METADATA,
       encoderFields: ENCODER_FIELDS,
-      defaults: getDefaults(),
+      defaults: { ...getDefaults(), dataDir: Constants.DEFAULT_DATA_DIR },
       cliOverrides: Constants.CLI_OVERRIDES || {},
       configSource: Constants.USING_CONFIG_FILE ? 'file' : 'cli',
       configPath: Constants.CONFIG_FILE_PATH

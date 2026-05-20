@@ -7259,6 +7259,7 @@ module.exports = {
   CHROME_USERDATA_DIRECTORIES,
   CHROME_EXECUTABLE_DIRECTORIES,
   CH4C_PROFILES_DIR: getDefaultProfilesDir(),
+  DEFAULT_DATA_DIR: getDefaultDataDir(),
   CONFIG_FILE_PATH: configFilePath,
   USING_CONFIG_FILE: usingConfigFile,
   CLI_OVERRIDES: cliOverrides

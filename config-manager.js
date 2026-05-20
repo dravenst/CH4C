@@ -48,8 +48,7 @@ const CONFIG_METADATA = {
       path: 'dataDir',
       label: 'Data Directory',
       description: 'Directory for persistent storage (config file and SSL certificates)',
-      type: 'path',
-      default: 'data'
+      type: 'path'
     }
   ],
   monitoring: [
