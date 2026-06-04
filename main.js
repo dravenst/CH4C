@@ -7508,41 +7508,45 @@ function getExecutablePath() {
 
 function buildRecordingJson(name, duration, encoderChannel, episodeTitle, summary, seasonNumber, episodeNumber, imageUrl) {
   const startTime = Math.round(Date.now() / 1000) + 3;
+  const isMovie = !episodeTitle && !seasonNumber && !episodeNumber;
+  const titleSlug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 8).replace(/-$/, '');
 
-  const data = {
+  const airing = {
+    "Source": "manual",
+    "Channel": encoderChannel,
+    "Time": startTime,
+    "Duration": duration * 60,
+    "Title": name,
+    "Summary": summary || `Manual recording: ${name}`,
+    "Image": imageUrl || "https://tmsimg.fancybits.co/assets/p9467679_st_h6_aa.jpg",
+    "Genres": [],
+  };
+
+  if (isMovie) {
+    airing.Categories = ["Movie"];
+    airing.MovieID = titleSlug;
+    airing.ProgramID = `MAN${startTime}`;
+  } else {
+    airing.EpisodeTitle = episodeTitle || name;
+    airing.SeriesID = titleSlug;
+    airing.ProgramID = `MAN${startTime}`;
+    if (seasonNumber && seasonNumber.trim() !== '') {
+      const seasonNum = parseInt(seasonNumber.trim());
+      if (!isNaN(seasonNum) && seasonNum > 0) airing.SeasonNumber = seasonNum;
+    }
+    if (episodeNumber && episodeNumber.trim() !== '') {
+      const episodeNum = parseInt(episodeNumber.trim());
+      if (!isNaN(episodeNum) && episodeNum > 0) airing.EpisodeNumber = episodeNum;
+    }
+  }
+
+  return JSON.stringify({
     "Name": name,
     "Time": startTime,
     "Duration": duration * 60,
-    "Channels": [encoderChannel],  // Use the specific encoder's channel
-    "Airing": {
-      "Source": "manual",
-      "Channel": encoderChannel,  // Use the specific encoder's channel
-      "Time": startTime,
-      "Duration": duration * 60,
-      "Title": name,
-      "EpisodeTitle": episodeTitle || name,
-      "Summary": summary || `Manual recording: ${name}`,
-      "Image": imageUrl || "https://tmsimg.fancybits.co/assets/p9467679_st_h6_aa.jpg",
-      "SeriesID": "MANUAL",
-      "ProgramID": `MAN${startTime}`,
-    }
-  }
-
-  // Add SeasonNumber and EpisodeNumber only if provided (must be integers)
-  if (seasonNumber && seasonNumber.trim() !== '') {
-    const seasonNum = parseInt(seasonNumber.trim());
-    if (!isNaN(seasonNum) && seasonNum > 0) {
-      data.Airing.SeasonNumber = seasonNum;
-    }
-  }
-  if (episodeNumber && episodeNumber.trim() !== '') {
-    const episodeNum = parseInt(episodeNumber.trim());
-    if (!isNaN(episodeNum) && episodeNum > 0) {
-      data.Airing.EpisodeNumber = episodeNum;
-    }
-  }
-
-  return JSON.stringify(data)
+    "Channels": [encoderChannel],
+    "Airing": airing,
+  });
 }
 
 async function startRecording(name, duration, encoderChannel, episodeTitle, summary, seasonNumber, episodeNumber, imageUrl) {
