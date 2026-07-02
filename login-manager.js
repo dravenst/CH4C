@@ -215,6 +215,9 @@ const LOGIN_SITES = [
     searchSelector: '#WatchProvider__Search',
     // <ul class="WatchProvider__Affiliates"><li class="WatchProvider__Affiliate__Item"><a href="#">Armstrong</a></li></ul>
     resultSelector: 'li.WatchProvider__Affiliate__Item a, .WatchProvider__Affiliates li a',
+    // At smaller viewports the panel clips the list in an overflow container; coordinate-based
+    // mouse clicks can miss the element. DOM synthetic click fires directly on the element.
+    domClickResult: true,
   },
   {
     id: 'fox',
@@ -255,6 +258,9 @@ const LOGIN_SITES = [
     //   <div><h2 class="mvpd-provider fs-20 cl-gr-2">Armstrong</h2></div>
     // </div>
     resultSelector: 'h2.mvpd-provider, .searched .mvpd-provider',
+    // h2 result has a JS click handler — DOM synthetic click is more reliable than
+    // coordinate-based mouse click (same reasoning as ESPN's domClickResult).
+    domClickResult: true,
     // After SAML completes Fox Sports redirects back to:
     //   https://www.foxsports.com/live/fs1#no_universal_links
     // which is the same origin as checkUrl — standard checkLogin works fine.

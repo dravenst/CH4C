@@ -33,8 +33,8 @@ async function killChromeProcessesWindows(userDataDir) {
     // Normalize the path for comparison
     const normalizedPath = userDataDir.toLowerCase().replace(/\//g, '\\');
 
-    // Get all Chrome processes with their command lines
-    const output = execSync('wmic process where "name=\'chrome.exe\'" get commandline,processid', {
+    // Get all Chrome processes with their command lines (wmic removed in Windows 11 24H2+)
+    const output = execSync('powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \'name=\\\"chrome.exe\\\"\' | ForEach-Object { $_.CommandLine + \' \' + $_.ProcessId }"', {
       encoding: 'utf8',
       timeout: 5000
     });

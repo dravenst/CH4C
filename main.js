@@ -2500,8 +2500,8 @@ async function checkForRunningChromeWithProfiles() {
   return new Promise((resolve) => {
     const { exec } = require('child_process');
     
-    // Use WMIC to find Chrome processes and their command lines
-    exec('wmic process where "name=\'chrome.exe\'" get ProcessId,CommandLine /format:csv', (error, stdout) => {
+    // Use PowerShell to find Chrome processes (wmic removed in Windows 11 24H2+)
+    exec('powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \'name=\\\"chrome.exe\\\"\' | ForEach-Object { $_.CommandLine + \' \' + $_.ProcessId }"', (error, stdout) => {
       if (error || !stdout) {
         resolve([]);
         return;
@@ -2688,6 +2688,7 @@ const createCleanupManager = () => {
   let activeBrowsers = new Map(); // Track active browser instances by encoder URL
   let recoveryInProgress = new Map(); // Track recovery operations to prevent duplicates
   let intentionalClose = new Map(); // Track intentional browser closes
+  let pendingLogin = new Map(); // encoderUrl → siteId for auto-login after cleanup
   
   process.on('SIGINT', async () => {
     logTS('Caught interrupt signal');
@@ -2706,6 +2707,46 @@ const createCleanupManager = () => {
     }
     process.exit();
   });
+
+  // Mark encoder available, triggering background auto-login if a logout was detected.
+  // Called from both the cleanup re-init path and all recovery manager paths so the
+  // auto-login fires regardless of which path brings the browser back online.
+  function makeAvailable(encoderUrl) {
+    if (pendingLogin.has(encoderUrl)) {
+      const siteId = pendingLogin.get(encoderUrl);
+      pendingLogin.delete(encoderUrl);
+      const siteConfig = LOGIN_SITES.find(s => s.id === siteId);
+      const credKey = siteConfig?.type === 'tve' ? '_tve_provider' : siteId;
+      const creds = credentialsStore.getCredentials(credKey);
+      if (!creds) {
+        logTS(`${siteId} auto-login skipped for ${encoderUrl} — no credentials saved in ${Constants.DATA_DIR} (use Login Manager to save them)`);
+      } else if (!browsers.has(encoderUrl)) {
+        logTS(`${siteId} auto-login skipped for ${encoderUrl} — browser not in pool`);
+      } else {
+        logTS(`${siteId} logged out — auto-login starting for ${encoderUrl}`);
+        activeBrowsers.set(encoderUrl, true); // Hold until login completes
+        const singleBrowser = new Map([[encoderUrl, browsers.get(encoderUrl)]]);
+        loginEncoders({
+          siteId,
+          ...creds,
+          encoders: Constants.ENCODERS,
+          browsers: singleBrowser,
+          activeStreams: null,
+          statusCallback: () => {}
+        }).then(() => {
+          logTS(`${siteId} auto-login complete for ${encoderUrl}`);
+        }).catch(e => {
+          logTS(`${siteId} auto-login failed for ${encoderUrl}: ${e.message}`);
+        }).finally(() => {
+          activeBrowsers.delete(encoderUrl);
+          logTS(`Browser set available (inactive) for encoder ${encoderUrl}`);
+        });
+        return;
+      }
+    }
+    activeBrowsers.delete(encoderUrl);
+    logTS(`Browser set available (inactive) for encoder ${encoderUrl}`);
+  }
 
   return {
     cleanup: async (encoderUrl, res) => {
@@ -2781,7 +2822,7 @@ const createCleanupManager = () => {
                 }
               }
 
-              activeBrowsers.delete(encoderUrl); // Make encoder available
+              makeAvailable(encoderUrl);
             } else {
               logTS(`Failed to re-initialize browser for ${encoderUrl} in pool.`);
               // Keep in activeBrowsers to prevent immediate reuse
@@ -2803,10 +2844,7 @@ const createCleanupManager = () => {
       activeBrowsers.set(encoderUrl, true);
       logTS(`Browser set active for encoder ${encoderUrl}`);
     },
-    setBrowserAvailable: (encoderUrl) => {
-      activeBrowsers.delete(encoderUrl);
-      logTS(`Browser set available (inactive) for encoder ${encoderUrl}`);
-    },
+    setBrowserAvailable: (encoderUrl) => makeAvailable(encoderUrl),
     isRecoveryInProgress: (encoderUrl) => recoveryInProgress.get(encoderUrl),
     setRecoveryInProgress: (encoderUrl, value) => {
       if (value) {
@@ -2816,7 +2854,8 @@ const createCleanupManager = () => {
       }
     },
     isIntentionalClose: (encoderUrl) => intentionalClose.get(encoderUrl),
-    getState: () => ({ 
+    markLogoutDetected: (encoderUrl, siteId) => pendingLogin.set(encoderUrl, siteId),
+    getState: () => ({
       closingStates: Array.from(closingStates.entries()),
       activeBrowsers: Array.from(activeBrowsers.keys()),
       recoveryInProgress: Array.from(recoveryInProgress.keys()),
@@ -3472,6 +3511,46 @@ async function setupBrowserAudio(page, encoderConfig, targetUrl = null) {
     };
   });
  
+  // Detect logged-out state early for any site with an immediate loggedOutIndicator,
+  // so we can auto-login after this stream attempt fails.
+  // Sites with checkLoginWaitMs need SPA hydration time and are skipped here (Phase 2).
+  if (targetUrl && encoderConfig?.url) {
+    try {
+      const targetHost = new URL(targetUrl).hostname.replace(/^www\./, '');
+      const siteConfig = LOGIN_SITES.find(s => {
+        if (!s.loggedOutIndicator || s.checkLoginWaitMs) return false;
+        try {
+          const siteHost = new URL(s.checkUrl).hostname.replace(/^www\./, '');
+          return targetHost === siteHost || targetHost.endsWith('.' + siteHost);
+        } catch (_) { return false; }
+      });
+      if (siteConfig) {
+        const loggedOutEl = await page.$(siteConfig.loggedOutIndicator).catch(() => null);
+        if (loggedOutEl) {
+          logTS(`${siteConfig.name} logged out on ${encoderConfig.url} — scheduling auto-login after cleanup`);
+          if (global.cleanupManager) global.cleanupManager.markLogoutDetected(encoderConfig.url, siteConfig.id);
+        }
+      }
+    } catch (_) {}
+  }
+
+  // Fox Sports: click the JWPlayer overlay play button before starting the video wait.
+  // The overlay appears a few seconds after domcontentloaded; without clicking it, JWPlayer
+  // never starts the stream and the video element never reaches readyState >= 2.
+  if (targetUrl && targetUrl.includes('foxsports.com')) {
+    for (let i = 0; i < 20; i++) {
+      try {
+        const clicked = await page.evaluate(() => {
+          const btn = document.querySelector('#overlayPlay a.overlay-play-button, a.overlay-play-button[aria-label="play"]');
+          if (btn && btn.offsetParent !== null) { btn.click(); return true; }
+          return false;
+        });
+        if (clicked) { logTS('Fox Sports: clicked overlay play button'); break; }
+      } catch (_) {}
+      await delay(500);
+    }
+  }
+
   // calls checkforvideos constantly until either at least one video is ready or the 60s timer expires
   // For Sling, we need to handle modals that may appear during video loading
   if (page.url().includes("watch.sling.com")) {
@@ -8394,6 +8473,12 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
                   waitUntil: 'load',
                   timeout: navigationTimeout
                 });
+              } else if (targetUrl.includes("foxsports.com")) {
+                // JWPlayer starts streaming immediately, so networkidle2 never fires
+                await page.goto(targetUrl, {
+                  waitUntil: 'domcontentloaded',
+                  timeout: navigationTimeout
+                });
               } else {
                 await page.goto(targetUrl, {
                   waitUntil: 'networkidle2',
@@ -9934,6 +10019,22 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
   process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 }
 
+async function fullScreenVideoFoxSports(page) {
+  logTS("Fox Sports: setting up fullscreen");
+
+  // Play was already clicked in setupBrowserAudio; just unmute and go fullscreen.
+  await page.evaluate(() => {
+    const video = document.querySelector('.fs-player video, video');
+    if (video) {
+      video.muted = false;
+      if (video.volume === 0) video.volume = 1;
+      video.requestFullscreen?.();
+    }
+  }).catch(() => {});
+
+  logTS("Fox Sports: fullscreen setup complete");
+}
+
 // Helper function to consolidate site-specific fullscreen logic
 async function handleSiteSpecificFullscreen(targetUrl, page, encoderConfig = null, closedCaptions = '') {
   try {
@@ -9971,6 +10072,9 @@ async function handleSiteSpecificFullscreen(targetUrl, page, encoderConfig = nul
     } else if (targetUrl.includes("disneynow.com")) {
       logTS("Handling DisneyNow video");
       await fullScreenVideoDisneyNow(page);
+    } else if (targetUrl.includes("foxsports.com")) {
+      logTS("Handling Fox Sports video");
+      await fullScreenVideoFoxSports(page);
     } else if (targetUrl.includes("fxnow.fxnetworks.com") || targetUrl.includes("abc.com")) {
       logTS("Handling FXNow/ABC video");
       await fullScreenVideoFXNow(page);

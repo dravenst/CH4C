@@ -118,8 +118,10 @@ function getCredentials(siteId) {
     const entry = store[siteId];
     if (!entry) return null;
     return decryptJson(entry, getOrCreateKey());
-  } catch (_) {
+  } catch (e) {
     // Corrupted entry or mismatched key — treat as not found
+    const { logTS } = require('./logger');
+    logTS(`credentials-store: getCredentials('${siteId}') failed (dir: ${_dataDir}): ${e.message}`);
     return null;
   }
 }
