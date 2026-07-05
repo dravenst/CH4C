@@ -143,14 +143,27 @@ async function executeScheduledRecording(params, appLocals) {
   }
 }
 
+// setTimeout delays are a 32-bit signed int internally; anything beyond this fires immediately instead of waiting.
+const MAX_TIMEOUT_MS = 2147483647;
+
 function scheduleRecording(id, params, scheduledTime, appLocals) {
-  const delayMs = Math.max(0, scheduledTime - Date.now());
-  const timerId = setTimeout(async () => {
-    scheduledRecordings.delete(id);
-    saveScheduledRecordings();
-    await executeScheduledRecording(params, appLocals);
-  }, delayMs);
-  scheduledRecordings.set(id, { params, scheduledTime, timerId, appLocals });
+  const arm = () => {
+    const delayMs = Math.max(0, scheduledTime - Date.now());
+    let timerId;
+    if (delayMs > MAX_TIMEOUT_MS) {
+      timerId = setTimeout(arm, MAX_TIMEOUT_MS);
+    } else {
+      timerId = setTimeout(async () => {
+        scheduledRecordings.delete(id);
+        saveScheduledRecordings();
+        await executeScheduledRecording(params, appLocals);
+      }, delayMs);
+    }
+    const entry = scheduledRecordings.get(id);
+    if (entry) entry.timerId = timerId;
+  };
+  scheduledRecordings.set(id, { params, scheduledTime, timerId: null, appLocals });
+  arm();
   saveScheduledRecordings();
 }
 
