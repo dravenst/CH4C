@@ -7,6 +7,8 @@ const { URL } = require('url');
 const { logTS } = require('./logger');
 const { AudioDeviceManager, DisplayManager } = require('./audio-device-manager');
 
+const APP_VERSION = require('./package.json').version;
+
 // Computed once for Win32 migration: check if legacy ./data exists before any dir is created
 const _win32AppDataDir = process.platform === 'win32'
   ? path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'ch4c')
@@ -6443,6 +6445,31 @@ const SETTINGS_PAGE_HTML = `
             }
         }
 
+        async function checkForUpdate() {
+            const btn = document.getElementById('check-update-btn');
+            const result = document.getElementById('update-check-result');
+            btn.disabled = true;
+            result.textContent = 'Checking...';
+            try {
+                const res = await fetch('/api/check-update');
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'Check failed');
+                if (data.updateAvailable) {
+                    result.innerHTML = 'Update available: v' + escapeHtml(data.latestVersion) +
+                        ' &mdash; <a href="' + escapeHtml(data.releaseUrl) + '" target="_blank">View Release</a>';
+                    if (data.downloadUrl) {
+                        result.innerHTML += ' &mdash; <a href="' + escapeHtml(data.downloadUrl) + '"><button class="btn btn-primary" style="padding:4px 12px;">Download</button></a>';
+                    }
+                } else {
+                    result.textContent = 'You are running the latest version.';
+                }
+            } catch (error) {
+                result.textContent = 'Error: ' + error.message;
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
         function renderAll() {
             let html = '';
             const { values, encoders, metadata, defaults, cliOverrides, configSource, configPath } = settingsData;
@@ -6554,6 +6581,16 @@ const SETTINGS_PAGE_HTML = `
                 }
                 html += '</div>';
             }
+
+            // About section
+            html += '<div class="section">';
+            html += '<div class="section-header">About</div>';
+            html += '<div class="form-group">';
+            html += '<div class="form-row"><span class="form-label">Version</span><span>' + escapeHtml(settingsData.appVersion || 'unknown') + '</span></div>';
+            html += '<div class="form-description">';
+            html += '<button class="btn btn-secondary" onclick="checkForUpdate()" id="check-update-btn">Check for Updates</button>';
+            html += ' <span id="update-check-result"></span>';
+            html += '</div></div></div>';
 
             // Action bar
             html += '<div class="action-bar">';
@@ -7275,6 +7312,7 @@ const SETTINGS_PAGE_HTML = `
 `;
 
 module.exports = {
+  APP_VERSION,
   CHANNELS_URL: config.CHANNELS_URL,
   CHANNELS_PORT: config.CHANNELS_PORT,
   ENCODERS: config.ENCODERS,

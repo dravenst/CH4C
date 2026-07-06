@@ -7849,6 +7849,7 @@ async function main() {
   }
 
   initLogger(Constants.DATA_DIR);
+  logTS(`CH4C version ${Constants.APP_VERSION}`);
   logTS(`Data directory: ${Constants.DATA_DIR}`);
 
   const app = express();
@@ -9394,8 +9395,48 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
       cliOverrides: Constants.CLI_OVERRIDES || {},
       configSource: Constants.USING_CONFIG_FILE ? 'file' : 'cli',
       configPath: Constants.CONFIG_FILE_PATH,
-      runningAsService
+      runningAsService,
+      appVersion: Constants.APP_VERSION
     });
+  });
+
+  // Check GitHub for the latest release and compare against the running version
+  app.get('/api/check-update', async (req, res) => {
+    try {
+      const response = await fetch('https://api.github.com/repos/dravenst/CH4C/releases/latest', {
+        headers: { 'User-Agent': 'CH4C' }
+      });
+      if (!response.ok) {
+        throw new Error(`GitHub API returned ${response.status}`);
+      }
+      const release = await response.json();
+      const latestVersion = (release.tag_name || '').replace(/^v/i, '');
+      const currentVersion = Constants.APP_VERSION;
+
+      const toParts = (v) => v.split('.').map(n => parseInt(n, 10) || 0);
+      const currentParts = toParts(currentVersion);
+      const latestParts = toParts(latestVersion);
+      let updateAvailable = false;
+      for (let i = 0; i < Math.max(currentParts.length, latestParts.length); i++) {
+        const c = currentParts[i] || 0;
+        const l = latestParts[i] || 0;
+        if (l > c) { updateAvailable = true; break; }
+        if (l < c) break;
+      }
+
+      const assetName = process.platform === 'win32' ? 'ch4c.exe' : 'ch4c';
+      const asset = (release.assets || []).find(a => a.name === assetName);
+
+      res.json({
+        currentVersion,
+        latestVersion,
+        updateAvailable,
+        releaseUrl: release.html_url,
+        downloadUrl: asset ? asset.browser_download_url : null
+      });
+    } catch (error) {
+      res.status(502).json({ error: `Could not check for updates: ${error.message}` });
+    }
   });
 
   // Save settings - validate and write to config.json
