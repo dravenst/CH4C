@@ -18,6 +18,7 @@ Options:
   -m, --enable-pause-monitor      Enable video pause detection/resume    [default: true]
   -i, --pause-monitor-interval    Pause check interval in seconds        [default: 10]
   -b, --browser-health-interval   Browser health check interval (hours)  [default: 6]
+  -v, --version                   Show version number
   -h, --help                      Show help
 ```
 
