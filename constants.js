@@ -448,8 +448,8 @@ const argv = yargs(rawArgs)
   .help(false)  // Disable built-in help to handle it in fail()
   .alias('help', 'h')
   .wrap(null)  // Don't wrap help text
-  .version(false)  // Disable version number in help
-  .alias('version', 'v')
+  .version(false)  // Disable built-in version flag to handle it manually below
+  .option('version', { alias: 'v', type: 'boolean', describe: 'Show version number' })
   .strict()
   .exitProcess(false)  // Prevent yargs from calling process.exit()
   .fail((msg, err, yargs) => {
@@ -478,11 +478,19 @@ if (yargsErrorOccurred) {
   return;
 }
 
+// If version was requested, print it and exit
+// Note: yargs .version(false) disables the built-in flag, so we need to check for it manually
+if (argv.version) {
+  console.log(APP_VERSION);
+  process.exit(0);
+}
+
 // If help was requested explicitly, handle it here
 // Note: yargs .help(false) disables built-in help, so we need to check for it manually
 if (argv.help) {
   // Create a temporary yargs instance for showing help
   const helpYargs = yargs()
+    .version(false)
     .option('channels-url', { alias: 's', type: 'string', describe: 'Channels server URL' })
     .option('channels-port', { alias: 'p', type: 'string', default: '8089', describe: 'Channels server port' })
     .option('encoder', { alias: 'e', type: 'array', describe: 'Encoder configurations in format "url[:channel:width_pos:height_pos:audio_device]" where channel is optional (format: xx.xx, default: 24.42), width_pos/height_pos are optional screen positions (default: 0:0), and audio_device is the optional audio output device name' })
@@ -493,6 +501,7 @@ if (argv.help) {
     .option('browser-health-interval', { alias: 'b', type: 'number', default: 6, describe: 'Interval in hours to check browser health (default: 6)' })
     .option('ch4c-ssl-port', { alias: 't', type: 'number', describe: 'Enable HTTPS on specified port' })
     .option('ssl-hostnames', { alias: 'n', type: 'string', describe: 'Additional hostnames/IPs for SSL certificate (comma-separated)' })
+    .option('version', { alias: 'v', type: 'boolean', describe: 'Show version number' })
     .usage('Usage: $0 [options]\n       $0 service <install|uninstall|status|start|stop>\n\nAll parameters are optional. You can configure settings via the web UI at http://localhost:<ch4c-port>/settings')
     .example('> $0 -s "http://192.168.50.50" -e "http://192.168.50.71/live/stream0"')
     .example('\nSimple example with channels server at 192.168.50.50 and single encoder at 192.168.50.71')
@@ -501,8 +510,7 @@ if (argv.help) {
     .example('\nWhen specifying more than one encoder, you will need to find the audio device Name and specify the first portion of it at the end of the encoder param.')
     .epilogue('Service Commands:\n  $0 service install [-d <path>]   Install as a service that starts at login (Windows: Task Scheduler, macOS: launchd)\n  $0 service uninstall             Remove the service\n  $0 service status                Check if installed and running\n  $0 service start                 Start the service\n  $0 service stop                  Stop CH4C gracefully')
     .help()
-    .wrap(null)
-    .version(false);
+    .wrap(null);
 
   // Show help
   helpYargs.showHelp();
