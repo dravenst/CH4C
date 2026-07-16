@@ -5988,6 +5988,7 @@ const LOGS_PAGE_HTML = `
 
         <div class="controls">
             <button id="pauseBtn" class="btn-primary" onclick="togglePause()">Pause</button>
+            <button id="prevLogBtn" class="btn-secondary" onclick="togglePreviousLog()">View Previous Log</button>
             <button class="btn-secondary" onclick="clearDisplay()">Clear Display</button>
             <button class="btn-secondary" onclick="downloadLogs()">Download Logs</button>
             <div class="status-indicator">
@@ -6004,9 +6005,10 @@ const LOGS_PAGE_HTML = `
         let isPaused = false;
         let lastLogCount = 0;
         let pollInterval = null;
+        let viewingPrevious = false;
 
         async function fetchLogs() {
-            if (isPaused) return;
+            if (isPaused || viewingPrevious) return;
 
             try {
                 const response = await fetch('/api/logs');
@@ -6015,6 +6017,46 @@ const LOGS_PAGE_HTML = `
                 lastLogCount = data.logs.length;
             } catch (error) {
                 console.error('Error fetching logs:', error);
+            }
+        }
+
+        // Parses "[timestamp] message" lines from the raw previous-log text file
+        // into the {timestamp, message} shape renderLogs() expects.
+        function parseLogText(text) {
+            return text.split('\\n').filter(line => line.length > 0).map(line => {
+                const match = line.match(/^\\[(.*?)\\]\\s(.*)$/);
+                return match ? { timestamp: match[1], message: match[2] } : { timestamp: '', message: line };
+            });
+        }
+
+        async function togglePreviousLog() {
+            viewingPrevious = !viewingPrevious;
+            const btn = document.getElementById('prevLogBtn');
+            const dot = document.getElementById('statusDot');
+            const text = document.getElementById('statusText');
+
+            if (viewingPrevious) {
+                btn.textContent = 'View Live Log';
+                dot.classList.add('paused');
+                text.textContent = 'Previous Log';
+
+                try {
+                    const response = await fetch('/api/logs/previous');
+                    if (!response.ok) {
+                        document.getElementById('logContainer').innerHTML = '';
+                        document.getElementById('logCount').textContent = 'No previous log file found';
+                        return;
+                    }
+                    const logText = await response.text();
+                    renderLogs(parseLogText(logText));
+                } catch (error) {
+                    console.error('Error fetching previous log:', error);
+                }
+            } else {
+                btn.textContent = 'View Previous Log';
+                dot.classList.remove('paused');
+                text.textContent = isPaused ? 'Paused' : 'Live';
+                fetchLogs();
             }
         }
 
@@ -6069,21 +6111,33 @@ const LOGS_PAGE_HTML = `
         }
 
         function downloadLogs() {
+            if (viewingPrevious) {
+                fetch('/api/logs/previous')
+                    .then(response => response.ok ? response.text() : Promise.reject(new Error('No previous log file found')))
+                    .then(logText => saveTextFile(logText, 'ch4c-prev-logs'))
+                    .catch(error => console.error('Error downloading previous log:', error));
+                return;
+            }
+
             fetch('/api/logs')
                 .then(response => response.json())
                 .then(data => {
                     const logText = data.logs.map(log => \`[\${log.timestamp}] \${log.message}\`).join('\\n');
-                    const blob = new Blob([logText], { type: 'text/plain' });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = \`ch4c-logs-\${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.txt\`;
-                    document.body.appendChild(a);
-                    a.click();
-                    document.body.removeChild(a);
-                    URL.revokeObjectURL(url);
+                    saveTextFile(logText, 'ch4c-logs');
                 })
                 .catch(error => console.error('Error downloading logs:', error));
+        }
+
+        function saveTextFile(text, filePrefix) {
+            const blob = new Blob([text], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = \`\${filePrefix}-\${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.txt\`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
         }
 
         // Initial fetch and start polling

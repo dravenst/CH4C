@@ -2423,12 +2423,12 @@ async function isPortInUseNetstat(port) {
   }
   
   return new Promise((resolve) => {
-    exec(`netstat -an | findstr :${port}`, (error, stdout) => {
+    exec(`netstat -an | findstr :${port}`, { timeout: 5000 }, (error, stdout) => {
       if (error || !stdout) {
         resolve(false); // No output means port not in use
         return;
       }
-      
+
       // Check if port is in LISTENING state (ignore ESTABLISHED outbound connections)
       const lines = stdout.split('\n');
       for (const line of lines) {
@@ -2453,7 +2453,7 @@ async function findProcessUsingPort(port) {
   
   return new Promise((resolve) => {
     // Use netstat -anob to get process names directly (requires admin) or -ano (no admin)
-    exec(`netstat -ano | findstr :${port}`, (error, stdout) => {
+    exec(`netstat -ano | findstr :${port}`, { timeout: 5000 }, (error, stdout) => {
       if (error || !stdout) {
         resolve(null);
         return;
@@ -2473,7 +2473,7 @@ async function findProcessUsingPort(port) {
           }
           
           // Get process name from PID using tasklist
-          exec(`tasklist /FI "PID eq ${pid}" /FO CSV`, (err, processInfo) => {
+          exec(`tasklist /FI "PID eq ${pid}" /FO CSV`, { timeout: 5000 }, (err, processInfo) => {
             if (!err && processInfo) {
               const lines = processInfo.split('\n');
               if (lines.length > 1) {
@@ -2513,8 +2513,10 @@ async function checkForRunningChromeWithProfiles() {
   return new Promise((resolve) => {
     const { exec } = require('child_process');
     
-    // Use PowerShell to find Chrome processes (wmic removed in Windows 11 24H2+)
-    exec('powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \'name=\\\"chrome.exe\\\"\' | ForEach-Object { $_.CommandLine + \' \' + $_.ProcessId }"', (error, stdout) => {
+    // Use PowerShell to find Chrome processes (wmic removed in Windows 11 24H2+).
+    // Timeout guards against WMI/CIM being slow to respond right after a Windows
+    // Update reboot — without it, a hung query blocks CH4C startup indefinitely.
+    exec('powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \'name=\\\"chrome.exe\\\"\' | ForEach-Object { $_.CommandLine + \' \' + $_.ProcessId }"', { timeout: 10000 }, (error, stdout) => {
       if (error || !stdout) {
         resolve([]);
         return;
@@ -7893,7 +7895,7 @@ async function main() {
   if (process.platform === 'win32') {
     chromeDataDir = Constants.CHROME_USERDATA_DIRECTORIES[process.platform].find(existsSync);
     if (!chromeDataDir) {
-      console.log('cannot find Chrome User Data Directory');
+      logTS('FATAL: Cannot find Chrome User Data Directory. Exiting.');
       return;
     }
   } else {
@@ -7903,7 +7905,7 @@ async function main() {
   }
   chromePath = getExecutablePath();
   if (!chromePath) {
-    console.log('cannot find Chrome Executable Directory');
+    logTS('FATAL: Cannot find Chrome Executable. Exiting.');
     return;
   }
 
@@ -7943,6 +7945,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
 |                                                                      |
 +----------------------------------------------------------------------+
 `);
+    logTS(`FATAL: Port ${Constants.CH4C_PORT} already in use${processInfo ? ` by ${processInfo.name} (PID ${processInfo.pid})` : ' (process unknown)'}. Exiting.`);
     process.exit(1);
   }
 
@@ -7970,6 +7973,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
 |                                                                      |
 +----------------------------------------------------------------------+
 `);
+    logTS(`FATAL: Chrome is using encoder profiles: ${runningProfiles.map(p => p.encoder).join(', ')}. Exiting.`);
     process.exit(1);
   }
 
@@ -8031,9 +8035,10 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
 |                                                                      |
 +----------------------------------------------------------------------+
 `);
+    logTS(`FATAL: Chrome profiles in use: ${profileProblems.map(p => `${p.encoder} (${p.reason})`).join(', ')}. Exiting.`);
     process.exit(1);
   }
-  
+
   // For stale profiles, just log a warning but continue
   if (staleProfiles.length > 0) {
     logTS('Note: Some profiles had stale locks that were cleaned automatically.');
@@ -9367,6 +9372,15 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
   // Logs API endpoint
   app.get('/api/logs', (req, res) => {
     res.json({ logs: getLogBuffer() });
+  });
+
+  // Previous log file (from the run before the current one)
+  app.get('/api/logs/previous', (req, res) => {
+    const prevLogPath = path.join(Constants.DATA_DIR, 'ch4c.prev.log');
+    if (!fs.existsSync(prevLogPath)) {
+      return res.status(404).json({ error: 'No previous log file found' });
+    }
+    res.type('text/plain').send(fs.readFileSync(prevLogPath, 'utf8'));
   });
 
   // Settings page (editable config UI)
