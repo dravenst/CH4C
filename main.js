@@ -7645,17 +7645,20 @@ function buildRecordingJson(name, duration, encoderChannel, episodeTitle, summar
 
 async function startRecording(name, duration, encoderChannel, episodeTitle, summary, seasonNumber, episodeNumber, imageUrl) {
   try {
-    logTS(`startRecording POST to: ${Constants.CHANNELS_POST_URL}`);
+    const requestBody = buildRecordingJson(name, duration, encoderChannel, episodeTitle, summary, seasonNumber, episodeNumber, imageUrl);
+    logTS(`startRecording POST to: ${Constants.CHANNELS_POST_URL} — body: ${requestBody.substring(0, 500)}`);
     const response = await fetch(Constants.CHANNELS_POST_URL, {
       method: 'POST',
       headers: {
         'Content-type': 'application/json',
       },
-      body: buildRecordingJson(name, duration, encoderChannel, episodeTitle, summary, seasonNumber, episodeNumber, imageUrl),
+      body: requestBody,
     });
+    const responseBody = await response.text().catch(() => '');
     if (!response.ok) {
-      const body = await response.text().catch(() => '');
-      logTS(`startRecording failed: HTTP ${response.status} ${response.statusText} — ${body.substring(0, 200)}`);
+      logTS(`startRecording failed: HTTP ${response.status} ${response.statusText} — ${responseBody.substring(0, 200)}`);
+    } else {
+      logTS(`startRecording response: HTTP ${response.status} — ${responseBody.substring(0, 500)}`);
     }
     return response.ok;
   } catch (error) {
