@@ -167,6 +167,15 @@ async function installWindows(dataDir) {
     }
   }
 
+  const runWinSW = (verb) => execSync(`"${winswPath}" ${verb}`, { cwd: serviceDir, stdio: 'pipe' });
+
+  // Clear any previous install first — compiling the launcher below overwrites
+  // ch4c-launcher.exe in place, which fails if a still-running service instance
+  // from a prior install has that file open.
+  for (const verb of ['stop', 'uninstall']) {
+    try { runWinSW(verb); } catch { /* nothing to clean up */ }
+  }
+
   let launcherExe;
   try {
     console.log('Building the CH4C session launcher...');
@@ -178,13 +187,6 @@ async function installWindows(dataDir) {
   }
 
   writeServiceXml(xmlPath, launcherExe, dataDir);
-
-  const runWinSW = (verb) => execSync(`"${winswPath}" ${verb}`, { cwd: serviceDir, stdio: 'pipe' });
-
-  // Clear any previous install so a re-install picks up the new config.
-  for (const verb of ['stop', 'uninstall']) {
-    try { runWinSW(verb); } catch { /* nothing to clean up */ }
-  }
 
   try {
     runWinSW('install');
