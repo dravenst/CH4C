@@ -8131,6 +8131,18 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
   // Auto-create custom channels for each encoder
   await createEncoderChannels(m3uManager);
 
+  // Discover, or if needed create, this instance's Channels DVR M3U source (non-blocking)
+  // so the encoder/channel guide is visible without manual setup, while avoiding creating
+  // a duplicate source if one already exists (e.g. added manually in Channels DVR before
+  // this feature existed, or before "Refresh M3U" was ever clicked in CH4C).
+  if (!Constants.ENABLE_M3U_AUTO_SYNC) {
+    logTS('[M3U Manager] Automatic M3U Management is turned off — use the "Refresh M3U" button on the M3U Manager page to manage it manually.');
+  } else {
+    syncChannelsDvrM3uSource(m3uManager).catch(error => {
+      logTS(`[M3U Manager] Startup M3U discovery/refresh error: ${error.message}`);
+    });
+  }
+
   /**
    * Create custom M3U channels for configured encoders
    */
@@ -9091,23 +9103,14 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
     }
   });
 
-  // POST /m3u-manager/refresh-channels-dvr - Trigger Channels DVR to refresh the M3U source
-  app.post('/m3u-manager/refresh-channels-dvr', async (req, res) => {
+  // Trigger Channels DVR to refresh the given M3U source. Returns {success, error}.
+  async function refreshChannelsDvrM3uSource(sourceName) {
+    if (!Constants.CHANNELS_URL || !Constants.CHANNELS_PORT) {
+      return { success: false, error: 'Channels DVR URL is not configured' };
+    }
     try {
-      const { sourceName } = req.body;
-      if (!sourceName || !sourceName.trim()) {
-        return res.status(400).json({ success: false, error: 'M3U source name is required' });
-      }
-      if (!Constants.CHANNELS_URL || !Constants.CHANNELS_PORT) {
-        return res.status(400).json({ success: false, error: 'Channels DVR URL is not configured' });
-      }
-
-      // Persist the source name for next load
-      m3uManager.channelsDvrSourceName = sourceName.trim();
-      await m3uManager.saveToDisk();
-
       const cdvrBase = Constants.CHANNELS_URL.replace(/\/+$/, '').replace(/:\d+$/, '');
-      const refreshUrl = `${cdvrBase}:${Constants.CHANNELS_PORT}/providers/m3u/sources/${encodeURIComponent(sourceName.trim())}/refresh`;
+      const refreshUrl = `${cdvrBase}:${Constants.CHANNELS_PORT}/providers/m3u/sources/${encodeURIComponent(sourceName)}/refresh`;
       logTS(`[M3U Manager] Triggering Channels DVR M3U refresh: ${refreshUrl}`);
 
       const response = await fetch(refreshUrl, { method: 'POST' });
@@ -9115,7 +9118,309 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
       logTS(`[M3U Manager] Channels DVR refresh response: ${response.status} "${body}"`);
 
       if (!response.ok || body.trim() !== 'true') {
-        return res.status(502).json({ success: false, error: `Channels DVR returned ${response.status}: ${body}` });
+        return { success: false, error: `Channels DVR returned ${response.status}: ${body}` };
+      }
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  // Fetch a Channels DVR M3U source's config by name. Returns null if it doesn't
+  // exist or Channels DVR/network is unreachable.
+  async function getChannelsDvrM3uSourceDetail(sourceName) {
+    if (!Constants.CHANNELS_URL || !Constants.CHANNELS_PORT) return null;
+    try {
+      const cdvrBase = Constants.CHANNELS_URL.replace(/\/+$/, '').replace(/:\d+$/, '');
+      const detailUrl = `${cdvrBase}:${Constants.CHANNELS_PORT}/providers/m3u/sources/${encodeURIComponent(sourceName)}`;
+      const response = await fetch(detailUrl);
+      if (!response.ok) return null;
+      const detail = await response.json();
+      // Channels DVR returns {} for a source name that doesn't exist
+      return detail?.url ? detail : null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  // Look for an existing, enabled Channels DVR M3U source that already points at this
+  // CH4C instance's own playlist (by path, port, and this machine's LAN IPs), so startup
+  // doesn't create a duplicate source for users who set one up before this feature
+  // (or before ever using CH4C's "Refresh M3U" button) existed. Matches that are toggled
+  // off in Channels DVR Settings are treated as not found — a disabled source isn't a
+  // reliably active one, so the caller will create a fresh, enabled source instead.
+  async function findExistingChannelsDvrM3uSource() {
+    if (!Constants.CHANNELS_URL || !Constants.CHANNELS_PORT) return null;
+    try {
+      const cdvrBase = Constants.CHANNELS_URL.replace(/\/+$/, '').replace(/:\d+$/, '');
+      const lineupsUrl = `${cdvrBase}:${Constants.CHANNELS_PORT}/dvr/lineups`;
+      const response = await fetch(lineupsUrl);
+      if (!response.ok) return null;
+      const lineups = await response.json();
+
+      const candidateNames = Object.entries(lineups)
+        .filter(([, type]) => type === 'X-M3U')
+        .map(([key]) => key.replace(/^M3U-/, ''));
+
+      const ownPort = String(Constants.CH4C_PORT || Constants.CH4C_SSL_PORT || '');
+      const ownHosts = new Set(['localhost', '127.0.0.1', ...getLocalNetworkIPs()]);
+
+      const details = await Promise.all(
+        candidateNames.map(async (name) => {
+          const detail = await getChannelsDvrM3uSourceDetail(name);
+          // Spread first: detail.name is Channels DVR's human-readable display name,
+          // not the URL-safe source identifier — the outer `name` (from the lineups
+          // key) is the one that must be used in subsequent API calls.
+          return detail ? { ...detail, name } : null;
+        })
+      );
+
+      const matches = details.filter((detail) => {
+        if (!detail) return false;
+        try {
+          const u = new URL(detail.url);
+          const portMatches = (u.port || (u.protocol === 'https:' ? '443' : '80')) === ownPort;
+          const pathMatches = u.pathname === '/m3u-manager/playlist.m3u';
+          const hostMatches = ownHosts.has(u.hostname);
+          return portMatches && pathMatches && hostMatches;
+        } catch (error) {
+          return false; // Not a valid URL
+        }
+      });
+
+      for (const match of matches) {
+        if (!(await isChannelsDvrSourceDisabled(match.name))) return match;
+      }
+
+      if (matches.length > 0) {
+        logTS(`[M3U Manager] Found ${matches.length} existing Channels DVR M3U source(s) pointing at this instance (${matches.map(m => m.name).join(', ')}), but all are disabled in Settings — creating a new active source instead.`);
+      }
+      return null;
+    } catch (error) {
+      logTS(`[M3U Manager] Error discovering existing Channels DVR M3U sources: ${error.message}`);
+      return null;
+    }
+  }
+
+  // Pick which of this machine's local IPs to advertise to Channels DVR. Prefer one on
+  // the same subnet as Channels DVR itself (the strongest reachability signal), then
+  // fall back to a private LAN range over things like Tailscale's 100.64.0.0/10 CGNAT
+  // range, which Channels DVR usually can't reach even though it's a valid local IP.
+  function pickOwnLanIP() {
+    const candidates = getLocalNetworkIPs();
+    if (candidates.length === 0) return null;
+
+    try {
+      const channelsHost = new URL(Constants.CHANNELS_URL).hostname;
+      if (/^\d+\.\d+\.\d+\.\d+$/.test(channelsHost)) {
+        const channelsSubnet = channelsHost.split('.').slice(0, 3).join('.');
+        const sameSubnet = candidates.find(ip => ip.split('.').slice(0, 3).join('.') === channelsSubnet);
+        if (sameSubnet) return sameSubnet;
+      }
+    } catch (error) {
+      // CHANNELS_URL missing/invalid — fall through to the private-range heuristic
+    }
+
+    const isPrivateLAN = (ip) => /^10\./.test(ip) || /^192\.168\./.test(ip) || /^172\.(1[6-9]|2\d|3[01])\./.test(ip);
+    return candidates.find(isPrivateLAN) || candidates[0];
+  }
+
+  // Create a new Channels DVR M3U source pointing at this instance's playlist.
+  // Returns {success, error}.
+  async function createChannelsDvrM3uSource(sourceName) {
+    if (!Constants.CHANNELS_URL || !Constants.CHANNELS_PORT) {
+      return { success: false, error: 'Channels DVR URL is not configured' };
+    }
+
+    // If a source with this exact name already exists, PUT below would update it in place
+    // rather than create a fresh one. That's a no-op if it's disabled: the disabled flag
+    // lives in a separate Channels DVR settings key that PUT doesn't touch, so silently
+    // "succeeding" here wouldn't actually give the user an active source. This is exactly
+    // what happens if the user disables CH4C's own previously auto-created CH4C-<hostname>
+    // source — the name CH4C would try to (re)create collides with the disabled one.
+    const existingSameName = await getChannelsDvrM3uSourceDetail(sourceName);
+    if (existingSameName && await isChannelsDvrSourceDisabled(sourceName)) {
+      return {
+        success: false,
+        error: `A Channels DVR M3U source named "${sourceName}" already exists but is disabled in Settings, so CH4C can't auto-create a replacement with the same name. Re-enable it in Channels DVR (Settings → Sources) or delete it so CH4C can create a fresh one.`
+      };
+    }
+
+    const ownIP = pickOwnLanIP();
+    if (!ownIP) {
+      return { success: false, error: 'Could not determine a local network IP for this machine' };
+    }
+    const ownPort = Constants.CH4C_PORT || Constants.CH4C_SSL_PORT;
+    const playlistUrl = `http://${ownIP}:${ownPort}/m3u-manager/playlist.m3u`;
+    const streamLimit = Math.max(1, Constants.ENCODERS.length);
+
+    try {
+      const cdvrBase = Constants.CHANNELS_URL.replace(/\/+$/, '').replace(/:\d+$/, '');
+      const createUrl = `${cdvrBase}:${Constants.CHANNELS_PORT}/providers/m3u/sources/${encodeURIComponent(sourceName)}`;
+      logTS(`[M3U Manager] Creating Channels DVR M3U source "${sourceName}" -> ${playlistUrl} (limit ${streamLimit})`);
+
+      const response = await fetch(createUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: sourceName,
+          url: playlistUrl,
+          type: 'MPEG-TS',
+          source: 'URL',
+          refresh: '24',
+          limit: String(streamLimit),
+        }),
+      });
+      const body = await response.text();
+      if (!response.ok || body.trim() !== 'true') {
+        return { success: false, error: `Channels DVR returned ${response.status}: ${body}` };
+      }
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  // Update just the stream limit on an existing Channels DVR M3U source, preserving its
+  // other fields (url, refresh, etc). Used when the encoder count changes on the Settings
+  // page for a source CH4C auto-created. Returns {success, error}.
+  async function updateChannelsDvrM3uSourceLimit(sourceName, limit) {
+    const detail = await getChannelsDvrM3uSourceDetail(sourceName);
+    if (!detail) {
+      return { success: false, error: `Source "${sourceName}" not found in Channels DVR` };
+    }
+    try {
+      const cdvrBase = Constants.CHANNELS_URL.replace(/\/+$/, '').replace(/:\d+$/, '');
+      const updateUrl = `${cdvrBase}:${Constants.CHANNELS_PORT}/providers/m3u/sources/${encodeURIComponent(sourceName)}`;
+      logTS(`[M3U Manager] Updating Channels DVR M3U source "${sourceName}" stream limit to ${limit}`);
+
+      const response = await fetch(updateUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...detail, name: sourceName, limit: String(limit) }),
+      });
+      const body = await response.text();
+      if (!response.ok || body.trim() !== 'true') {
+        return { success: false, error: `Channels DVR returned ${response.status}: ${body}` };
+      }
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  // Check whether a Channels DVR M3U source is toggled off in Settings. Channels DVR
+  // stores this as a "device.disabled.M3U-<name>" flag in its flat /settings dump
+  // (same "M3U-" prefix convention as /dvr/lineups) rather than on the source resource
+  // itself. Returns false (not disabled) on any lookup failure, since this is only used
+  // for an informational warning.
+  async function isChannelsDvrSourceDisabled(sourceName) {
+    if (!Constants.CHANNELS_URL || !Constants.CHANNELS_PORT) return false;
+    try {
+      const cdvrBase = Constants.CHANNELS_URL.replace(/\/+$/, '').replace(/:\d+$/, '');
+      const response = await fetch(`${cdvrBase}:${Constants.CHANNELS_PORT}/settings`);
+      if (!response.ok) return false;
+      const settings = await response.json();
+      return settings[`device.disabled.M3U-${sourceName}`] === 'true';
+    } catch (error) {
+      return false;
+    }
+  }
+
+  // Discover, adopt, or create this instance's Channels DVR M3U source, warn if an
+  // existing source's stream limit doesn't match the configured encoder count, then
+  // refresh it. A source CH4C already knew about that's since been deleted or toggled
+  // off in Settings is treated as inactive: CH4C re-discovers (in case a different active
+  // source now points at this instance, e.g. the user replaced CH4C's entry with their
+  // own) before falling back to creating a new one. Runs at startup; safe to call with no
+  // encoders/Channels DVR configured.
+  async function syncChannelsDvrM3uSource(manager) {
+    let sourceName = manager.channelsDvrSourceName;
+    let detail = null;
+
+    if (sourceName) {
+      // These checks only fire for a source CH4C already knew about that's since been
+      // deleted or toggled off — treat it as if it doesn't exist rather than keep
+      // refreshing a source Channels DVR isn't actually using.
+      detail = await getChannelsDvrM3uSourceDetail(sourceName);
+      if (!detail) {
+        logTS(`[M3U Manager] Channels DVR M3U source "${sourceName}" no longer exists — checking for another active source before creating a new one.`);
+        sourceName = null;
+      } else if (await isChannelsDvrSourceDisabled(sourceName)) {
+        logTS(`[M3U Manager] Channels DVR M3U source "${sourceName}" is disabled in Settings — checking for another active source before creating a new one.`);
+        sourceName = null;
+        detail = null;
+      }
+      if (!sourceName) {
+        manager.channelsDvrSourceName = '';
+        manager.channelsDvrSourceAutoCreated = false;
+      }
+    }
+
+    if (!sourceName) {
+      // Also covers the case where the source we just invalidated above was replaced by
+      // a different one pointing at this instance (e.g. the user deleted CH4C's own entry
+      // and manually re-added their own), so we adopt that instead of creating a duplicate.
+      const existing = await findExistingChannelsDvrM3uSource();
+      if (existing) {
+        sourceName = existing.name;
+        detail = existing;
+        manager.channelsDvrSourceName = sourceName;
+        manager.channelsDvrSourceAutoCreated = false;
+        await manager.saveToDisk();
+        logTS(`[M3U Manager] Found existing Channels DVR M3U source "${sourceName}" pointing at this instance — adopting it`);
+      }
+    }
+
+    if (!sourceName) {
+      sourceName = `CH4C-${os.hostname()}`;
+      const created = await createChannelsDvrM3uSource(sourceName);
+      if (!created.success) {
+        logTS(`[M3U Manager] WARNING: Could not auto-create Channels DVR M3U source: ${created.error}`);
+        return;
+      }
+      manager.channelsDvrSourceName = sourceName;
+      manager.channelsDvrSourceAutoCreated = true;
+      await manager.saveToDisk();
+      logTS(`[M3U Manager] Auto-created Channels DVR M3U source "${sourceName}" at startup`);
+      return; // freshly created with the correct limit already — nothing to warn about or refresh
+    }
+
+    const expectedLimit = Math.max(1, Constants.ENCODERS.length);
+    const actualLimit = detail ? parseInt(detail.limit, 10) : NaN;
+    if (!isNaN(actualLimit) && actualLimit !== expectedLimit) {
+      logTS(`[M3U Manager] WARNING: Channels DVR M3U source "${sourceName}" has a stream limit of ${actualLimit}, but ${Constants.ENCODERS.length} encoder(s) are configured. Update the limit in Channels DVR to avoid a mismatched concurrent stream capacity.`);
+    }
+
+    const result = await refreshChannelsDvrM3uSource(sourceName);
+    if (result.success) {
+      logTS(`[M3U Manager] Auto-refreshed Channels DVR M3U source "${sourceName}" at startup`);
+    } else {
+      logTS(`[M3U Manager] Startup M3U auto-refresh skipped: ${result.error}`);
+    }
+  }
+
+  // POST /m3u-manager/refresh-channels-dvr - Trigger Channels DVR to refresh the M3U source
+  app.post('/m3u-manager/refresh-channels-dvr', async (req, res) => {
+    try {
+      const { sourceName } = req.body;
+      if (!sourceName || !sourceName.trim()) {
+        return res.status(400).json({ success: false, error: 'M3U source name is required' });
+      }
+
+      // Persist the source name for next load. If the user is pointing at a different
+      // source than whatever CH4C last knew about, it's no longer the one CH4C may have
+      // auto-created — a same-name refresh click leaves that flag untouched.
+      const trimmedName = sourceName.trim();
+      if (trimmedName !== m3uManager.channelsDvrSourceName) {
+        m3uManager.channelsDvrSourceAutoCreated = false;
+      }
+      m3uManager.channelsDvrSourceName = trimmedName;
+      await m3uManager.saveToDisk();
+
+      const result = await refreshChannelsDvrM3uSource(trimmedName);
+      if (!result.success) {
+        return res.status(502).json({ success: false, error: result.error });
       }
 
       res.json({ success: true });
@@ -9123,6 +9428,47 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
       logTS(`[M3U Manager] Error refreshing Channels DVR: ${error.message}`);
       res.status(500).json({ success: false, error: error.message });
     }
+  });
+
+  // GET /m3u-manager/stream-limit-status - Report the auto-created M3U source's current
+  // Channels DVR stream limit vs. the configured encoder count, so the Settings page can
+  // offer updating it after encoders are added/removed. No-op if CH4C didn't create the
+  // current M3U source itself (we don't want to touch a user-managed source's limit).
+  app.get('/m3u-manager/stream-limit-status', async (req, res) => {
+    if (!m3uManager.channelsDvrSourceAutoCreated || !m3uManager.channelsDvrSourceName) {
+      return res.json({ applicable: false });
+    }
+    const detail = await getChannelsDvrM3uSourceDetail(m3uManager.channelsDvrSourceName);
+    if (!detail) {
+      return res.json({ applicable: false });
+    }
+    const currentLimit = parseInt(detail.limit, 10);
+    const expectedLimit = Math.max(1, Constants.ENCODERS.length);
+    res.json({
+      applicable: true,
+      sourceName: m3uManager.channelsDvrSourceName,
+      currentLimit: isNaN(currentLimit) ? null : currentLimit,
+      expectedLimit,
+      needsUpdate: !isNaN(currentLimit) && currentLimit !== expectedLimit
+    });
+  });
+
+  // POST /m3u-manager/update-stream-limit - Update the auto-created M3U source's stream
+  // limit in Channels DVR to match the current encoder count.
+  app.post('/m3u-manager/update-stream-limit', async (req, res) => {
+    if (!m3uManager.channelsDvrSourceAutoCreated || !m3uManager.channelsDvrSourceName) {
+      return res.status(400).json({ success: false, error: 'No CH4C-created M3U source to update' });
+    }
+    const limit = Math.max(1, Constants.ENCODERS.length);
+    const result = await updateChannelsDvrM3uSourceLimit(m3uManager.channelsDvrSourceName, limit);
+    if (!result.success) {
+      return res.status(502).json(result);
+    }
+    // No M3U refresh needed here: adding/removing an encoder via /api/encoders only
+    // updates config.json and Constants.ENCODERS — the actual playlist channel entries
+    // aren't updated until createEncoderChannels() runs again at the next CH4C startup,
+    // so refreshing now would just re-pull the unchanged playlist.
+    res.json({ success: true, limit });
   });
 
   // GET /m3u-manager/playlist.m3u - Generate M3U playlist
@@ -9403,7 +9749,8 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
         dataDir: Constants.DATA_DIR,
         enablePauseMonitor: Constants.ENABLE_PAUSE_MONITOR,
         pauseMonitorInterval: Constants.PAUSE_MONITOR_INTERVAL,
-        browserHealthInterval: Constants.BROWSER_HEALTH_INTERVAL
+        browserHealthInterval: Constants.BROWSER_HEALTH_INTERVAL,
+        enableM3uAutoSync: Constants.ENABLE_M3U_AUTO_SYNC
       },
       encoders: Constants.ENCODERS,
       metadata: CONFIG_METADATA,
@@ -9413,7 +9760,8 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
       configSource: Constants.USING_CONFIG_FILE ? 'file' : 'cli',
       configPath: Constants.CONFIG_FILE_PATH,
       runningAsService,
-      appVersion: Constants.APP_VERSION
+      appVersion: Constants.APP_VERSION,
+      hasCustomM3uSource: !!(m3uManager.channelsDvrSourceName && !m3uManager.channelsDvrSourceAutoCreated)
     });
   });
 

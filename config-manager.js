@@ -80,6 +80,15 @@ const CONFIG_METADATA = {
       max: 168,
       unit: 'hours'
     }
+  ],
+  m3U: [
+    {
+      path: 'enableM3uAutoSync',
+      label: 'Automatic M3U Management',
+      description: 'Automatically discover, create, and refresh the Channels DVR M3U source at startup',
+      type: 'boolean',
+      default: true
+    }
   ]
 };
 

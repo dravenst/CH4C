@@ -103,6 +103,9 @@ function loadConfigFile(configPath) {
     if (config.browserHealthInterval !== undefined) {
       normalized.browserHealthInterval = Number(config.browserHealthInterval);
     }
+    if (config.enableM3uAutoSync !== undefined) {
+      normalized.enableM3uAutoSync = Boolean(config.enableM3uAutoSync);
+    }
     if (config.encoders !== undefined && Array.isArray(config.encoders)) {
       normalized.encoders = config.encoders;
     }
@@ -413,6 +416,12 @@ const argv = yargs(rawArgs)
       return interval;
     }
   })
+  .option('enable-m3u-auto-sync', {
+    alias: 'a',
+    type: 'boolean',
+    default: fileConfig?.enableM3uAutoSync !== undefined ? fileConfig.enableM3uAutoSync : true,
+    describe: 'Automatically discover, create, and refresh the Channels DVR M3U source at startup'
+  })
   .option('ch4c-ssl-port', {
     alias: 't',
     type: 'number',
@@ -499,6 +508,7 @@ if (argv.help) {
     .option('enable-pause-monitor', { alias: 'm', type: 'boolean', default: true, describe: 'Enable automatic video pause detection and resume' })
     .option('pause-monitor-interval', { alias: 'i', type: 'number', default: 10, describe: 'Interval in seconds to check for paused video' })
     .option('browser-health-interval', { alias: 'b', type: 'number', default: 6, describe: 'Interval in hours to check browser health (default: 6)' })
+    .option('enable-m3u-auto-sync', { alias: 'a', type: 'boolean', default: true, describe: 'Automatically discover, create, and refresh the Channels DVR M3U source at startup' })
     .option('ch4c-ssl-port', { alias: 't', type: 'number', describe: 'Enable HTTPS on specified port' })
     .option('ssl-hostnames', { alias: 'n', type: 'string', describe: 'Additional hostnames/IPs for SSL certificate (comma-separated)' })
     .option('version', { alias: 'v', type: 'boolean', describe: 'Show version number' })
@@ -544,7 +554,8 @@ const config = {
   DATA_DIR: argv['data-dir'],
   ENABLE_PAUSE_MONITOR: argv['enable-pause-monitor'],
   PAUSE_MONITOR_INTERVAL: argv['pause-monitor-interval'],
-  BROWSER_HEALTH_INTERVAL: argv['browser-health-interval']
+  BROWSER_HEALTH_INTERVAL: argv['browser-health-interval'],
+  ENABLE_M3U_AUTO_SYNC: argv['enable-m3u-auto-sync']
 };
 
 // Track which settings were explicitly provided via CLI args (not from config file defaults).
@@ -559,16 +570,20 @@ const cliArgMap = {
   'data-dir': 'dataDir',
   'enable-pause-monitor': 'enablePauseMonitor',
   'pause-monitor-interval': 'pauseMonitorInterval',
-  'browser-health-interval': 'browserHealthInterval'
+  'browser-health-interval': 'browserHealthInterval',
+  'enable-m3u-auto-sync': 'enableM3uAutoSync'
 };
 
 // An arg is CLI-provided if it was explicitly passed on the command line (not from config file or default).
 // yargs tracks which args were explicitly provided in argv._ and via the parsed object.
+// Alias defaults to the flag's first letter; only listed here when that doesn't hold.
+const cliAliasOverrides = { 'enable-m3u-auto-sync': 'a' };
 for (const [cliName, configName] of Object.entries(cliArgMap)) {
+  const alias = cliAliasOverrides[cliName] || cliName.charAt(0);
   // Check if the raw CLI args contain this option (not from config file defaults)
   const hasCliArg = rawArgs.some(arg =>
     arg === `--${cliName}` || arg.startsWith(`--${cliName}=`) ||
-    arg === `-${cliName.charAt(0)}`
+    arg === `-${alias}`
   );
   if (hasCliArg) {
     cliOverrides[configName] = String(argv[cliName]);
@@ -616,6 +631,9 @@ const PAUSE_MONITOR_INTERVAL = config.PAUSE_MONITOR_INTERVAL
 
 // browser health monitor settings - use values from command line arguments
 const BROWSER_HEALTH_INTERVAL = config.BROWSER_HEALTH_INTERVAL
+
+// M3U auto-sync settings - use values from command line arguments
+const ENABLE_M3U_AUTO_SYNC = config.ENABLE_M3U_AUTO_SYNC
 
 // path to create recording jobs on Channels
 const _cdvrBase = CHANNELS_URL ? CHANNELS_URL.replace(/\/+$/, '').replace(/:\d+$/, '') : null;
@@ -1092,7 +1110,7 @@ const START_PAGE_HTML = `
                     <div style="background: linear-gradient(135deg, #667eea, #764ba2); color: white; border-radius: 50%; min-width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 16px;">3</div>
                     <div style="flex: 1;">
                         <h3 style="margin: 0 0 6px 0; font-size: 16px;">Add Encoder(s)</h3>
-                        <p style="margin: 0; color: #4a5568; font-size: 14px;">In <a href="/settings" style="color: #667eea; font-weight: 600;">Settings</a>, click <strong>+ Add Encoder</strong> for each HDMI encoder. Set the <strong>Encoder URL</strong> (e.g., <code style="font-size: 12px;">http://192.168.1.50/live/stream0</code>). Use the <strong>Audio Devices</strong> list to find the correct audio output device name for each encoder. For multi-monitor setups, set the <strong>Screen X/Y Position</strong> using the <strong>Display Configuration</strong> offsets with Screens. Save settings and restart CH4C.</p>
+                        <p style="margin: 0; color: #4a5568; font-size: 14px;">In <a href="/settings" style="color: #667eea; font-weight: 600;">Settings</a>, click <strong>+ Add Encoder</strong> for each HDMI encoder. Set the <strong>Encoder URL</strong> (e.g., <code style="font-size: 12px;">http://192.168.1.50/live/stream0</code>). Use the <strong>Audio Devices</strong> list to find the correct audio output device name for each encoder. For multi-monitor setups, set the <strong>Screen X/Y Position</strong> using the <strong>Display Configuration</strong> offsets with Screens. Save settings and restart CH4C. If CH4C created its own Channels DVR M3U source, adding/removing an encoder here may show a banner offering to update that source's stream limit to match — no restart needed for that part.</p>
                     </div>
                 </div>
 
@@ -1101,7 +1119,7 @@ const START_PAGE_HTML = `
                     <div style="background: linear-gradient(135deg, #667eea, #764ba2); color: white; border-radius: 50%; min-width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 16px;">4</div>
                     <div style="flex: 1;">
                         <h3 style="margin: 0 0 6px 0; font-size: 16px;">Add M3U Source to Channels DVR</h3>
-                        <p style="margin: 0; color: #4a5568; font-size: 14px;">In Channels DVR, go to Settings &rarr; Add Source &rarr; Custom Channels. Set Stream Format to <strong>MPEG-TS</strong> and enter the M3U URL found in the <a href="/m3u-manager" style="color: #667eea; font-weight: 600;">M3U Manager</a>:<br>
+                        <p style="margin: 0; color: #4a5568; font-size: 14px;">CH4C does this automatically on startup — it detects an existing M3U source pointing at CH4C, or creates a new one named <strong>CH4C-&lt;hostname&gt;</strong> in Channels DVR. Check Channels DVR &rarr; Settings &rarr; Sources to confirm it's there; nothing further to do. If that source is ever toggled off in Channels DVR Settings, CH4C treats it as inactive and creates a fresh one in its place (the disabled one is left alone, not deleted). To set it up manually instead (or if you've turned off Automatic M3U Management in <a href="/settings" style="color: #667eea; font-weight: 600;">Settings</a>), go to Settings &rarr; Add Source &rarr; Custom Channels in Channels DVR, set Stream Format to <strong>MPEG-TS</strong>, and enter the M3U URL found in the <a href="/m3u-manager" style="color: #667eea; font-weight: 600;">M3U Manager</a>:<br>
                         <code id="ch4c-m3u-url" style="display: inline-block; margin-top: 6px; padding: 4px 8px; background: #f0f0f0; border-radius: 4px; font-size: 12px;">http://CH4C_IP:${CH4C_PORT}/m3u-manager/playlist.m3u</code></p>
                     </div>
                 </div>
@@ -1129,7 +1147,7 @@ const START_PAGE_HTML = `
                     <div style="background: linear-gradient(135deg, #667eea, #764ba2); color: white; border-radius: 50%; min-width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 16px;">7</div>
                     <div style="flex: 1;">
                         <h3 style="margin: 0 0 6px 0; font-size: 16px;">Add Channels</h3>
-                        <p style="margin: 0; color: #4a5568; font-size: 14px;">Use the <a href="/m3u-manager" style="color: #667eea; font-weight: 600;">M3U Manager</a> to add channels. Use <strong>Refresh Sling TV</strong> to automatically sync Sling channels, or <strong>Add Custom Channel</strong> for any streaming service URL. See the <a href="https://github.com/dravenst/CH4C#readme" target="_blank" style="color: #667eea;">documentation</a> for sample channel URLs. You will need to Reload M3U for the M3U source you added to the Channels Sources in Step 4 for the new channels to appear in the Guide. </p>
+                        <p style="margin: 0; color: #4a5568; font-size: 14px;">Use the <a href="/m3u-manager" style="color: #667eea; font-weight: 600;">M3U Manager</a> to add channels. Use <strong>Refresh Sling TV</strong> to automatically sync Sling channels, or <strong>Add Custom Channel</strong> for any streaming service URL. See the <a href="https://github.com/dravenst/CH4C#readme" target="_blank" style="color: #667eea;">documentation</a> for sample channel URLs. CH4C refreshes the M3U source in Channels DVR automatically at every startup, so new channels normally appear in the Guide the next time you restart CH4C — or click <strong>Refresh M3U</strong> on the M3U Manager page to pick them up immediately.</p>
                     </div>
                 </div>
 
@@ -6474,6 +6492,22 @@ const SETTINGS_PAGE_HTML = `
         </div>
     </div>
 
+    <div id="stream-limit-modal-overlay" class="screen-modal-overlay" onclick="if(event.target===this)closeStreamLimitModal()">
+        <div class="screen-modal" style="max-width: 480px;">
+            <div class="screen-modal-header">
+                <h3>Update Channels DVR Stream Limit?</h3>
+                <button class="dir-modal-close" onclick="closeStreamLimitModal()">&times;</button>
+            </div>
+            <div class="screen-modal-body">
+                <p id="stream-limit-modal-message" style="margin:0;color:#4a5568;font-size:14px;"></p>
+            </div>
+            <div class="screen-modal-footer">
+                <button class="btn btn-secondary" onclick="closeStreamLimitModal()">Not Now</button>
+                <button class="btn btn-primary" id="stream-limit-modal-update-btn" onclick="updateStreamLimit()">Update</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         let settingsData = null;
         let audioDevices = [];
@@ -6481,14 +6515,16 @@ const SETTINGS_PAGE_HTML = `
         let displayData = [];
         let screenPickerPrefix = null;
         let hasChanges = false;
+        let streamLimitStatus = { applicable: false };
 
         async function loadSettings() {
             const container = document.getElementById('settings-content');
             try {
-                const [settingsRes, audioRes, displayRes] = await Promise.all([
+                const [settingsRes, audioRes, displayRes, streamLimitRes] = await Promise.all([
                     fetch('/api/settings'),
                     fetch('/audio-devices').catch(() => ({ ok: false })),
-                    fetch('/displays').catch(() => ({ ok: false }))
+                    fetch('/displays').catch(() => ({ ok: false })),
+                    fetch('/m3u-manager/stream-limit-status').catch(() => ({ ok: false }))
                 ]);
                 if (!settingsRes.ok) throw new Error('Failed to load settings');
                 settingsData = await settingsRes.json();
@@ -6501,9 +6537,47 @@ const SETTINGS_PAGE_HTML = `
                     displayData = await displayRes.json();
                     if (!Array.isArray(displayData)) displayData = [];
                 }
+                streamLimitStatus = streamLimitRes.ok ? await streamLimitRes.json() : { applicable: false };
                 container.innerHTML = renderAll();
             } catch (error) {
                 container.innerHTML = '<div class="message error show">Error loading settings: ' + error.message + '</div>';
+            }
+        }
+
+        // Shows a popup offering to sync the Channels DVR stream limit if it's stale,
+        // right after an encoder is added/edited/deleted — called after streamLimitStatus
+        // has been refreshed by loadSettings().
+        function maybeShowStreamLimitPrompt() {
+            if (!streamLimitStatus || !streamLimitStatus.applicable || !streamLimitStatus.needsUpdate) return;
+            document.getElementById('stream-limit-modal-message').textContent =
+                'Channels DVR stream limit for "' + streamLimitStatus.sourceName + '" is ' + streamLimitStatus.currentLimit +
+                ', but ' + streamLimitStatus.expectedLimit + ' encoder(s) are now configured.';
+            document.getElementById('stream-limit-modal-overlay').classList.add('show');
+        }
+
+        function closeStreamLimitModal() {
+            document.getElementById('stream-limit-modal-overlay').classList.remove('show');
+        }
+
+        async function updateStreamLimit() {
+            const btn = document.getElementById('stream-limit-modal-update-btn');
+            if (btn) { btn.disabled = true; btn.textContent = 'Updating…'; }
+            try {
+                const res = await fetch('/m3u-manager/update-stream-limit', { method: 'POST' });
+                const data = await res.json();
+                if (!data.success) {
+                    showMessage(data.error || 'Failed to update stream limit', 'error');
+                    if (btn) { btn.disabled = false; btn.textContent = 'Update'; }
+                    return;
+                }
+                closeStreamLimitModal();
+                if (btn) { btn.disabled = false; btn.textContent = 'Update'; }
+                showMessage('Channels DVR stream limit updated to ' + data.limit + '.', 'success');
+                const statusRes = await fetch('/m3u-manager/stream-limit-status').catch(() => ({ ok: false }));
+                streamLimitStatus = statusRes.ok ? await statusRes.json() : { applicable: false };
+            } catch (e) {
+                showMessage('Failed to update stream limit: ' + e.message, 'error');
+                if (btn) { btn.disabled = false; btn.textContent = 'Update'; }
             }
         }
 
@@ -6534,7 +6608,7 @@ const SETTINGS_PAGE_HTML = `
 
         function renderAll() {
             let html = '';
-            const { values, encoders, metadata, defaults, cliOverrides, configSource, configPath } = settingsData;
+            const { values, encoders, metadata, defaults, cliOverrides, configSource, configPath, hasCustomM3uSource } = settingsData;
 
             // Render Server section with paired fields
             if (metadata.server) {
@@ -6570,7 +6644,8 @@ const SETTINGS_PAGE_HTML = `
             } else {
                 html += '<div style="color:#718096;font-size:14px;padding:8px 0;">No encoders configured</div>';
             }
-            html += '</div></div>';
+            html += '</div>';
+            html += '</div>';
 
             // Render Monitoring section with paired toggle fields
             if (metadata.monitoring) {
@@ -6633,9 +6708,33 @@ const SETTINGS_PAGE_HTML = `
                 html += '</div>';
             }
 
+            // Render M3U section — the auto-sync toggle is locked/grayed out (same
+            // treatment as a CLI override) if a custom, non-CH4C-created M3U source is
+            // already configured, since toggling it off here could stop CH4C from
+            // maintaining that setup (refreshing it, warning on limit/disabled state).
+            if (metadata.m3U) {
+                html += '<div class="section">';
+                html += '<div class="section-header">M3U</div>';
+                for (const field of metadata.m3U) {
+                    if (field.path === 'enableM3uAutoSync' && hasCustomM3uSource) {
+                        const value = values[field.path];
+                        html += '<div class="form-group disabled">';
+                        html += '<div class="form-row">';
+                        html += '<label class="form-label" for="field-' + field.path + '">' + escapeHtml(field.label) + ' <span class="cli-badge">Custom M3U</span></label>';
+                        html += '<input type="checkbox" class="form-checkbox" id="field-' + field.path + '" data-path="' + field.path + '" ' + (value ? 'checked' : '') + ' disabled>';
+                        html += '</div>';
+                        html += '<div class="form-description">' + escapeHtml(field.description) + ' A custom M3U source is already configured for this instance, so this is locked to avoid disrupting it.</div>';
+                        html += '</div>';
+                    } else {
+                        html += renderField(field, values, defaults, cliOverrides);
+                    }
+                }
+                html += '</div>';
+            }
+
             // Render any other metadata sections not explicitly handled
             for (const [sectionKey, fields] of Object.entries(metadata)) {
-                if (sectionKey === 'server' || sectionKey === 'monitoring') continue;
+                if (sectionKey === 'server' || sectionKey === 'monitoring' || sectionKey === 'm3U') continue;
                 html += '<div class="section">';
                 html += '<div class="section-header">' + sectionKey.charAt(0).toUpperCase() + sectionKey.slice(1) + '</div>';
                 for (const field of fields) {
@@ -7065,6 +7164,7 @@ const SETTINGS_PAGE_HTML = `
                 if (data.success) {
                     showMessage(data.message, 'success');
                     await reload();
+                    maybeShowStreamLimitPrompt();
                 } else {
                     showMessage(formatErrors(data.errors), 'error');
                 }
@@ -7085,6 +7185,7 @@ const SETTINGS_PAGE_HTML = `
                 if (data.success) {
                     showMessage(data.message, 'success');
                     await reload();
+                    maybeShowStreamLimitPrompt();
                 } else {
                     showMessage(formatErrors(data.errors), 'error');
                 }
@@ -7100,6 +7201,7 @@ const SETTINGS_PAGE_HTML = `
                 if (data.success) {
                     showMessage(data.message, 'success');
                     await reload();
+                    maybeShowStreamLimitPrompt();
                 } else {
                     showMessage(data.error || 'Failed to delete', 'error');
                 }
@@ -7390,6 +7492,7 @@ module.exports = {
   ENABLE_PAUSE_MONITOR,
   PAUSE_MONITOR_INTERVAL,
   BROWSER_HEALTH_INTERVAL,
+  ENABLE_M3U_AUTO_SYNC,
   CHANNELS_POST_URL,
   START_PAGE_HTML,
   INSTANT_PAGE_HTML,

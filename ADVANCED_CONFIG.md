@@ -18,6 +18,9 @@ Options:
   -m, --enable-pause-monitor      Enable video pause detection/resume    [default: true]
   -i, --pause-monitor-interval    Pause check interval in seconds        [default: 10]
   -b, --browser-health-interval   Browser health check interval (hours)  [default: 6]
+  -a, --enable-m3u-auto-sync      Automatically discover, create, and    [default: true]
+                                   refresh the Channels DVR M3U source
+                                   at startup
   -v, --version                   Show version number
   -h, --help                      Show help
 ```
@@ -59,6 +62,7 @@ Create `data/config.json` for complex setups:
   "enablePauseMonitor": true,
   "pauseMonitorInterval": 10,
   "browserHealthInterval": 6,
+  "enableM3uAutoSync": true,
   "encoders": [
     {
       "url": "http://192.168.50.185/live/stream0",
@@ -89,6 +93,7 @@ Create `data/config.json` for complex setups:
 | `enablePauseMonitor` | `-m` | Enable pause detection (default: true) |
 | `pauseMonitorInterval` | `-i` | Pause check interval in seconds |
 | `browserHealthInterval` | `-b` | Browser health check interval in hours |
+| `enableM3uAutoSync` | `-a` | Automatically discover, create, and refresh the Channels DVR M3U source at startup (default: true) |
 | `encoders` | `-e` | Array of encoder configurations |
 
 ## Encoder Display Setup

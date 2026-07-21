@@ -167,11 +167,17 @@ In Settings, click **+ Add Encoder** for each HDMI encoder:
 3. For multi-monitor setups, set the **Screen X/Y Position** — use the **Screens** button to visually select a display, or the home page shows a Display Configuration visual with offsets for each monitor. Display scale must be set to 100% for correct positioning.
 4. Click **Add Encoder**, then **Save Settings** and restart CH4C
 
+If CH4C created its own Channels DVR M3U source (see Step 4), adding or removing an encoder here may show a banner offering to update that source's stream limit to match your encoder count — click **Update** to apply it immediately, no restart required.
+
 | Add Encoder Form | Select Screen |
 |:------------------:|:--------------:|
 | ![Settings - Add Encoder](./assets/settings-add-encoder.jpg) | ![Encoder - Select Screen](./assets/encoder-select-screen.jpg) |
 
 ### Step 4: Add M3U Source to Channels DVR
+
+CH4C automatically sets this up for you on startup — it detects an existing M3U source pointing at CH4C (if you already added one manually) or creates a new one named `CH4C-<hostname>` in Channels DVR. Check Channels DVR → Settings → Sources to confirm it's there; nothing further to do. It's refreshed automatically every time CH4C starts, so new channels normally show up in the guide the next time you restart CH4C. If that source is ever toggled off in Channels DVR Settings, CH4C treats it as inactive and creates a fresh one in its place (the disabled one is left alone, not deleted).
+
+If you'd rather set it up yourself — or you've turned off **Automatic M3U Management** in Settings (see [ADVANCED_CONFIG.md](ADVANCED_CONFIG.md)) — add it manually:
 
 1. In Channels DVR, go to Settings → Add Source → Custom Channels
 2. Set Stream Format to **MPEG-TS**
@@ -200,7 +206,7 @@ Use the [M3U Manager](#m3u-manager) (`http://<CH4C_IP>:2442/m3u-manager`) to bui
 - **Refresh DirecTV Stream** to automatically sync the full DirecTV Stream channel lineup (~500+ channels)
 - **Add Custom Channel** for any streaming service URL (see [Sample Channel URLs](#sample-custom-channel-urls) below)
 
-After adding channels, use the **M3U Refresh** section on the M3U Manager page to trigger Channels DVR to reload the playlist — select your M3U source from the dropdown and click **Refresh M3U**.
+CH4C refreshes the Channels DVR M3U source automatically at every startup, so newly added channels normally appear in the guide the next time you restart CH4C. To pick up changes immediately without restarting, use the **M3U Refresh** section on the M3U Manager page — select your M3U source from the dropdown and click **Refresh M3U**.
 
 ---
 

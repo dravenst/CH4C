@@ -21,6 +21,7 @@ class StreamingM3UManager {
     this.lastUpdate = null;
     this.serviceLastRefresh = {};
     this.channelsDvrSourceName = '';
+    this.channelsDvrSourceAutoCreated = false;
 
     // Known callsign aliases - map common channel names to their Channels DVR callsigns
     this.callsignAliases = {
@@ -160,6 +161,7 @@ class StreamingM3UManager {
       this.lastUpdate = parsed.lastUpdate;
       this.serviceLastRefresh = parsed.serviceLastRefresh || {};
       this.channelsDvrSourceName = parsed.channelsDvrSourceName || '';
+      this.channelsDvrSourceAutoCreated = parsed.channelsDvrSourceAutoCreated || false;
       console.log(`[M3U Manager] Loaded ${this.channels.length} channels from disk`);
     } catch (error) {
       console.log('[M3U Manager] No saved data found, starting fresh');
@@ -175,7 +177,8 @@ class StreamingM3UManager {
       channels: this.channels,
       lastUpdate: this.lastUpdate,
       serviceLastRefresh: this.serviceLastRefresh,
-      channelsDvrSourceName: this.channelsDvrSourceName
+      channelsDvrSourceName: this.channelsDvrSourceName,
+      channelsDvrSourceAutoCreated: this.channelsDvrSourceAutoCreated
     };
     await fs.writeFile(this.dataFile, JSON.stringify(data, null, 2));
     console.log(`[M3U Manager] Saved ${this.channels.length} channels to disk`);
@@ -1116,7 +1119,8 @@ class StreamingM3UManager {
       lastUpdate: this.lastUpdate,
       isRefreshing: this.isRefreshing,
       services: serviceStats,
-      channelsDvrSourceName: this.channelsDvrSourceName
+      channelsDvrSourceName: this.channelsDvrSourceName,
+      channelsDvrSourceAutoCreated: this.channelsDvrSourceAutoCreated
     };
   }
 }
