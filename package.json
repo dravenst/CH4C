@@ -1,6 +1,6 @@
 {
   "name": "ch4c",
-  "version": "0.5.5",
+  "version": "0.6.0",
   "bin": {
     "ch4c": "./main.js"
   },
