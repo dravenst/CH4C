@@ -129,6 +129,31 @@ Because the service runs hidden with no console window, `ch4c service logs` is h
 
 For manual startup configurations using PowerShell scripts or batch files, see [ADVANCED_CONFIG.md](ADVANCED_CONFIG.md).
 
+### Upgrading
+
+Check your current version and whether a newer one is available anytime from the **Settings** page.
+
+**If installed as a service**, stop it before replacing the binary — Windows and macOS won't let you overwrite an executable while it's running:
+```bash
+ch4c service stop
+# replace ch4c.exe (Windows) or ch4c (macOS) with the new version, then:
+ch4c service install
+```
+`service install` re-registers and starts the service against the new binary (on Windows it also rebuilds the small session-launcher helper), so running it again after replacing the exe is the complete upgrade — no separate `service start` needed.
+
+**If running CH4C directly** (no service installed), just stop it, replace the binary, and start it again.
+
+**macOS via npm**, run the same install command again to pull the latest:
+```bash
+npm install -g github:dravenst/CH4C
+```
+
+**Running from source**:
+```bash
+git pull
+npm install
+```
+
 ---
 
 ## Getting Started
