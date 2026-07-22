@@ -121,13 +121,21 @@ function findCsc() {
   return candidates.find(fs.existsSync) || null;
 }
 
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 /**
  * Copy ch4c-launcher.cs into the service directory and compile it to an exe.
  * Done at install time so the service ships no prebuilt binaries.
+ *
+ * Stopping/uninstalling a previous service instance (see installWindows) doesn't
+ * guarantee the old ch4c-launcher.exe's file handle is released the instant the
+ * stop command returns — the launcher's own child processes (CH4C, Chrome) can
+ * take a moment longer to fully exit. Retry on that specific failure instead of
+ * giving up on the first race.
  * @param {string} serviceDir
- * @returns {string} - Path to the compiled ch4c-launcher.exe
+ * @returns {Promise<string>} - Path to the compiled ch4c-launcher.exe
  */
-function compileLauncher(serviceDir) {
+async function compileLauncher(serviceDir) {
   const csc = findCsc();
   if (!csc) {
     throw new Error('Could not find the C# compiler (csc.exe). '
@@ -136,8 +144,20 @@ function compileLauncher(serviceDir) {
   const srcPath = path.join(serviceDir, 'ch4c-launcher.cs');
   const exePath = path.join(serviceDir, 'ch4c-launcher.exe');
   fs.writeFileSync(srcPath, fs.readFileSync(path.join(__dirname, 'ch4c-launcher.cs')));
-  execSync(`"${csc}" /nologo /optimize+ /target:exe /out:"${exePath}" "${srcPath}"`, { stdio: 'pipe' });
-  return exePath;
+
+  const maxAttempts = 5;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      execSync(`"${csc}" /nologo /optimize+ /target:exe /out:"${exePath}" "${srcPath}"`, { stdio: 'pipe' });
+      return exePath;
+    } catch (error) {
+      // csc.exe writes its error text to stdout, not stderr.
+      const detail = (error.stdout && error.stdout.toString()) || (error.stderr && error.stderr.toString()) || error.message || '';
+      const isFileInUse = /being used by another process|CS0016/i.test(detail);
+      if (!isFileInUse || attempt === maxAttempts) throw error;
+      await delay(1000);
+    }
+  }
 }
 
 /**
@@ -179,9 +199,10 @@ async function installWindows(dataDir) {
   let launcherExe;
   try {
     console.log('Building the CH4C session launcher...');
-    launcherExe = compileLauncher(serviceDir);
+    launcherExe = await compileLauncher(serviceDir);
   } catch (error) {
-    const detail = ((error.stderr && error.stderr.toString()) || error.message || '').trim();
+    // csc.exe writes its error text to stdout, not stderr.
+    const detail = ((error.stdout && error.stdout.toString()) || (error.stderr && error.stderr.toString()) || error.message || '').trim();
     console.error(`\nFailed to build the session launcher:\n  ${detail.split('\n').join('\n  ')}`);
     process.exit(1);
   }
