@@ -996,23 +996,6 @@ async function findShadowElement(page, selector, timeoutMs = 10000) {
   return null;
 }
 
-// Find the first frame on `page` that contains a matching element, polling until found.
-// Disney's login modal loads in a cross-origin iframe from the identity service;
-// page.waitForSelector only searches the main frame, so we must iterate page.frames().
-async function findFrameContaining(page, selector, timeoutMs = 15000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    for (const frame of page.frames()) {
-      try {
-        const el = await frame.$(selector);
-        if (el) return frame;
-      } catch (_) {}
-    }
-    await delay(500);
-  }
-  return null;
-}
-
 async function loginDisney(page, username, password) {
   try {
     // Navigate to disneyplus.com/home and let the SPA settle

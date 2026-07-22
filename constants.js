@@ -223,33 +223,6 @@ const isValidChannelNumber = (channel) => {
   return /^\d+\.\d+$/.test(channel);
 };
 
-/**
- * Get audio devices list as a formatted string for help display
- */
-const getAudioDevicesHelpText = async () => {
-  try {
-    const audioManager = new AudioDeviceManager();
-    const devices = await audioManager.getAudioDevices();
-
-    if (devices && devices.length > 0) {
-      let helpText = '\n\nAvailable Audio Output Devices:\n';
-      devices.forEach((device, index) => {
-        const deviceName = device.name || device.label || 'Unknown Device';
-        helpText += `  ${index + 1}. ${deviceName}`;
-        if (device.isDefault) {
-          helpText += ' (Default)';
-        }
-        helpText += '\n';
-      });
-      return helpText;
-    } else {
-      return '\n\nNo audio output devices found.\n';
-    }
-  } catch (error) {
-    return `\n\nError retrieving audio devices: ${error.message}\n`;
-  }
-};
-
 // Remove the special help handling - let it go through the normal yargs flow
 const rawArgs = hideBin(process.argv);
 

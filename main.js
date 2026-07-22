@@ -2773,7 +2773,8 @@ const createCleanupManager = () => {
       // Check if recovery is already in progress from the disconnection handler
       if (recoveryInProgress.get(encoderUrl)) {
         logTS(`Recovery already in progress for encoder ${encoderUrl}, skipping cleanup recovery`);
-        activeBrowsers.delete(encoderUrl); // Mark as available
+        // Don't touch activeBrowsers here — the in-flight recovery/auto-login owns the
+        // reservation and will call makeAvailable()/setBrowserAvailable() when it's actually done.
         return;
       }
       
@@ -2878,25 +2879,6 @@ const createCleanupManager = () => {
     })
   };
 };
-
-/**
- * Handle Sling modal detection by simulating human interaction
- * @param {Page} page - Puppeteer page object
- * @returns {Promise<boolean>} - True if modal was handled successfully
- */
-async function handleSlingModal(page) {
-  const currentUrl = page.url();
-
-  // Check if we're on the modal page
-  if (currentUrl.includes('/modal')) {
-    logTS('Detected Sling modal, skipping (will retry on next attempt)');
-    // Don't wait - modal won't auto-dismiss, just return false and let retry handle it
-    return false;
-  } else {
-    // Not on modal page, we're good
-    return true;
-  }
-}
 
 /**
  * Navigate to a Sling URL and handle any modals that appear
