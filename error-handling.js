@@ -499,8 +499,15 @@ class BrowserHealthMonitor {
       if (recovered) {
         logTS(`[${encoderUrl}] Successfully recovered unhealthy browser`);
 
-        // Mark encoder as available after successful recovery
-        if (global.cleanupManager && global.cleanupManager.setBrowserAvailable) {
+        // Mark encoder as available after successful recovery — unless a stream is still
+        // actively using this encoder, in which case that stream's own cleanup() owns the
+        // reservation and will release it when it actually ends. Without this check, a
+        // transient health-check failure mid-recording would free the encoder for a brand
+        // new request while the original recording still thinks it owns it.
+        const stillActive = global.streamMonitor && global.streamMonitor.activeStreams.has(encoderUrl);
+        if (stillActive) {
+          logTS(`[${encoderUrl}] Recovered browser but leaving reserved — stream is still active on this encoder`);
+        } else if (global.cleanupManager && global.cleanupManager.setBrowserAvailable) {
           global.cleanupManager.setBrowserAvailable(encoderUrl);
           logTS(`[${encoderUrl}] Marked as available after health monitor recovery`);
         }
@@ -717,10 +724,10 @@ class BrowserRecoveryManager {
           if (global.browserHealthMonitor) {
             global.browserHealthMonitor.updateBrowserHealth(encoderUrl, true);
           }
-          // Mark encoder as available after successful recovery
-          if (global.cleanupManager && global.cleanupManager.setBrowserAvailable) {
-            global.cleanupManager.setBrowserAvailable(encoderUrl);
-          }
+          // Whether the encoder should be marked available is the caller's call, not
+          // this shared recovery routine's — callers include the periodic health monitor
+          // (which must NOT free an encoder still mid-stream) and a request's own
+          // fallback recovery for its own encoder (which must stay reserved for it).
           return true;
         }
         logTS(`[${encoderUrl}] Browser launch returned false, not retrying`);

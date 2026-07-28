@@ -75,6 +75,60 @@ function getScheduledRecordingsFile() {
   return path.join(Constants.DATA_DIR || __dirname, 'scheduled_recordings.json');
 }
 
+// Instant recordings in progress — persisted only so that if CH4C exits unexpectedly
+// mid-recording, the next startup can log what was lost instead of silently handing
+// that encoder to the next request. There is no way to resume a lost recording, so
+// this is a one-shot diagnostic, not a reschedule mechanism.
+function getActiveInstantRecordingsFile() {
+  return path.join(Constants.DATA_DIR || __dirname, 'active_instant_recordings.json');
+}
+
+function saveActiveInstantRecording(encoderUrl, recordingName, channel, endTime) {
+  let data = {};
+  try {
+    data = JSON.parse(fs.readFileSync(getActiveInstantRecordingsFile(), 'utf8'));
+  } catch { /* file missing or unreadable, start fresh */ }
+  data[encoderUrl] = { recordingName, channel, endTime };
+  try {
+    fs.writeFileSync(getActiveInstantRecordingsFile(), JSON.stringify(data, null, 2));
+  } catch (e) {
+    logTS(`Failed to save active instant recording state: ${e.message}`);
+  }
+}
+
+function clearActiveInstantRecording(encoderUrl) {
+  let data;
+  try {
+    data = JSON.parse(fs.readFileSync(getActiveInstantRecordingsFile(), 'utf8'));
+  } catch { return; }
+  if (!(encoderUrl in data)) return;
+  delete data[encoderUrl];
+  try {
+    fs.writeFileSync(getActiveInstantRecordingsFile(), JSON.stringify(data, null, 2));
+  } catch (e) {
+    logTS(`Failed to update active instant recording state: ${e.message}`);
+  }
+}
+
+// Called once at startup, before any new stream request can claim an encoder.
+// Warns about instant recordings that were still in progress when CH4C last
+// stopped, since that Channels DVR recording is now incomplete and the encoder
+// that was hosting it will otherwise silently look "available" again.
+function reportInterruptedInstantRecordings() {
+  const filePath = getActiveInstantRecordingsFile();
+  if (!fs.existsSync(filePath)) return;
+  try {
+    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    for (const [encoderUrl, info] of Object.entries(data)) {
+      const remainingMin = Math.max(0, Math.round((info.endTime - Date.now()) / 60000));
+      logTS(`WARNING: Instant recording "${info.recordingName}" (Channel ${info.channel}, encoder ${encoderUrl}) was still in progress when CH4C last stopped unexpectedly (~${remainingMin} min remaining). It was not resumed — the Channels DVR recording is incomplete.`);
+    }
+    fs.unlinkSync(filePath);
+  } catch (e) {
+    logTS(`Failed to read active instant recording state: ${e.message}`);
+  }
+}
+
 function saveScheduledRecordings() {
   const data = Array.from(scheduledRecordings.entries()).map(([id, entry]) => ({
     id,
@@ -2782,6 +2836,7 @@ const createCleanupManager = () => {
       closingStates.set(encoderUrl, true);
       recoveryInProgress.set(encoderUrl, true); // Mark recovery as in progress
       intentionalClose.set(encoderUrl, true); // Mark this as an intentional close
+      clearActiveInstantRecording(encoderUrl);
 
       // Stop stream monitoring for this encoder
       if (global.streamMonitor) {
@@ -8879,6 +8934,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
         const bufferSeconds = 15;
         const totalDurationMs = (duration * 60 + bufferSeconds) * 1000;
         logTS(`Setting timer to stop stream after ${duration} minutes (+ ${bufferSeconds}s buffer)`);
+        saveActiveInstantRecording(availableEncoder.url, recordingName, availableEncoder.channel, Date.now() + totalDurationMs);
         setEncoderDurationTimer(availableEncoder.url, async () => {
           logTS(`Recording duration expired for ${recordingName}, stopping stream on ${availableEncoder.channel}...`);
           clearEncoderDurationTimer(availableEncoder.url);
@@ -10231,6 +10287,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
     }
     logTS(`Configure settings at http://localhost:${Constants.CH4C_PORT}/settings`);
     loadAndRescheduleRecordings(app.locals);
+    reportInterruptedInstantRecordings();
   });
 
   // Handle HTTP server startup errors
