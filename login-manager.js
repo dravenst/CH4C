@@ -506,6 +506,15 @@ async function dismissWBDTermsBanner(page, logPrefix) {
 
 // ─── Login status check ───────────────────────────────────────────────────────
 
+// True if the URL matches the site's configured loggedOutUrlFragment, or looks like a
+// generic login page. Some sites (e.g. Disney+) redirect unauthenticated sessions straight
+// to their own /identity/login page rather than the configured fragment, so the generic
+// check catches that case even when it doesn't match loggedOutUrlFragment.
+function isLoggedOutUrl(url, siteConfig) {
+  if (siteConfig.loggedOutUrlFragment && url.includes(siteConfig.loggedOutUrlFragment)) return true;
+  return url.includes('/login') || url.includes('/signin') || url.includes('/sign-in');
+}
+
 async function checkLogin(page, siteConfig) {
   try {
     await page.goto(siteConfig.checkUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
@@ -562,7 +571,7 @@ async function checkLogin(page, siteConfig) {
         // If the page has been redirected to a known "not logged in" URL, bail out immediately.
         // This handles cases where a modal or other interstitial prevents normal element detection
         // but the site ultimately redirects unauthenticated users to a different domain/path.
-        if (siteConfig.loggedOutUrlFragment && page.url().includes(siteConfig.loggedOutUrlFragment)) {
+        if (isLoggedOutUrl(page.url(), siteConfig)) {
           logTS(`checkLogin: redirected to logged-out URL (${page.url()}) — not logged in`);
           return false;
         }
@@ -584,7 +593,7 @@ async function checkLogin(page, siteConfig) {
         try { await page.hover(siteConfig.checkLoginPreHover); await delay(500); } catch (_) {}
       }
       // Final URL check before element check
-      if (siteConfig.loggedOutUrlFragment && page.url().includes(siteConfig.loggedOutUrlFragment)) {
+      if (isLoggedOutUrl(page.url(), siteConfig)) {
         logTS(`checkLogin: final URL check — redirected to logged-out URL (${page.url()})`);
         return false;
       }
@@ -649,11 +658,7 @@ async function checkLogin(page, siteConfig) {
     }
 
     // URL fallback
-    const url = page.url();
-    if (siteConfig.loggedOutUrlFragment) {
-      return !url.includes(siteConfig.loggedOutUrlFragment);
-    }
-    return !url.includes('/login') && !url.includes('/signin') && !url.includes('/sign-in');
+    return !isLoggedOutUrl(page.url(), siteConfig);
   } catch (e) {
     logTS(`checkLogin error for ${siteConfig.id}: ${e.message}`);
     return false;
@@ -1009,10 +1014,11 @@ async function loginDisney(page, username, password) {
     } catch (_) {}
 
     // Check if already logged in — LOG IN button absent AND still on disneyplus.com means logged in.
-    // Unauthenticated users get JS-redirected to disney.com (~5s); if that redirect happened during
-    // the 3s delay, the LOG IN button won't exist on disney.com either — don't misread that as logged in.
+    // Unauthenticated users get JS-redirected to disney.com (~5s) or straight to /identity/login;
+    // if either redirect happened during the 3s delay, don't misread that as logged in.
     let loginBtn = await page.$('a[data-testid="log_in"]');
-    if (!loginBtn) {
+    let onLoginPage = page.url().includes('/identity/login');
+    if (!loginBtn && !onLoginPage) {
       if (page.url().includes('www.disney.com') && !page.url().includes('disneyplus.com')) {
         logTS('Disney+: redirected to disney.com — not logged in, navigating back');
         await page.goto('https://www.disneyplus.com/home', { waitUntil: 'domcontentloaded', timeout: 25000 });
@@ -1022,25 +1028,30 @@ async function loginDisney(page, username, password) {
           throw new Error('Disney+ keeps redirecting to disney.com — unable to reach login page');
         }
         loginBtn = await page.$('a[data-testid="log_in"]');
-        if (!loginBtn) throw new Error('Disney+ LOG IN button not found after redirect recovery');
+        onLoginPage = page.url().includes('/identity/login');
+        if (!loginBtn && !onLoginPage) throw new Error('Disney+ LOG IN button not found after redirect recovery');
       } else {
         logTS('Disney+: already logged in');
         return { success: true };
       }
     }
 
-    // Click the LOG IN button — navigates to /identity/login (may go through intermediate redirects)
-    logTS('Disney+: clicking LOG IN button');
-    await loginBtn.click();
-    // Disney+ SPA may redirect /home → / → /identity/login in multiple steps.
-    // Poll until the URL settles on /identity/login rather than trusting a single waitForNavigation.
-    await page.waitForFunction(
-      () => window.location.href.includes('/identity/login'),
-      { timeout: 15000 }
-    ).catch(() => {});
+    if (onLoginPage) {
+      logTS('Disney+: already on login page');
+    } else {
+      // Click the LOG IN button — navigates to /identity/login (may go through intermediate redirects)
+      logTS('Disney+: clicking LOG IN button');
+      await loginBtn.click();
+      // Disney+ SPA may redirect /home → / → /identity/login in multiple steps.
+      // Poll until the URL settles on /identity/login rather than trusting a single waitForNavigation.
+      await page.waitForFunction(
+        () => window.location.href.includes('/identity/login'),
+        { timeout: 15000 }
+      ).catch(() => {});
 
-    if (!page.url().includes('/identity/login')) {
-      throw new Error(`Expected Disney+ login page, got: ${page.url()}`);
+      if (!page.url().includes('/identity/login')) {
+        throw new Error(`Expected Disney+ login page, got: ${page.url()}`);
+      }
     }
 
     // Step 1: email
@@ -1052,13 +1063,22 @@ async function loginDisney(page, username, password) {
     await page.click('button[data-testid="continue-btn"]');
     await delay(2000);
 
+    // Disney+ may show an interstitial with "Send email link" / "Enter password instead" —
+    // click through it to reach the password field.
+    const pwdInsteadBtn = await page.$('button[data-testid="passwordless-login-with-pwd-btn"]');
+    if (pwdInsteadBtn) {
+      logTS('Disney+: clicking "Enter password instead"');
+      await pwdInsteadBtn.click();
+      await delay(1000);
+    }
+
     // Step 2: password
-    // <form class="password-form"><input id="password"><button type="submit">Log In</button></form>
+    // <input id="password"> + <button type="submit">Log In</button>
     await page.waitForSelector('input#password', { timeout: 10000, visible: true });
     await page.click('input#password', { clickCount: 3 });
     await page.type('input#password', password, { delay: 50 });
     await delay(300);
-    await page.click('form.password-form button[type="submit"]');
+    await page.click('button[type="submit"]');
 
     // Wait for redirect back to disneyplus.com after successful login
     await Promise.race([
