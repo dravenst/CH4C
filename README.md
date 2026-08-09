@@ -261,6 +261,8 @@ The Login Manager is on the home page (`http://<CH4C_IP>:<CH4C_PORT>/`). It auto
 
 For services not listed, use [Remote Access](#remote-access) to log in manually via VNC.
 
+**Automatic Login Check**: opt individual services in via their **Include in Automatic Login Check** checkbox to have CH4C periodically re-verify they're still logged in on each running encoder — and log back in immediately if a session has expired — without waiting for a failed stream to notice. Checks run during low-usage hours (1-3 AM local time) on a configurable weekly interval; encoders that are actively streaming are skipped, and the last run's result is shown on the Login Manager.
+
 ### Settings
 
 Navigate to `http://<CH4C_IP>:<CH4C_PORT>/settings` to configure:
@@ -319,7 +321,7 @@ Navigate to `http://<CH4C_IP>:<CH4C_PORT>/instant` to:
 - **Record Later**: schedule a recording for a future date and time. Click **🕐 Record Later**, pick a date/time, and click **📅 Schedule Recording**. Scheduled recordings survive a CH4C restart and are listed on both the Instant Recording page and the home page. Cancel any scheduled recording from either page.
 - Add your own show metadata that will be visible in the Channels DVR Recordings
 - **Show Search**: automatically look up a specific episode or movie from a supported streaming service and pre-fill all recording metadata (title, episode, duration, artwork, and direct watch URL)
-- **Closed Captions**: select Default, English, or Off from the CC dropdown. Default leaves the service's caption state unchanged. English or Off will open the player's subtitle menu and apply the selection after playback starts. If the CC menu is unavailable at startup (e.g., during pre-roll ads), CH4C retries in the background for up to 3 minutes. Supported on Prime Video, Disney+, Peacock, Max (HBO Max), Sling TV, ESPN, Apple TV+, and YouTube.
+- **Closed Captions**: select Default, English, or Off from the CC dropdown. Default leaves the service's caption state unchanged. English or Off will open the player's subtitle menu and apply the selection after playback starts. If the CC menu is unavailable at startup (e.g., during pre-roll ads), CH4C retries in the background for up to 3 minutes. Supported on Prime Video, Disney+, Peacock, Max (HBO Max), Sling TV, ESPN, Apple TV+, Netflix, and YouTube.
 
 Enter the show name and optionally an episode in the Show Search field, select a service, and click **Search**. The matching episode or movie details will be populated automatically — just select an encoder and start the recording.
 
