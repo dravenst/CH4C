@@ -2316,6 +2316,7 @@ const INSTANT_PAGE_HTML = `
                             <option value="apple_tv">Apple TV+</option>
                             <option value="disney_plus">Disney+</option>
                             <option value="hbomax">HBO Max</option>
+                            <option value="netflix">Netflix</option>
                             <option value="peacock">Peacock</option>
                             <option value="prime_video">Prime Video</option>
                             <option value="sling">Sling TV</option>

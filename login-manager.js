@@ -371,6 +371,17 @@ const LOGIN_SITES = [
     checkLoginWaitMs: 15000,
   },
   {
+    id: 'netflix',
+    name: 'Netflix',
+    type: 'direct',
+    // Navigate to netflix.com; logged in when the Sign In link is absent from the header.
+    // <a data-uia="header-login-link" href="/login">Sign In</a>
+    checkUrl: 'https://www.netflix.com/',
+    loggedOutIndicator: 'a[data-uia="header-login-link"]',
+    // SPA takes a moment to render the header after load
+    checkLoginWaitMs: 5000,
+  },
+  {
     id: 'peacock',
     name: 'Peacock',
     type: 'direct',
@@ -1350,6 +1361,102 @@ async function loginPrimeVideo(page, username, password) {
   }
 }
 
+async function loginNetflix(page, username, password) {
+  try {
+    await page.goto('https://www.netflix.com/', { waitUntil: 'domcontentloaded', timeout: 25000 });
+    await delay(3000); // allow SPA to hydrate and render the header
+
+    // Check DOM presence of the Sign In link — it's absent when logged in.
+    const signInLink = await page.$('a[data-uia="header-login-link"]');
+    if (!signInLink) return { success: true };
+
+    logTS('Netflix: clicking Sign In');
+    await signInLink.click();
+    await Promise.race([
+      page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {}),
+      delay(5000),
+    ]);
+    await delay(1000);
+
+    // Step 1: email
+    // <input name="userLoginId" data-uia="field-userLoginId">
+    const emailSelector = 'input[name="userLoginId"]';
+    await page.waitForSelector(emailSelector, { timeout: 15000, visible: true });
+    await page.click(emailSelector, { clickCount: 3 });
+    await page.type(emailSelector, username, { delay: 50 });
+    await delay(300);
+
+    // <button data-uia="continue-button" type="submit">Continue</button>
+    await page.click('button[data-uia="continue-button"]');
+    await Promise.race([
+      page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {}),
+      delay(4000),
+    ]);
+    await delay(2000);
+
+    // Step 2: password. Netflix sometimes lands directly on the password page, and
+    // sometimes on a "use a code to sign in" page — in the latter case, open the Get
+    // Help menu and choose "Use password instead" to reach the password field.
+    const passwordSelector = 'input[data-uia="password-input"]';
+    let passwordInput = await page.$(passwordSelector);
+    if (!passwordInput) {
+      logTS('Netflix: password field not shown directly — opening Get Help menu');
+      // <button data-uia="help-menu-toggle-expanded">Get Help</button>
+      const helpToggle = 'button[data-uia="help-menu-toggle-expanded"], button[data-uia="help-menu-toggle-collapsed"]';
+      await page.waitForSelector(helpToggle, { timeout: 10000, visible: true });
+      await page.click(helpToggle);
+      await delay(500);
+
+      // <a data-uia="usePasswordInsteadHelpMenuItem" href="#">Use password instead</a>
+      const usePasswordLink = 'a[data-uia="usePasswordInsteadHelpMenuItem"]';
+      await page.waitForSelector(usePasswordLink, { timeout: 5000, visible: true });
+      await page.click(usePasswordLink);
+      await delay(1000);
+
+      await page.waitForSelector(passwordSelector, { timeout: 10000, visible: true });
+      passwordInput = await page.$(passwordSelector);
+    }
+    if (!passwordInput) throw new Error('Netflix password input not found');
+
+    await page.click(passwordSelector, { clickCount: 3 });
+    await page.type(passwordSelector, password, { delay: 50 });
+    await delay(300);
+
+    // <button data-uia="sign-in-button" type="submit">Sign In</button>
+    await page.click('button[data-uia="sign-in-button"]');
+
+    // Wait for redirect to the home/profile-gate page after successful login
+    await Promise.race([
+      page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {}),
+      delay(10000),
+    ]);
+    await delay(2000);
+
+    // If still on a login-flow page, credentials were rejected
+    const url = page.url();
+    if (url.includes('/login')) {
+      const errorMsg = await page.evaluate(() => {
+        const el = document.querySelector('[role="alert"], [data-uia*="error" i]');
+        return el ? el.textContent.trim() : null;
+      }).catch(() => null);
+      return { success: false, message: errorMsg || 'Login failed — check credentials' };
+    }
+
+    // Verify: Sign In link absent from DOM. On success Netflix lands on either the
+    // home page or the "Who's watching?" profile-gate page — neither has the header
+    // Sign In link, so this single check covers both outcomes.
+    const stillSignedOut = await page.$('a[data-uia="header-login-link"]').catch(() => null);
+    if (stillSignedOut) {
+      return { success: false, message: 'Login failed — check credentials' };
+    }
+
+    logTS('Netflix: login succeeded');
+    return { success: true };
+  } catch (e) {
+    return { success: false, message: e.message };
+  }
+}
+
 // ─── TVE login handler ────────────────────────────────────────────────────────
 
 async function loginTve(page, siteConfig, tveProviderName, tveProviderUsername, tveProviderPassword) {
@@ -2311,6 +2418,9 @@ async function performLogin(page, siteConfig, credentials) {
     }
     if (siteConfig.id === 'primevideo') {
       return await loginPrimeVideo(page, username, password);
+    }
+    if (siteConfig.id === 'netflix') {
+      return await loginNetflix(page, username, password);
     }
     return { success: false, message: `No login handler for direct site: ${siteConfig.id}` };
   }

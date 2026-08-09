@@ -2437,6 +2437,232 @@ async function searchPeacock(page, query) {
 }
 
 /**
+ * Hover the first Netflix search result to reveal its preview overlay, then click
+ * "expand to detail" to open the detail modal (metadata + episode list for series).
+ * Returns true if the modal opened.
+ */
+async function openNetflixDetailModal(page) {
+  const card = await page.$('section[data-uia="gallery"] a[data-uia="standard-card"]');
+  if (!card) return false;
+  const box = await card.boundingBox();
+  if (!box) return false;
+
+  // Hover to trigger Netflix's preview overlay (it animates in after a beat)
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await delay(1500);
+
+  const expandBtn = await page.waitForSelector('button[data-uia="expand-to-detail-button"]', { timeout: 5000 }).catch(() => null);
+  if (!expandBtn) return false;
+  await expandBtn.click();
+
+  const opened = await page.waitForSelector('.detail-modal-container', { timeout: 10000 }).catch(() => null);
+  return !!opened;
+}
+
+/**
+ * Read synopsis/duration and (for series) the current season's episode list from an
+ * already-open Netflix detail modal.
+ */
+async function extractNetflixModalData(page) {
+  return await page.evaluate(() => {
+    const modal = document.querySelector('.detail-modal-container');
+    if (!modal) return null;
+
+    const parseTrackingVideoId = (el) => {
+      const raw = el?.getAttribute('data-ui-tracking-context');
+      if (!raw) return null;
+      try { return JSON.parse(decodeURIComponent(raw)).video_id || null; } catch (_) { return null; }
+    };
+
+    const synopsisEl = modal.querySelector('[data-uia="preview-modal-synopsis"] .ptrack-content');
+    const metaLine = modal.querySelector('[data-uia="videoMetadata--container"] .videoMetadata--line');
+    const topDurationText = metaLine?.querySelector('.duration')?.textContent?.trim() || null;
+
+    const seasonBtn = modal.querySelector('[data-uia="dropdown-toggle"]');
+    const seasonMatch = seasonBtn ? seasonBtn.textContent.match(/Season\s+(\d+)/i) : null;
+
+    const episodeEls = modal.querySelectorAll('.episodeSelector-container .titleCardList--container.episode-item');
+    const episodes = [...episodeEls].map((item, idx) => ({
+      index:        idx + 1,
+      isCurrent:    item.classList.contains('current'),
+      title:        item.querySelector('.titleCard-title_text')?.textContent?.trim() || null,
+      durationText: item.querySelector('.titleCard-duration .duration')?.textContent?.trim() || null,
+      synopsis:     item.querySelector('.titleCard-synopsis .ptrack-content')?.textContent?.trim() || null,
+      imageUrl:     item.querySelector('img')?.getAttribute('src') || null,
+      videoId:      parseTrackingVideoId(item.querySelector('.titleCard-imageWrapper .ptrack-content')),
+    }));
+
+    return {
+      synopsis:        synopsisEl ? synopsisEl.textContent.trim() : null,
+      topDurationText,
+      shownSeason:     seasonMatch ? parseInt(seasonMatch[1], 10) : null,
+      episodes,
+    };
+  });
+}
+
+/**
+ * Switch the open Netflix detail modal to the given season via its dropdown, waiting for
+ * the episode list to refresh. Returns false if the dropdown or the season option isn't found.
+ */
+async function selectNetflixSeason(page, targetSeason) {
+  const toggle = await page.$('[data-uia="dropdown-toggle"]');
+  if (!toggle) return false;
+  await toggle.click();
+  await page.waitForSelector('ul[data-uia="dropdown-menu"] li[data-uia="dropdown-menu-item"]', { timeout: 5000 }).catch(() => {});
+
+  // Options are "Season N  (X Episodes)" list items, plus a trailing "See All Episodes" item
+  // with no season number — matched (and skipped) by the failed regex test below.
+  const clicked = await page.evaluate((season) => {
+    const items = document.querySelectorAll('ul[data-uia="dropdown-menu"] li[data-uia="dropdown-menu-item"]');
+    for (const item of items) {
+      const m = (item.textContent || '').match(/^Season\s+(\d+)/i);
+      if (m && parseInt(m[1], 10) === season) {
+        item.click();
+        return true;
+      }
+    }
+    return false;
+  }, targetSeason);
+  if (!clicked) return false;
+
+  // Wait for the dropdown label to reflect the new season, then let the episode list re-render
+  await page.waitForFunction(
+    (season) => {
+      const btn = document.querySelector('[data-uia="dropdown-toggle"]');
+      return btn && new RegExp(`Season\\s+${season}\\b`).test(btn.textContent);
+    },
+    { timeout: 8000 },
+    targetSeason
+  ).catch(() => {});
+  await delay(500);
+  return true;
+}
+
+/**
+ * Search Netflix for content and return the watch URL plus metadata.
+ * Opens the detail modal (via the search result's hover overlay) to read synopsis/duration
+ * for movies, and the episode list for series, switching season via its dropdown when the
+ * requested S#E# points at a season other than the one shown by default.
+ */
+async function searchNetflix(page, query) {
+  const episodeMatch  = query.match(/\bs(\d+)\s*e(\d+)\b/i);
+  const targetSeason  = episodeMatch ? parseInt(episodeMatch[1], 10) : null;
+  const targetEpisode = episodeMatch ? parseInt(episodeMatch[2], 10) : null;
+  const searchTerm    = query.replace(/\bs\d+\s*e\d+\b/i, '').trim();
+
+  logTS('Navigating to Netflix');
+  await page.goto('https://www.netflix.com/', { waitUntil: 'networkidle2', timeout: 30000 });
+
+  // Handle "Who's watching?" profile gate if it appears — select the first (primary) profile.
+  const primaryProfile = await page.$('a.profile-link[data-uia="action-select-profile+primary"]');
+  if (primaryProfile) {
+    logTS('Netflix: profile gate detected — selecting first profile');
+    await primaryProfile.click();
+    await page.waitForFunction(() => !document.querySelector('ul.choose-profile'), { timeout: 15000 }).catch(() => {});
+  }
+
+  // Open the search box
+  logTS(`Netflix: searching for "${searchTerm}"`);
+  await page.waitForSelector('button[data-uia="navigation+actions+search+icon"]', { timeout: 10000 });
+  await page.click('button[data-uia="navigation+actions+search+icon"]');
+
+  const searchInput = await page.waitForSelector('input[data-uia="navigation+actions+search+input"]', { timeout: 10000 });
+  await searchInput.type(searchTerm, { delay: 60 });
+
+  // Wait for the results gallery to render (debounced)
+  await page.waitForSelector('section[data-uia="gallery"] a[data-uia="standard-card"]', { timeout: 15000 });
+  await delay(500); // settle time for the gallery to finish updating
+
+  // Capture title, image, and jbv id from the first result card
+  const firstResult = await page.evaluate(() => {
+    const card = document.querySelector('section[data-uia="gallery"] a[data-uia="standard-card"]');
+    if (!card) return null;
+    const title = card.getAttribute('aria-label')?.trim() || null;
+    const imageUrl = card.querySelector('img')?.getAttribute('src') || null;
+    const href = card.getAttribute('href') || '';
+    const jbv = new URL(href, 'https://www.netflix.com').searchParams.get('jbv');
+    return { title, imageUrl, jbv };
+  });
+
+  if (!firstResult || !firstResult.jbv) {
+    logTS(`No Netflix results found for: "${searchTerm}"`);
+    return null;
+  }
+
+  const watchUrl = `https://www.netflix.com/watch/${firstResult.jbv}`;
+  logTS(`Netflix: first result "${firstResult.title}" -> ${watchUrl}`);
+
+  // Open the detail modal for richer metadata (and the episode list, for series)
+  const modalOpened = await openNetflixDetailModal(page);
+  if (!modalOpened) {
+    logTS('Netflix: could not open detail modal — falling back to basic result');
+    if (targetEpisode !== null) {
+      throw new Error('Netflix: could not open the detail view to locate the requested episode');
+    }
+    return {
+      url: watchUrl, title: firstResult.title, episodeTitle: null,
+      seasonNumber: null, episodeNumber: null, durationMinutes: null,
+      summary: null, imageUrl: firstResult.imageUrl,
+    };
+  }
+
+  let modalData = await extractNetflixModalData(page);
+  const isSeries = modalData && modalData.episodes.length > 0;
+
+  if (isSeries) {
+    let chosen;
+    if (targetEpisode !== null) {
+      if (targetSeason !== null && targetSeason !== modalData.shownSeason) {
+        logTS(`Netflix: switching from Season ${modalData.shownSeason} to Season ${targetSeason}`);
+        const switched = await selectNetflixSeason(page, targetSeason);
+        if (!switched) {
+          throw new Error(`Netflix: Season ${targetSeason} not found in the season dropdown`);
+        }
+        modalData = await extractNetflixModalData(page);
+      }
+      chosen = modalData.episodes[targetEpisode - 1];
+      if (!chosen) {
+        throw new Error(`Netflix: Episode ${targetEpisode} not found in Season ${modalData.shownSeason} (${modalData.episodes.length} episodes listed)`);
+      }
+    } else {
+      chosen = modalData.episodes.find(e => e.isCurrent) || modalData.episodes[0];
+    }
+
+    if (!chosen.videoId) {
+      throw new Error(`Netflix: could not determine a playable id for "${chosen.title}"`);
+    }
+
+    logTS(`Netflix: selected S${modalData.shownSeason}E${chosen.index} "${chosen.title}"`);
+    return {
+      url:             `https://www.netflix.com/watch/${chosen.videoId}`,
+      title:           firstResult.title,
+      episodeTitle:    chosen.title,
+      seasonNumber:    modalData.shownSeason,
+      episodeNumber:   chosen.index,
+      durationMinutes: parseDurationMinutes(chosen.durationText),
+      summary:         chosen.synopsis,
+      imageUrl:        chosen.imageUrl || firstResult.imageUrl,
+    };
+  }
+
+  // Movie — use the direct watch URL from the search card; enrich with modal metadata
+  if (targetEpisode !== null) {
+    logTS('Netflix: episode requested but the first result is a movie — ignoring Season/Episode');
+  }
+  return {
+    url:             watchUrl,
+    title:           firstResult.title,
+    episodeTitle:    null,
+    seasonNumber:    null,
+    episodeNumber:   null,
+    durationMinutes: parseDurationMinutes(modalData?.topDurationText),
+    summary:         modalData?.synopsis || null,
+    imageUrl:        firstResult.imageUrl,
+  };
+}
+
+/**
  * Check if a port is already in use
  */
 async function isPortInUse(port) {
@@ -7353,6 +7579,208 @@ async function fullScreenVideoDisneyPlus(page, closedCaptions = '') {
   logTS("Disney+ fullscreen setup complete");
 }
 
+async function selectNetflixClosedCaptions(page, ccOption) {
+  logTS(`Selecting Netflix subtitles: ${ccOption}`);
+  try {
+    // Move mouse to center to make player controls visible
+    const viewport = page.viewport();
+    const cx = Math.floor((viewport ? viewport.width : 1280) / 2);
+    const cy = Math.floor((viewport ? viewport.height : 720) / 2);
+    await page.mouse.move(cx, cy);
+    await delay(500);
+
+    // Click the Audio & Subtitles button
+    const ccBtn = await page.waitForSelector('button[data-uia="control-audio-subtitle"]', { timeout: 5000 }).catch(() => null);
+    if (!ccBtn) {
+      logTS('Netflix CC: Subtitles button not found, skipping');
+      return false;
+    }
+    await ccBtn.click();
+    await delay(300);
+
+    // "English" means closed captions (dialogue + sound effects/speaker labels), which
+    // Netflix lists as "English (CC)" separately from the dubbing-track "English" entry —
+    // same distinction Amazon draws with its "English [CC]" option.
+    const targetLabel = ccOption === 'English' ? 'English (CC)' : ccOption;
+
+    // Subtitle items are <li data-uia="subtitle-item-{label}">, with the currently selected
+    // one tagged "subtitle-item-selected-{label}" instead. Prefer an exact label match over a
+    // substring match so it doesn't land on an unrelated option that merely contains the text.
+    const clicked = await page.evaluate((ccOpt) => {
+      const items = document.querySelectorAll('[data-uia="selector-audio-subtitle"] li[data-uia^="subtitle-item-"]');
+      let exactMatch = null, partialMatch = null;
+      for (const item of items) {
+        const label = (item.getAttribute('data-uia') || '').replace(/^subtitle-item-(selected-)?/, '');
+        if (label.toLowerCase() === ccOpt.toLowerCase()) { exactMatch = item; break; }
+        if (!partialMatch && label.toLowerCase().includes(ccOpt.toLowerCase())) partialMatch = item;
+      }
+      const target = exactMatch || partialMatch;
+      if (target) { target.click(); return true; }
+      return false;
+    }, targetLabel);
+
+    if (clicked) {
+      logTS(`Netflix CC: Selected "${targetLabel}"`);
+    } else {
+      logTS(`Netflix CC: Option "${targetLabel}" not found in menu`);
+    }
+
+    // Close the menu — the Audio & Subtitles button toggles the flyout open/closed
+    const closeBtn = await page.$('button[data-uia="control-audio-subtitle"]');
+    if (closeBtn) {
+      await closeBtn.click();
+    }
+    await delay(200);
+
+    // Move mouse to corner so player controls fade out
+    await page.mouse.move(0, 0);
+    return clicked;
+  } catch (err) {
+    logTS(`Netflix CC selection error (non-fatal): ${err.message}`);
+    return false;
+  }
+}
+
+async function selectNetflixClosedCaptionsWithRetry(page, ccOption) {
+  const maxAttempts = 6;
+  const retryDelay = 30000; // 30s — covers slow player initialization
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (page.isClosed()) {
+      logTS('Netflix CC: page closed, stopping retries');
+      return;
+    }
+    logTS(`Netflix CC: Attempt ${attempt}/${maxAttempts} for "${ccOption}"`);
+    const success = await selectNetflixClosedCaptions(page, ccOption);
+    if (success) return;
+
+    if (attempt < maxAttempts) {
+      logTS(`Netflix CC: Not available yet, retrying in 30s...`);
+      await delay(retryDelay);
+    }
+  }
+  logTS(`Netflix CC: Could not select after ${maxAttempts} attempts`);
+}
+
+async function fullScreenVideoNetflix(page, closedCaptions = '') {
+  logTS("URL contains netflix.com, setting up Netflix video");
+
+  let frameHandle, videoHandle;
+
+  // Find the video element
+  videoSearch: for (let step = 0; step < Constants.FIND_VIDEO_RETRIES; step++) {
+    try {
+      const frames = await page.frames({ timeout: 1000 });
+      for (const frame of frames) {
+        try {
+          const videos = await frame.$$('video');
+          if (videos.length > 1) {
+            for (const video of videos) {
+              const hasAudio = await frame.evaluate((v) => {
+                return v.mozHasAudio || Boolean(v.webkitAudioDecodedByteCount) ||
+                       Boolean(v.audioTracks && v.audioTracks.length);
+              }, video);
+              if (hasAudio) {
+                videoHandle = video;
+                frameHandle = frame;
+                logTS('Found Netflix video element with audio');
+                break videoSearch;
+              } else if (!videoHandle) {
+                videoHandle = video;
+                frameHandle = frame;
+              }
+            }
+          } else if (videos.length === 1) {
+            videoHandle = videos[0];
+            frameHandle = frame;
+            logTS('Found Netflix video element');
+            break videoSearch;
+          }
+        } catch (error) {
+          // Continue searching
+        }
+      }
+    } catch (error) {
+      logTS('Error looking for Netflix video:', error.message);
+      videoHandle = null;
+    }
+    if (!videoHandle) {
+      await delay(Constants.FIND_VIDEO_WAIT * 1000);
+    }
+  }
+
+  if (videoHandle) {
+    // Wait for video to be playing
+    logTS("Waiting for Netflix video to be ready");
+    for (let step = 0; step < Constants.PLAY_VIDEO_RETRIES; step++) {
+      const readyState = await GetProperty(videoHandle, 'readyState');
+      const paused = await GetProperty(videoHandle, 'paused');
+      if (readyState >= 3 && !paused) {
+        logTS(`Netflix video ready (readyState: ${readyState})`);
+        break;
+      }
+      if (readyState >= 3 && paused) {
+        await frameHandle.evaluate((v) => v.play().catch(() => {}), videoHandle);
+      }
+      await delay(1000);
+    }
+
+    // Unmute video
+    await frameHandle.evaluate((video) => {
+      video.muted = false;
+      video.removeAttribute('muted');
+    }, videoHandle);
+
+    // Ensure video is playing
+    await frameHandle.evaluate((video) => {
+      if (video.paused) {
+        video.play().catch(err => console.log('Play failed:', err));
+      }
+    }, videoHandle);
+
+    // Select closed captions BEFORE fullscreen — skip if Default (empty).
+    // Awaited (not backgrounded): it opens/clicks/closes the same control bar the
+    // fullscreen button lives in, and running it concurrently with the fullscreen
+    // click below was corrupting both (observed as "Node is detached from document").
+    // Netflix has no pre-roll ads, so the button should already be available here;
+    // only fall back to the backgrounded retry loop if this first attempt fails.
+    const netflixCcValue = closedCaptions || '';
+    if (netflixCcValue) {
+      logTS(`Netflix CC param received: "${netflixCcValue}"`);
+      const ccSucceeded = await selectNetflixClosedCaptions(page, netflixCcValue);
+      if (!ccSucceeded) {
+        selectNetflixClosedCaptionsWithRetry(page, netflixCcValue)
+          .catch(err => logTS(`Netflix CC background error: ${err.message}`));
+      }
+    }
+
+    // Go fullscreen via the player's own fullscreen button
+    logTS("Going fullscreen via Netflix player fullscreen button");
+    const viewport = page.viewport();
+    const cx = Math.floor((viewport ? viewport.width : 1280) / 2);
+    const cy = Math.floor((viewport ? viewport.height : 720) / 2);
+    await page.mouse.move(cx, cy);
+    await delay(500);
+
+    const fsBtn = await page.$('[data-uia="control-fullscreen-enter"]');
+    if (fsBtn) {
+      logTS("Netflix: clicking fullscreen button");
+      await fsBtn.click();
+    } else {
+      logTS("Netflix: fullscreen button not found, pressing F key");
+      await page.keyboard.press('f');
+    }
+
+    await setupPauseMonitor(frameHandle, videoHandle, page);
+  } else {
+    logTS('Could not find Netflix video element');
+  }
+
+  await hideCursor(page);
+  await page.mouse.move(0, 0);
+  logTS("Netflix fullscreen setup complete");
+}
+
 async function selectAmazonClosedCaptions(page, ccOption) {
   logTS(`Selecting Amazon Prime Video subtitles: ${ccOption}`);
   try {
@@ -10276,6 +10704,8 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
         result = await searchAppleTV(searchPage, query);
       } else if (service === 'sling') {
         result = await searchSling(searchPage, query);
+      } else if (service === 'netflix') {
+        result = await searchNetflix(searchPage, query);
       } else if (service === 'youtube') {
         result = await searchYouTube(searchPage, query);
       } else {
@@ -10580,6 +11010,9 @@ async function handleSiteSpecificFullscreen(targetUrl, page, encoderConfig = nul
     } else if (targetUrl.includes("hbomax.com") || targetUrl.includes("max.com")) {
       logTS("Handling Max (HBO Max) video");
       await fullScreenVideoMax(page, closedCaptions);
+    } else if (targetUrl.includes("netflix.com")) {
+      logTS("Handling Netflix video");
+      await fullScreenVideoNetflix(page, closedCaptions);
     } else if (targetUrl.includes("disneynow.com")) {
       logTS("Handling DisneyNow video");
       await fullScreenVideoDisneyNow(page);
