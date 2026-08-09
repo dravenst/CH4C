@@ -895,6 +895,11 @@ const START_PAGE_HTML = `
                 <div style="padding-bottom:8px;">
                     <a id="lm-site-url" href="#" target="_blank" rel="noopener" style="display:none;font-size:12px;color:#667eea;text-decoration:none;"></a>
                 </div>
+                <div style="padding-bottom:8px;">
+                    <label class="lm-label" style="display:flex;align-items:center;gap:6px;cursor:pointer;margin:0;">
+                        <input type="checkbox" id="lm-include" onchange="lmIncludeChanged()" checked> Include in Automatic Login Check
+                    </label>
+                </div>
             </div>
             <div id="lm-direct-row" style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px;">
                 <div>
@@ -961,6 +966,37 @@ const START_PAGE_HTML = `
             <div id="lm-progress" style="display:none;margin-top:16px;">
                 <div style="font-weight:600;font-size:13px;margin-bottom:8px;">Progress:</div>
                 <div id="lm-log" style="font-family:monospace;font-size:12px;background:#f7fafc;border-radius:6px;padding:12px;max-height:220px;overflow-y:auto;"></div>
+            </div>
+
+            <hr style="border:none;border-top:1px solid #e2e8f0;margin:24px 0;">
+
+            <h3 style="font-size:15px;margin:0 0 6px 0;">Automatic Login Check</h3>
+            <p style="color:#718096;font-size:13px;margin-bottom:16px;">
+                Periodically re-checks every service marked <strong>"Include in Automatic Login Check"</strong> above on each running encoder, during low-usage hours (1-3 AM local time), and logs back in immediately if a session has expired. Encoders that are actively streaming are skipped. That checkbox is per-service — saving the shared "All TVE Services" credential does not opt every TVE service in; select each service in the dropdown above and log in to it (or check the box) individually.
+            </p>
+            <div style="display:flex;gap:20px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px;">
+                <div>
+                    <label class="lm-label" style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+                        <input type="checkbox" id="lc-enabled" onchange="lcSaveSettings()"> Enable automatic checks
+                    </label>
+                </div>
+                <div>
+                    <label class="lm-label">Check every</label>
+                    <div style="display:flex;align-items:center;gap:6px;">
+                        <input id="lc-frequency" type="number" min="1" max="52" value="1" style="width:60px;padding:7px 10px;border:1px solid #e2e8f0;border-radius:6px;font-size:13px;" onchange="lcSaveSettings()">
+                        <span style="font-size:13px;color:#4a5568;">week(s)</span>
+                    </div>
+                </div>
+                <button id="lc-run-btn" onclick="lcRunNow()" style="background:linear-gradient(135deg,#667eea,#764ba2);color:white;border:none;border-radius:8px;padding:10px 20px;font-size:14px;font-weight:600;cursor:pointer;">
+                    Check Logins Now
+                </button>
+            </div>
+
+            <div id="lc-status" style="display:none;padding:12px 16px;border-radius:8px;font-size:13px;margin-bottom:12px;"></div>
+
+            <div id="lc-progress" style="display:none;">
+                <div style="font-weight:600;font-size:13px;margin-bottom:8px;">Progress:</div>
+                <div id="lc-log" style="font-family:monospace;font-size:12px;background:#f7fafc;border-radius:6px;padding:12px;max-height:220px;overflow-y:auto;"></div>
             </div>
         </div>
 
@@ -1433,7 +1469,39 @@ const START_PAGE_HTML = `
             } else {
                 siteLink.style.display = 'none';
             }
-            if (sel.value) lmLoadSavedCredentials(sel.value, isTve);
+            if (sel.value) {
+                lmLoadSavedCredentials(sel.value, isTve)
+                    .then(hasSavedCredentials => lmLoadIncluded(sel.value, hasSavedCredentials));
+            }
+        }
+
+        // "Include in Automatic Login Check" is per-site and independent of how credentials
+        // are saved (site-specific or the shared "All TVE Services" provider) — see
+        // login-check-scheduler.js. With no explicit choice recorded yet, default to checked
+        // only for a genuinely new site (nothing saved). A site that already has saved
+        // credentials but no recorded choice is NOT actually included in the automatic check
+        // (the backend requires an explicit opt-in), so show it unchecked to match reality —
+        // otherwise the box looks checked while doing nothing until toggled off and on again.
+        async function lmLoadIncluded(siteId, hasSavedCredentials) {
+            try {
+                const res = await fetch(\`/api/login-check/included/\${encodeURIComponent(siteId)}\`);
+                const { included } = await res.json();
+                document.getElementById('lm-include').checked = included === null ? !hasSavedCredentials : included;
+            } catch (_) {
+                document.getElementById('lm-include').checked = !hasSavedCredentials;
+            }
+        }
+
+        async function lmIncludeChanged() {
+            const siteId = document.getElementById('lm-site').value;
+            if (!siteId) return;
+            try {
+                await fetch(\`/api/login-check/included/\${encodeURIComponent(siteId)}\`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ included: document.getElementById('lm-include').checked })
+                });
+            } catch (_) {}
         }
 
         async function lmLoadSavedCredentials(siteId, isTve) {
@@ -1464,7 +1532,7 @@ const START_PAGE_HTML = `
                     saveMode.value         = 'site';
                     badge.style.display    = 'inline';
                     clearBtn.style.display = 'inline';
-                    return; // site-specific takes priority — done
+                    return true; // site-specific takes priority — done, and creds exist
                 }
 
                 // Fall back to shared TV Provider credentials for TVE sites
@@ -1478,9 +1546,11 @@ const START_PAGE_HTML = `
                         saveMode.value         = 'tve';
                         badge.style.display    = 'inline';
                         clearBtn.style.display = 'inline';
+                        return true; // shared TVE provider creds exist
                     }
                 }
             } catch (_) {}
+            return false; // no usable credentials found for this site
         }
 
         async function lmClearCredentials() {
@@ -1553,6 +1623,11 @@ const START_PAGE_HTML = `
                     lmClearBtn().style.display = 'inline';
                 } catch (_) {}
             }
+
+            // Persist the "Include in Automatic Login Check" checkbox for this specific site,
+            // even if the user never touched it — this is what commits the default-checked
+            // state the first time a new service is actually logged in to.
+            await lmIncludeChanged();
 
             const logEl = document.getElementById('lm-log');
             logEl.innerHTML = '';
@@ -1636,6 +1711,133 @@ const START_PAGE_HTML = `
             logEl.appendChild(d);
             logEl.scrollTop = logEl.scrollHeight;
         }
+
+        // Automatic Login Check — settings + status
+        async function lcLoadStatus() {
+            try {
+                const res = await fetch('/api/login-check/status');
+                const s = await res.json();
+                document.getElementById('lc-enabled').checked = !!s.enabled;
+                document.getElementById('lc-frequency').value = s.frequencyWeeks || 1;
+                lcRenderStatus(s);
+            } catch (_) {}
+        }
+
+        function lcRenderStatus(s) {
+            const box = document.getElementById('lc-status');
+            if (s.stickyFailure && s.lastRun) {
+                box.style.display = 'block';
+                box.style.background = '#fff5f5';
+                box.style.border = '1px solid #feb2b2';
+                box.style.color = '#c53030';
+                const failedList = s.lastRun.results.filter(r => !r.success)
+                    .map(r => \`\${r.siteName}: \${r.message || 'login failed'}\`).join('<br>');
+                box.innerHTML = \`<strong>⚠ Login check needs attention</strong> — last checked \${new Date(s.lastRun.finishedAt).toLocaleString()} (\${s.lastRun.trigger}).<br>\${failedList}<br><span style="font-size:12px;">Click "Check Logins Now" after resolving the issue to clear this.</span>\`;
+            } else if (s.lastRun) {
+                box.style.display = 'block';
+                box.style.background = '#f0fff4';
+                box.style.border = '1px solid #9ae6b4';
+                box.style.color = '#276749';
+                box.innerHTML = \`✓ Last check \${new Date(s.lastRun.finishedAt).toLocaleString()} (\${s.lastRun.trigger}) — \${s.lastRun.succeeded} of \${s.lastRun.total} service(s) checked successfully.\`;
+            } else {
+                box.style.display = 'none';
+            }
+        }
+
+        async function lcSaveSettings() {
+            const enabled = document.getElementById('lc-enabled').checked;
+            const frequencyWeeks = parseInt(document.getElementById('lc-frequency').value, 10) || 1;
+            try {
+                const res = await fetch('/api/login-check/settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled, frequencyWeeks })
+                });
+                lcRenderStatus(await res.json());
+            } catch (_) {}
+        }
+
+        async function lcRunNow() {
+            const btn = document.getElementById('lc-run-btn');
+            btn.disabled = true;
+            btn.style.opacity = '0.6';
+            const logEl = document.getElementById('lc-log');
+            logEl.innerHTML = '';
+            document.getElementById('lc-progress').style.display = 'block';
+
+            try {
+                const response = await fetch('/api/login-check/run', { method: 'POST' });
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buf = '';
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    buf += decoder.decode(value, { stream: true });
+                    const lines = buf.split('\\n');
+                    buf = lines.pop();
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            try { lcHandleEvent(JSON.parse(line.slice(6))); } catch (_) {}
+                        }
+                    }
+                }
+            } catch (e) {
+                lcAppendLog('red', 'Connection error: ' + e.message);
+            } finally {
+                btn.disabled = false;
+                btn.style.opacity = '1';
+                lcLoadStatus();
+            }
+        }
+
+        function lcHandleEvent(ev) {
+            const label = ev.siteName ? (ev.encoderIndex !== undefined ? \`\${ev.siteName} (encoder \${ev.encoderIndex + 1})\` : ev.siteName) : '';
+            switch (ev.type) {
+                case 'start':
+                    lcAppendLog('#718096', \`Starting login check — \${ev.total} service(s) with saved credentials\`);
+                    break;
+                case 'site-start':
+                    lcAppendLog('#3182ce', \`\${ev.siteName}: checking...\`);
+                    break;
+                case 'already_logged_in':
+                    lcAppendLog('#38a169', \`\${label}: already logged in ✓\`);
+                    break;
+                case 'logging_in':
+                    lcAppendLog('#3182ce', \`\${label}: logging in...\`);
+                    break;
+                case 'retry_pending':
+                    lcAppendLog('#dd6b20', \`\${label}: login failed, retrying in 30s — \${ev.message || ''}\`);
+                    break;
+                case 'success':
+                    lcAppendLog('#38a169', \`\${label}: login successful ✓\`);
+                    break;
+                case 'skipped':
+                    lcAppendLog('#dd6b20', \`\${label}: skipped — \${ev.message}\`);
+                    break;
+                case 'error':
+                    lcAppendLog('#e53e3e', \`\${label}: error — \${ev.message}\`);
+                    break;
+                case 'site-complete':
+                    lcAppendLog(ev.success ? '#38a169' : '#e53e3e', \`\${ev.siteName}: \${ev.success ? 'OK' : 'FAILED'}\`, true);
+                    break;
+                case 'complete':
+                    lcAppendLog('#2d3748', \`Done: \${ev.succeeded} of \${ev.total} service(s) checked successfully\`, true);
+                    break;
+            }
+        }
+
+        function lcAppendLog(color, text, bold) {
+            const logEl = document.getElementById('lc-log');
+            const d = document.createElement('div');
+            d.style.color = color;
+            if (bold) d.style.fontWeight = '700';
+            d.textContent = text;
+            logEl.appendChild(d);
+            logEl.scrollTop = logEl.scrollHeight;
+        }
+
+        lcLoadStatus();
     </script>
 </body>
 </html>

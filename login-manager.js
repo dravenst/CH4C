@@ -2335,6 +2335,7 @@ async function loginEncoders({
   browsers,
   activeStreams,
   statusCallback,
+  retryDelayMs,
 }) {
   const siteConfig = LOGIN_SITES.find(s => s.id === siteId);
   if (!siteConfig) {
@@ -2377,6 +2378,7 @@ async function loginEncoders({
     statusCallback({ type: 'checking', encoderIndex, encoderUrl });
 
     let page = null;
+    let windowId = null;
     try {
       page = await browser.newPage();
 
@@ -2455,14 +2457,17 @@ async function loginEncoders({
 
       try {
         const session = await page.createCDPSession();
-        const { windowId } = await session.send('Browser.getWindowForTarget');
+        const result = await session.send('Browser.getWindowForTarget');
+        windowId = result.windowId; // captured here so the finally block can re-minimize
         // Step 1: un-minimize
         await session.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'normal' } });
         await delay(300);
         // Step 2: resize to target dimensions, keeping the window on the encoder's configured monitor
         await session.send('Browser.setWindowBounds', { windowId, bounds: { left: encoderLeft, top: encoderTop, width: targetWidth, height: targetHeight } });
         await session.detach();
-      } catch (_) {}
+      } catch (e) {
+        logTS(`Login: could not resize window for encoder ${label}: ${e.message}`);
+      }
       // Set CSS viewport explicitly — this is what responsive CSS media queries respond to.
       try {
         await page.setViewport({ width: targetWidth, height: targetHeight, deviceScaleFactor: 1 });
@@ -2486,13 +2491,28 @@ async function loginEncoders({
 
       statusCallback({ type: 'logging_in', encoderIndex, encoderUrl });
 
-      const result = await performLogin(page, siteConfig, {
+      let result = await performLogin(page, siteConfig, {
         username,
         password,
         tveProviderName,
         tveProviderUsername,
         tveProviderPassword,
       });
+
+      // Optional single retry after a brief pause — used by the periodic login check so a
+      // transient failure (slow page, brief network hiccup) isn't immediately reported as broken.
+      if (!result.success && retryDelayMs) {
+        statusCallback({ type: 'retry_pending', encoderIndex, encoderUrl, message: result.message });
+        await delay(retryDelayMs);
+        statusCallback({ type: 'logging_in', encoderIndex, encoderUrl });
+        result = await performLogin(page, siteConfig, {
+          username,
+          password,
+          tveProviderName,
+          tveProviderUsername,
+          tveProviderPassword,
+        });
+      }
 
       if (result.success) {
         statusCallback({ type: 'success', encoderIndex, encoderUrl });
@@ -2507,19 +2527,24 @@ async function loginEncoders({
       statusCallback({ type: 'error', encoderIndex, encoderUrl, message: e.message });
       failCount++;
     } finally {
+      // Re-minimize the browser window via CDP BEFORE closing the login page — reuse this
+      // page's own session (still valid, since the page hasn't been closed yet) rather than
+      // attaching a fresh session to some other page via browser.pages() afterward. That
+      // approach raced with Puppeteer's own target teardown/bookkeeping and intermittently
+      // failed with "Protocol error (Target.attachToTarget): Session with given id not
+      // found", silently leaving the window un-minimized.
+      if (page && windowId !== null) {
+        try {
+          const session = await page.createCDPSession();
+          await session.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'minimized' } });
+          await session.detach();
+        } catch (e) {
+          logTS(`Login: failed to re-minimize window for encoder ${label}: ${e.message}`);
+        }
+      }
       if (page) {
         try { await page.close(); } catch (_) {}
       }
-      // Re-minimize the browser window via CDP
-      try {
-        const pages = await browser.pages();
-        if (pages.length > 0) {
-          const session = await pages[0].createCDPSession();
-          const { windowId } = await session.send('Browser.getWindowForTarget');
-          await session.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'minimized' } });
-          await session.detach();
-        }
-      } catch (_) {}
     }
   }
 

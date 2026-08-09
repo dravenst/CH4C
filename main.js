@@ -38,6 +38,7 @@ const { AudioDeviceManager, DisplayManager } = require('./audio-device-manager')
 const { CONFIG_METADATA, ENCODER_FIELDS, validateAllSettings, validateEncoder, saveConfig, loadConfig, getDefaults } = require('./config-manager');
 const { LOGIN_SITES, loginEncoders, loginSling } = require('./login-manager');
 const credentialsStore = require('./credentials-store');
+const loginCheckScheduler = require('./login-check-scheduler');
 const { DIRECTV_GUIDE_URL, TUNE_TIMEOUT: DIRECTV_TUNE_TIMEOUT } = require('./services/directv-service');
 
 let chromeDataDir, chromePath;
@@ -8393,6 +8394,10 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
     const channelName = req.query.channel || '';
     logTS(`[DEBUG] /stream endpoint - req.query.url: ${req.query.url}`);
     logTS(`[DEBUG] /stream endpoint - getFullUrl result: ${targetUrl}`);
+    const clientIp = req.ip || req.socket.remoteAddress;
+    const clientUserAgent = req.headers['user-agent'] || 'unknown';
+    logTS(`[DEBUG] /stream endpoint - client: ${clientIp}, User-Agent: ${clientUserAgent}`);
+    const streamRequestStartTime = Date.now();
 
     if (!targetUrl) {
       if (!res.headersSent) {
@@ -8407,7 +8412,8 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
 
     // Enhanced cleanup on stream close
     res.on('close', async err => {
-      logTS('response stream closed for', availableEncoder.url);
+      const streamDurationMs = Date.now() - streamRequestStartTime;
+      logTS(`response stream closed for ${availableEncoder.url} (client: ${clientIp}, duration: ${Math.round(streamDurationMs / 1000)}s)`);
       streamMonitor.stopMonitoring(availableEncoder.url);
       try {
         await cleanupManager.cleanup(availableEncoder.url, res);
@@ -8421,7 +8427,8 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
     });
 
     res.on('error', async err => {
-      logTS('response stream error for', availableEncoder.url, err);
+      const streamDurationMs = Date.now() - streamRequestStartTime;
+      logTS(`response stream error for ${availableEncoder.url} (client: ${clientIp}, duration: ${Math.round(streamDurationMs / 1000)}s):`, err);
       streamMonitor.recordError(availableEncoder.url);
       streamMonitor.stopMonitoring(availableEncoder.url);
       try {
@@ -10147,6 +10154,52 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
         activeStreams: streamMonitor.activeStreams,
         statusCallback: sendEvent
       });
+    } catch (e) {
+      sendEvent({ type: 'error', message: e.message });
+    } finally {
+      res.end();
+    }
+  });
+
+  // Periodic Login Check — verifies every service the user has opted in to (see
+  // /api/login-check/included) is still logged in on each running encoder, on a schedule
+  // confined to the 1-3 AM low-usage window.
+  loginCheckScheduler.init(Constants.DATA_DIR, () => ({
+    encoders: Constants.ENCODERS,
+    browsers,
+    activeStreams: streamMonitor.activeStreams,
+  }));
+
+  app.get('/api/login-check/status', (_req, res) => {
+    res.json(loginCheckScheduler.getState());
+  });
+
+  app.post('/api/login-check/settings', (req, res) => {
+    const { enabled, frequencyWeeks } = req.body;
+    res.json(loginCheckScheduler.updateSettings({ enabled, frequencyWeeks }));
+  });
+
+  // Per-site "include in automatic check" opt-in — independent of credential storage so a
+  // site using the shared TVE provider credential can still be opted in/out individually.
+  app.get('/api/login-check/included/:siteId', (req, res) => {
+    res.json({ included: loginCheckScheduler.getIncluded(req.params.siteId) });
+  });
+
+  app.post('/api/login-check/included/:siteId', (req, res) => {
+    res.json({ included: loginCheckScheduler.setIncluded(req.params.siteId, !!req.body.included) });
+  });
+
+  app.post('/api/login-check/run', async (req, res) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders();
+
+    const sendEvent = (data) => { if (!res.writableEnded) res.write(`data: ${JSON.stringify(data)}\n\n`); };
+
+    try {
+      await loginCheckScheduler.runCheck('manual', sendEvent);
     } catch (e) {
       sendEvent({ type: 'error', message: e.message });
     } finally {
