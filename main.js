@@ -2803,16 +2803,20 @@ async function checkForRunningChromeWithProfiles() {
         return;
       }
       
-      // Check each encoder profile
+      // Check each encoder profile, line by line so we can also capture the PID
+      const lines = stdout.split(/\r?\n/).filter(Boolean);
       for (let i = 0; i < Constants.ENCODERS.length; i++) {
         const profileDir = path.join(chromeDataDir, `encoder_${i}`);
         const profileDirEscaped = profileDir.replace(/\\/g, '\\\\');
-        
+
         // Check if any Chrome process is using this profile
-        if (stdout.includes(profileDir) || stdout.includes(profileDirEscaped)) {
+        const matchLine = lines.find(line => line.includes(profileDir) || line.includes(profileDirEscaped));
+        if (matchLine) {
+          const pidMatch = matchLine.trim().match(/(\d+)$/);
           runningProfiles.push({
             encoder: Constants.ENCODERS[i].url,
-            profileDir: profileDir
+            profileDir: profileDir,
+            pid: pidMatch ? pidMatch[1] : null
           });
         }
       }
@@ -5213,6 +5217,18 @@ async function fullScreenVideoSling(page, encoderConfig = null, closedCaptions =
     await page.keyboard.press('ArrowRight');
   }
   logTS("finished change to fullscreen and max volume");
+
+  // Blur the mute button and move the mouse off the controls so the highlighted
+  // mute/unmute state doesn't keep the player's menu bar from auto-hiding
+  try {
+    await page.evaluate(() => document.activeElement && document.activeElement.blur());
+    const viewport = page.viewport();
+    const centerX = viewport ? viewport.width / 2 : 640;
+    const centerY = viewport ? viewport.height / 2 : 360;
+    await page.mouse.move(centerX, centerY);
+  } catch (e) {
+    // Continue
+  }
 
   // Select closed captions AFTER fullscreen — skip if Default (empty)
   const ccValue = closedCaptions || '';
@@ -8423,27 +8439,26 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
   const runningProfiles = await checkForRunningChromeWithProfiles();
 
   if (runningProfiles.length > 0) {
-    console.error(`
-+----------------------------------------------------------------------+
-|              CHROME IS USING ENCODER PROFILES                        |
-+----------------------------------------------------------------------+
-|                                                                      |
-|  Active Chrome processes are using these encoder profiles:           |`);
-
-    runningProfiles.forEach((profile, index) => {
-      console.error(`|  ${(index + 1)}. ${profile.encoder.padEnd(62)} |`);
-    });
-
-    console.error(`|                                                                      |
-|  SOLUTIONS:                                                          |
-|  1. Close all Chrome windows                                         |
-|  2. Force close Chrome: taskkill /F /IM chrome.exe                   |
-|  3. Check Task Manager for chrome.exe processes                      |
-|                                                                      |
-+----------------------------------------------------------------------+
-`);
-    logTS(`FATAL: Chrome is using encoder profiles: ${runningProfiles.map(p => p.encoder).join(', ')}. Exiting.`);
-    process.exit(1);
+    // CHECK 1 already confirmed no CH4C instance is running on this port, so any
+    // Chrome process holding an encoder profile here can't be under active CH4C
+    // management - it's orphaned (e.g. Windows relaunching Chrome via Restart
+    // Manager after a Windows Update reboot). Safe to kill and continue.
+    logTS(`Found orphaned Chrome process(es) using encoder profiles - killing and continuing:`);
+    for (const profile of runningProfiles) {
+      logTS(`  - ${profile.encoder} (PID ${profile.pid || 'unknown'})`);
+      if (profile.pid) {
+        await new Promise((resolve) => {
+          exec(`taskkill /F /PID ${profile.pid}`, { timeout: 5000 }, (error) => {
+            if (error) {
+              logTS(`  Failed to kill PID ${profile.pid}: ${error.message}`);
+            }
+            resolve();
+          });
+        });
+      }
+    }
+    // Give the OS a moment to release the profile's lock files before continuing
+    await new Promise(resolve => setTimeout(resolve, 1000));
   }
 
   // CHECK 3: Test if Chrome profiles are actually available
