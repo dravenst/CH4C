@@ -1154,6 +1154,11 @@ async function searchAppleTV(page, query) {
         const descEl  = item.querySelector('.description');
         const durEl   = item.querySelector('.duration');
 
+        // When an episode has been partially watched, .duration shows time REMAINING,
+        // not the full runtime — .progress-fill's --progress-width tells us how far in.
+        const progressFillEl = item.querySelector('.progress-fill');
+        const progressWidthStr = progressFillEl ? progressFillEl.style.getPropertyValue('--progress-width') : '';
+
         // Episode still image — scoped to the artwork div; use jpeg srcset, split on ",(?=https)"
         const srcset = item.querySelector('[data-testid="artwork"] picture source[type="image/jpeg"]')?.srcset || '';
         const entries = srcset.trim().split(/,(?=https)/);
@@ -1161,10 +1166,11 @@ async function searchAppleTV(page, query) {
         const imageUrl = last ? last.split(' ')[0] : null;
 
         return {
-          href:         linkEl.href,
-          episodeTitle: titleEl ? titleEl.textContent.trim() : null,
-          summary:      descEl  ? descEl.textContent.trim()  : null,
-          durationStr:  durEl   ? durEl.textContent.trim()   : null,
+          href:              linkEl.href,
+          episodeTitle:      titleEl ? titleEl.textContent.trim() : null,
+          summary:           descEl  ? descEl.textContent.trim()  : null,
+          durationStr:       durEl   ? durEl.textContent.trim()   : null,
+          progressPercent:   parseFloat(progressWidthStr) || null,
           imageUrl,
         };
       }
@@ -1172,6 +1178,15 @@ async function searchAppleTV(page, query) {
     }, targetEpisode);
 
     if (episodeData && episodeData.href) {
+      let durationMinutes = parseDurationMinutes(episodeData.durationStr);
+      // .duration showed time remaining, not full runtime — back-calculate the full
+      // length from the watch progress (e.g. 19m remaining at 67% watched = ~58m total).
+      if (episodeData.progressPercent > 0 && episodeData.progressPercent < 100 && durationMinutes) {
+        const remainingFraction = (100 - episodeData.progressPercent) / 100;
+        const fullDuration = Math.round(durationMinutes / remainingFraction);
+        logTS(`Apple TV+: episode is ${episodeData.progressPercent}% watched — correcting duration from "${episodeData.durationStr}" remaining to ~${fullDuration}m full runtime`);
+        durationMinutes = fullDuration;
+      }
       logTS(`Apple TV+: found S${targetSeason} E${targetEpisode} | title: "${episodeData.episodeTitle}" | duration: "${episodeData.durationStr}" | url: ${episodeData.href}`);
       return {
         url:             episodeData.href,
@@ -1179,7 +1194,7 @@ async function searchAppleTV(page, query) {
         episodeTitle:    episodeData.episodeTitle,
         seasonNumber:    targetSeason,
         episodeNumber:   targetEpisode,
-        durationMinutes: parseDurationMinutes(episodeData.durationStr),
+        durationMinutes,
         summary:         episodeData.summary,
         imageUrl:        episodeData.imageUrl || searchResultImageUrl,
       };
@@ -1204,13 +1219,18 @@ async function searchAppleTV(page, query) {
         const srcset  = item.querySelector('[data-testid="artwork"] picture source[type="image/jpeg"]')?.srcset || '';
         const entries = srcset.trim().split(/,(?=https)/);
         const last    = entries[entries.length - 1];
+        // When an episode has been partially watched, .duration shows time REMAINING,
+        // not the full runtime — .progress-fill's --progress-width tells us how far in.
+        const progressFillEl = item.querySelector('.progress-fill');
+        const progressWidthStr = progressFillEl ? progressFillEl.style.getPropertyValue('--progress-width') : '';
         return {
-          episodeNumber: parseInt(m[1], 10),
-          episodeTitle:  titleEl ? titleEl.textContent.trim() : null,
-          durationStr:   durEl   ? durEl.textContent.trim()   : null,
-          summary:       descEl  ? descEl.textContent.trim()  : null,
-          href:          linkEl.href,
-          imageUrl:      last ? last.split(' ')[0] : null,
+          episodeNumber:   parseInt(m[1], 10),
+          episodeTitle:    titleEl ? titleEl.textContent.trim() : null,
+          durationStr:     durEl   ? durEl.textContent.trim()   : null,
+          progressPercent: parseFloat(progressWidthStr) || null,
+          summary:         descEl  ? descEl.textContent.trim()  : null,
+          href:            linkEl.href,
+          imageUrl:        last ? last.split(' ')[0] : null,
         };
       }
       return null;
@@ -1224,13 +1244,20 @@ async function searchAppleTV(page, query) {
         return m ? parseInt(m[1], 10) : 1;
       });
       logTS(`Apple TV+: auto-detected S${autoSeason}E${autoEpData.episodeNumber}`);
+      let autoDurationMinutes = parseDurationMinutes(autoEpData.durationStr);
+      if (autoEpData.progressPercent > 0 && autoEpData.progressPercent < 100 && autoDurationMinutes) {
+        const remainingFraction = (100 - autoEpData.progressPercent) / 100;
+        const fullDuration = Math.round(autoDurationMinutes / remainingFraction);
+        logTS(`Apple TV+: episode is ${autoEpData.progressPercent}% watched — correcting duration from "${autoEpData.durationStr}" remaining to ~${fullDuration}m full runtime`);
+        autoDurationMinutes = fullDuration;
+      }
       return {
         url:             autoEpData.href,
         title:           showTitle,
         episodeTitle:    autoEpData.episodeTitle,
         seasonNumber:    autoSeason,
         episodeNumber:   autoEpData.episodeNumber,
-        durationMinutes: parseDurationMinutes(autoEpData.durationStr),
+        durationMinutes: autoDurationMinutes,
         summary:         autoEpData.summary,
         imageUrl:        autoEpData.imageUrl || searchResultImageUrl,
       };
@@ -1598,8 +1625,10 @@ async function searchMax(page, query) {
  * Dismiss the Sling TV "Who's Watching?" profile selector if present.
  * Clicks the first real profile (class includes "Standard"), ignoring the "+" add-profile tile.
  */
+const SLING_PROFILE_SELECTOR = '.Profile-Selector-Content-Container, .Profile-Selector-Profile-Avatar-List';
+
 async function handleSlingProfileSelector(page) {
-  const selectorPresent = await page.$('.Profile-Selector-Content-Container').then(el => !!el).catch(() => false);
+  const selectorPresent = await page.$(SLING_PROFILE_SELECTOR).then(el => !!el).catch(() => false);
   if (!selectorPresent) return;
   logTS('Sling TV: profile selector detected — selecting first profile');
 
@@ -1625,7 +1654,7 @@ async function handleSlingProfileSelector(page) {
       ).catch(() => {});
     }
     // Re-check if profile selector is still present after modal resolved
-    const stillPresent = await page.$('.Profile-Selector-Content-Container').then(el => !!el).catch(() => false);
+    const stillPresent = await page.$(SLING_PROFILE_SELECTOR).then(el => !!el).catch(() => false);
     if (!stillPresent) {
       logTS(`Sling TV: profile selector dismissed — now at: ${page.url()}`);
       return;
@@ -1640,7 +1669,8 @@ async function handleSlingProfileSelector(page) {
   });
   if (clicked) {
     await page.waitForFunction(
-      () => !document.querySelector('.Profile-Selector-Content-Container'),
+      () => !document.querySelector('.Profile-Selector-Content-Container') &&
+            !document.querySelector('.Profile-Selector-Profile-Avatar-List'),
       { timeout: 10000 }
     ).catch(() => {});
     logTS(`Sling TV: profile selected — now at: ${page.url()}`);
@@ -1667,7 +1697,7 @@ async function checkAndRestoreSlingSession(page, encoderUrl = 'unknown') {
   await handleSlingProfileSelector(page);
   if (page.url().includes('/switch_user_profile')) {
     logTS(`[${encoderUrl}] Sling: on switch_user_profile page, handling profile selector`);
-    await page.waitForSelector('.Profile-Selector-Content-Container', { timeout: 8000 }).catch(() => {});
+    await page.waitForSelector(SLING_PROFILE_SELECTOR, { timeout: 8000 }).catch(() => {});
     await handleSlingProfileSelector(page);
     // Wait for profile selection to resolve
     await page.waitForFunction(
@@ -1786,7 +1816,7 @@ async function searchSling(page, query) {
     await page.waitForSelector(
       'p[data-testid="i-view-action-details-description"], [data-testid="metaData"], ' +
       '.details-vertical-tabs-season-text-ivew, [data-testid^="details-vertical-list-screen-0-tile-"], ' +
-      '.Profile-Selector-Content-Container',
+      SLING_PROFILE_SELECTOR,
       { timeout: 12000 }
     ).catch(() => {});
     await handleSlingProfileSelector(page);
@@ -2086,6 +2116,10 @@ async function searchYouTube(page, query) {
 /**
  * Search Peacock TV for content and return the watch URL.
  */
+// Peacock's profile tiles have used two different DOM shapes: an older
+// div.profiles__avatar--image[role="button"], and a newer data-testid="profile-item-<Name>".
+const PEACOCK_PROFILE_SELECTOR = '.profiles__avatar--image[role="button"], [data-testid^="profile-item-"][role="button"]';
+
 async function searchPeacock(page, query) {
   const episodeMatch  = query.match(/\bs(\d+)\s*e(\d+)\b/i);
   const targetSeason  = episodeMatch ? parseInt(episodeMatch[1], 10) : null;
@@ -2100,7 +2134,7 @@ async function searchPeacock(page, query) {
   if (page.url().includes('/watch/profiles')) {
     logTS('Peacock profile selection page detected — selecting first profile');
     // The profile avatar is a div.profiles__avatar--image[role="button"]
-    const profileSel = '.profiles__avatar--image[role="button"]';
+    const profileSel = PEACOCK_PROFILE_SELECTOR;
     try {
       const profileEl = await page.waitForSelector(profileSel, { timeout: 8000 });
       await profileEl.click();
@@ -2119,7 +2153,7 @@ async function searchPeacock(page, query) {
   // Peacock may redirect to profiles again after navigating to search — handle it
   if (page.url().includes('/watch/profiles')) {
     logTS('Peacock redirected to profile page after search navigation — selecting first profile again');
-    const profileSel = '.profiles__avatar--image[role="button"]';
+    const profileSel = PEACOCK_PROFILE_SELECTOR;
     try {
       const profileEl = await page.waitForSelector(profileSel, { timeout: 8000 });
       await profileEl.click();
@@ -2443,20 +2477,28 @@ async function searchPeacock(page, query) {
  */
 async function openNetflixDetailModal(page) {
   const card = await page.$('section[data-uia="gallery"] a[data-uia="standard-card"]');
-  if (!card) return false;
+  if (!card) return { opened: false, previewDurationText: null };
   const box = await card.boundingBox();
-  if (!box) return false;
+  if (!box) return { opened: false, previewDurationText: null };
 
   // Hover to trigger Netflix's preview overlay (it animates in after a beat)
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await delay(1500);
 
+  // For movies, this hover preview is the only place duration/rating are shown — the
+  // expanded detail modal below replaces it with cast/genre info and drops duration.
+  // Capture it here while it's still on screen.
+  const previewDurationText = await page.evaluate(() => {
+    const metaLine = document.querySelector('[data-uia="videoMetadata--container"] .videoMetadata--line');
+    return metaLine?.querySelector('.duration')?.textContent?.trim() || null;
+  }).catch(() => null);
+
   const expandBtn = await page.waitForSelector('button[data-uia="expand-to-detail-button"]', { timeout: 5000 }).catch(() => null);
-  if (!expandBtn) return false;
+  if (!expandBtn) return { opened: false, previewDurationText };
   await expandBtn.click();
 
   const opened = await page.waitForSelector('.detail-modal-container', { timeout: 10000 }).catch(() => null);
-  return !!opened;
+  return { opened: !!opened, previewDurationText };
 }
 
 /**
@@ -2495,7 +2537,9 @@ async function extractNetflixModalData(page) {
     return {
       synopsis:        synopsisEl ? synopsisEl.textContent.trim() : null,
       topDurationText,
-      shownSeason:     seasonMatch ? parseInt(seasonMatch[1], 10) : null,
+      // No dropdown at all means a single-season show, which Netflix always shows as
+      // Season 1 — distinct from a dropdown being present but failing to parse (stays null).
+      shownSeason:     seasonMatch ? parseInt(seasonMatch[1], 10) : (seasonBtn ? null : 1),
       episodes,
     };
   });
@@ -2594,7 +2638,7 @@ async function searchNetflix(page, query) {
   logTS(`Netflix: first result "${firstResult.title}" -> ${watchUrl}`);
 
   // Open the detail modal for richer metadata (and the episode list, for series)
-  const modalOpened = await openNetflixDetailModal(page);
+  const { opened: modalOpened, previewDurationText } = await openNetflixDetailModal(page);
   if (!modalOpened) {
     logTS('Netflix: could not open detail modal — falling back to basic result');
     if (targetEpisode !== null) {
@@ -2602,7 +2646,7 @@ async function searchNetflix(page, query) {
     }
     return {
       url: watchUrl, title: firstResult.title, episodeTitle: null,
-      seasonNumber: null, episodeNumber: null, durationMinutes: null,
+      seasonNumber: null, episodeNumber: null, durationMinutes: parseDurationMinutes(previewDurationText),
       summary: null, imageUrl: firstResult.imageUrl,
     };
   }
@@ -2656,7 +2700,7 @@ async function searchNetflix(page, query) {
     episodeTitle:    null,
     seasonNumber:    null,
     episodeNumber:   null,
-    durationMinutes: parseDurationMinutes(modalData?.topDurationText),
+    durationMinutes: parseDurationMinutes(modalData?.topDurationText || previewDurationText),
     summary:         modalData?.synopsis || null,
     imageUrl:        firstResult.imageUrl,
   };
@@ -3236,6 +3280,17 @@ async function navigateSlingWithModalHandling(page, url, maxAttempts = 10, expec
     // Re-check current URL after modal handling
     currentUrl = page.url();
 
+    // Check if we landed on the profile selector page
+    if (currentUrl.includes('/switch_user_profile')) {
+      logTS(`[${encoderUrl}] Profile selector detected on attempt ${attempt}/${maxAttempts}, selecting first profile...`);
+      await handleSlingProfileSelector(page);
+      await page.waitForFunction(
+        () => !window.location.href.includes('/switch_user_profile'),
+        { timeout: 10000 }
+      ).catch(() => {});
+      currentUrl = page.url();
+    }
+
     // If we have an expected URL pattern, validate we landed there
     if (expectedUrlPattern && !currentUrl.includes(expectedUrlPattern)) {
       logTS(`[${encoderUrl}] Got past modal but landed on unexpected page: ${currentUrl} (expected pattern: ${expectedUrlPattern})`);
@@ -3609,7 +3664,7 @@ async function navigatePeacockLikeHuman(page, streamUrl, encoderUrl = 'unknown')
     // Handle profile selection if redirected on homepage load
     if (page.url().includes('/watch/profiles')) {
       logTS(`[${encoderUrl}] Profile selection page detected on homepage — selecting first profile`);
-      const profileSel = '.profiles__avatar--image[role="button"]';
+      const profileSel = PEACOCK_PROFILE_SELECTOR;
       try {
         const profileEl = await page.waitForSelector(profileSel, { timeout: 8000 });
         await profileEl.click();
@@ -3988,8 +4043,10 @@ async function setupBrowserAudio(page, encoderConfig, targetUrl = null) {
           logTS(`[${encoderConfig.url}] Peacock redirected to profiles during video load (attempt ${profileHandleCount})`);
 
           // Wait for profile elements to appear and click
-          // Peacock profile selector: <div class="profiles__avatar--image" role="button" tabindex="0">
+          // Peacock profile selector — old DOM: <div class="profiles__avatar--image" role="button" tabindex="0">
+          // newer DOM: <div data-testid="profile-item-<Name>" role="button">
           const profileSelectors = [
+            '[data-testid^="profile-item-"][role="button"]',
             'div.profiles__avatar--image[role="button"]',
             '.profiles__avatar--image[role="button"]',
             '.profiles__avatar--image[tabindex="0"]',
@@ -5264,26 +5321,43 @@ async function selectPeacockClosedCaptions(page, ccOption) {
     await page.mouse.move(cx, cy);
     await delay(500);
 
-    const settingsBtn = await page.waitForSelector('button[data-testid="language-settings-button"]', { timeout: 5000 }).catch(() => null);
+    const settingsBtn = await page.waitForSelector('button[data-testid="language-settings-button"], button[data-testid="pff-language-settings-button"]', { timeout: 5000 }).catch(() => null);
     if (!settingsBtn) {
       return false; // Not available yet (ads or player not ready)
     }
     await settingsBtn.click();
     await delay(300);
 
+    // Newer Peacock UI nests the language options one level deeper behind a
+    // "Subtitles" row in the settings panel, instead of showing them directly.
+    const optionsSel = '[data-testid="subtitles-drawer"], [data-testid="subtitles-panel-content"]';
+    let optionsVisible = await page.$(optionsSel).then(el => !!el).catch(() => false);
+    if (!optionsVisible) {
+      const subtitlesRow = await page.$('[data-testid="root-panel-subtitles-item"]');
+      if (subtitlesRow) {
+        await subtitlesRow.click();
+        await delay(300);
+        optionsVisible = await page.$(optionsSel).then(el => !!el).catch(() => false);
+      }
+    }
+    if (!optionsVisible) {
+      return false;
+    }
+
     const ccLabel = ccOption === 'English' ? 'English' : 'Off';
-    const clicked = await page.evaluate((label) => {
-      const drawer = document.querySelector('[data-testid="subtitles-drawer"]');
+    const clicked = await page.evaluate((label, sel) => {
+      const drawer = document.querySelector(sel);
       if (!drawer) return false;
       for (const btn of drawer.querySelectorAll('button')) {
-        const span = btn.querySelector('span.label');
+        // Old UI: span.label; newer UI: a plain unclassed <span>
+        const span = btn.querySelector('span.label') || btn.querySelector('span');
         if (span && span.textContent.trim() === label) {
           btn.click();
           return true;
         }
       }
       return false;
-    }, ccLabel);
+    }, ccLabel, optionsSel);
 
     if (clicked) {
       logTS(`Peacock CC: Selected "${ccLabel}"`);
@@ -5345,6 +5419,44 @@ async function fullScreenVideoPeacock(page, encoderConfig = null, closedCaptions
   const { frameHandle, videoHandle } = await findVideoElement(page);
   if (frameHandle && videoHandle) {
     logTS("Found Peacock video element, setting up pause monitor");
+
+    // Peacock resumes from its saved position (e.g. an earlier autoplay-next that
+    // ran during a previous over-running recording). Reset via a real click on the
+    // native range scrubber, going through the player's own seek handling rather
+    // than setting video.currentTime directly.
+    const resumeTime = await GetProperty(videoHandle, 'currentTime');
+    if (resumeTime > 5) {
+      logTS(`Peacock video resumed at ${resumeTime.toFixed(1)}s, seeking back to 0 via scrubber`);
+      const hoverViewport = page.viewport();
+      const hoverX = Math.floor((hoverViewport ? hoverViewport.width : 1280) / 2);
+      const hoverY = Math.floor((hoverViewport ? hoverViewport.height : 720) / 2);
+      let sliderHandle = null;
+      for (let attempt = 0; attempt < 6 && !sliderHandle; attempt++) {
+        await page.mouse.move(hoverX, hoverY + attempt);
+        await delay(500);
+        sliderHandle = await frameHandle.$('input[data-testid="scrubber-bar"]');
+      }
+      if (sliderHandle) {
+        const box = await sliderHandle.boundingBox();
+        if (box) {
+          const x = box.x + 3;
+          const y = box.y + box.height / 2;
+          await page.mouse.move(x, y);
+          await delay(200);
+          await page.mouse.down();
+          await delay(200);
+          await page.mouse.up();
+          await delay(1000);
+          const confirmedTime = await GetProperty(videoHandle, 'currentTime');
+          logTS(`Peacock video time after seek: ${confirmedTime.toFixed(1)}s`);
+        } else {
+          logTS('Peacock scrubber has no bounding box, skipping seek-to-start');
+        }
+        await sliderHandle.dispose();
+      } else {
+        logTS('Peacock scrubber not found even after hover, skipping seek-to-start');
+      }
+    }
 
     // Re-apply audio device after fullscreen transition (Peacock may recreate video elements)
     if (encoderConfig && encoderConfig.audioDevice) {
@@ -6002,6 +6114,43 @@ async function fullScreenVideoAppleTV(page, encoderConfig = null, closedCaptions
       if (video.paused) video.play().catch(err => console.log('Play failed:', err));
     }, videoHandle);
     logTS("Apple TV+: unmuted video and set volume to max");
+
+    // Apple TV+ resumes from its saved position (e.g. an earlier autoplay-next that
+    // ran during a previous over-running recording). Reset via a real click on the
+    // native range scrubber, going through the player's own seek handling rather
+    // than setting video.currentTime directly.
+    const resumeTime = await GetProperty(videoHandle, 'currentTime');
+    if (resumeTime > 5) {
+      logTS(`Apple TV+ video resumed at ${resumeTime.toFixed(1)}s, seeking back to 0 via scrubber`);
+      let sliderHandle = null;
+      for (let attempt = 0; attempt < 6 && !sliderHandle; attempt++) {
+        await page.mouse.move(cx, cy + attempt);
+        await delay(500);
+        // Apple's amp-* player controls are likely shadow-DOM web components (like
+        // Disney+'s Lit player) — pierce shadow roots since a plain selector can't see them.
+        sliderHandle = await frameHandle.$('pierce/#playback-progress');
+      }
+      if (sliderHandle) {
+        const box = await sliderHandle.boundingBox();
+        if (box) {
+          const x = box.x + 3;
+          const y = box.y + box.height / 2;
+          await page.mouse.move(x, y);
+          await delay(200);
+          await page.mouse.down();
+          await delay(200);
+          await page.mouse.up();
+          await delay(1000);
+          const confirmedTime = await GetProperty(videoHandle, 'currentTime');
+          logTS(`Apple TV+ video time after seek: ${confirmedTime.toFixed(1)}s`);
+        } else {
+          logTS('Apple TV+ scrubber has no bounding box, skipping seek-to-start');
+        }
+        await sliderHandle.dispose();
+      } else {
+        logTS('Apple TV+ scrubber not found even after hover, skipping seek-to-start');
+      }
+    }
   } else {
     logTS("Apple TV+: could not find video element");
   }
@@ -7376,6 +7525,44 @@ async function fullScreenVideoMax(page, closedCaptions = '') {
         if (video.paused) video.play().catch(err => console.log('Play failed:', err));
       }, videoHandle);
 
+      // Max resumes from its saved position (e.g. an earlier autoplay-next that ran
+      // during a previous over-running recording). Reset via a real click on the
+      // native range scrubber, going through the player's own seek handling rather
+      // than setting video.currentTime directly.
+      const resumeTime = await GetProperty(videoHandle, 'currentTime');
+      if (resumeTime > 5) {
+        logTS(`Max video resumed at ${resumeTime.toFixed(1)}s, seeking back to 0 via scrubber`);
+        const maxVp = page.viewport();
+        const hoverX = Math.floor((maxVp ? maxVp.width : 1280) / 2);
+        const hoverY = Math.floor((maxVp ? maxVp.height : 720) / 2);
+        let sliderHandle = null;
+        for (let attempt = 0; attempt < 6 && !sliderHandle; attempt++) {
+          await page.mouse.move(hoverX, hoverY + attempt);
+          await delay(500);
+          sliderHandle = await frameHandle.$('[data-testid="player-ux-scrubber-position"]');
+        }
+        if (sliderHandle) {
+          const box = await sliderHandle.boundingBox();
+          if (box) {
+            const x = box.x + 3;
+            const y = box.y + box.height / 2;
+            await page.mouse.move(x, y);
+            await delay(200);
+            await page.mouse.down();
+            await delay(200);
+            await page.mouse.up();
+            await delay(1000);
+            const confirmedTime = await GetProperty(videoHandle, 'currentTime');
+            logTS(`Max video time after seek: ${confirmedTime.toFixed(1)}s`);
+          } else {
+            logTS('Max scrubber has no bounding box, skipping seek-to-start');
+          }
+          await sliderHandle.dispose();
+        } else {
+          logTS('Max scrubber not found even after hover, skipping seek-to-start');
+        }
+      }
+
       // Select closed captions BEFORE fullscreen — skip if Default (empty)
       const maxCcValue = closedCaptions || '';
       if (maxCcValue) {
@@ -7551,6 +7738,47 @@ async function fullScreenVideoDisneyPlus(page, closedCaptions = '') {
         await frameHandle.evaluate((v) => v.play().catch(() => {}), videoHandle);
       }
       await delay(1000);
+    }
+
+    // Disney+ resumes from its saved position (e.g. an earlier autoplay-next that
+    // ran during a previous over-running recording). Reset via a real click on the
+    // player's own timeline track — setting video.currentTime directly breaks the
+    // DRM session, and the slider's Home key isn't wired to an actual seek.
+    const resumeTime = await GetProperty(videoHandle, 'currentTime');
+    if (resumeTime > 5) {
+      logTS(`Disney+ video resumed at ${resumeTime.toFixed(1)}s, seeking back to 0 via timeline`);
+      // The timeline slider only renders once the controls UI has mounted, which can
+      // lag behind the video itself reporting ready — retry the hover a few times.
+      const hoverViewport = page.viewport();
+      const hoverX = Math.floor((hoverViewport ? hoverViewport.width : 1280) / 2);
+      const hoverY = Math.floor((hoverViewport ? hoverViewport.height : 720) / 2);
+      let sliderHandle = null;
+      for (let attempt = 0; attempt < 6 && !sliderHandle; attempt++) {
+        await page.mouse.move(hoverX, hoverY + attempt);
+        await delay(500);
+        // The slider lives inside a Lit shadow-DOM component, so pierce shadow roots
+        sliderHandle = await frameHandle.$('pierce/[role="slider"][aria-label="Timeline"]');
+      }
+      if (sliderHandle) {
+        const box = await sliderHandle.boundingBox();
+        if (box) {
+          const x = box.x + 3;
+          const y = box.y + box.height / 2;
+          await page.mouse.move(x, y);
+          await delay(200);
+          await page.mouse.down();
+          await delay(200);
+          await page.mouse.up();
+          await delay(1000);
+          const confirmedTime = await GetProperty(videoHandle, 'currentTime');
+          logTS(`Disney+ video time after seek: ${confirmedTime.toFixed(1)}s`);
+        } else {
+          logTS('Disney+ timeline slider has no bounding box, skipping seek-to-start');
+        }
+        await sliderHandle.dispose();
+      } else {
+        logTS('Disney+ timeline slider not found even after hover, skipping seek-to-start');
+      }
     }
 
     // Unmute video
@@ -7739,6 +7967,44 @@ async function fullScreenVideoNetflix(page, closedCaptions = '') {
         await frameHandle.evaluate((v) => v.play().catch(() => {}), videoHandle);
       }
       await delay(1000);
+    }
+
+    // Netflix resumes from its saved position (e.g. an earlier autoplay-next that
+    // ran during a previous over-running recording). Reset via a real click on the
+    // timeline track, going through the player's own seek handling rather than
+    // setting video.currentTime directly.
+    const resumeTime = await GetProperty(videoHandle, 'currentTime');
+    if (resumeTime > 5) {
+      logTS(`Netflix video resumed at ${resumeTime.toFixed(1)}s, seeking back to 0 via timeline`);
+      const netflixVp = page.viewport();
+      const hoverX = Math.floor((netflixVp ? netflixVp.width : 1280) / 2);
+      const hoverY = Math.floor((netflixVp ? netflixVp.height : 720) / 2);
+      let sliderHandle = null;
+      for (let attempt = 0; attempt < 6 && !sliderHandle; attempt++) {
+        await page.mouse.move(hoverX, hoverY + attempt);
+        await delay(500);
+        sliderHandle = await frameHandle.$('[data-uia="timeline-bar"]');
+      }
+      if (sliderHandle) {
+        const box = await sliderHandle.boundingBox();
+        if (box) {
+          const x = box.x + 3;
+          const y = box.y + box.height / 2;
+          await page.mouse.move(x, y);
+          await delay(200);
+          await page.mouse.down();
+          await delay(200);
+          await page.mouse.up();
+          await delay(1000);
+          const confirmedTime = await GetProperty(videoHandle, 'currentTime');
+          logTS(`Netflix video time after seek: ${confirmedTime.toFixed(1)}s`);
+        } else {
+          logTS('Netflix timeline has no bounding box, skipping seek-to-start');
+        }
+        await sliderHandle.dispose();
+      } else {
+        logTS('Netflix timeline not found even after hover, skipping seek-to-start');
+      }
     }
 
     // Unmute video
@@ -8002,6 +8268,44 @@ async function fullScreenVideoAmazon(page, closedCaptions = '', encoderConfig = 
         video.play().catch(err => console.log('Play failed:', err));
       }
     }, videoHandle);
+
+    // Amazon resumes from its saved position (e.g. an earlier autoplay-next that ran
+    // during a previous over-running recording). Reset via a real click on the native
+    // range scrubber, going through the player's own seek handling rather than
+    // setting video.currentTime directly.
+    const resumeTime = await GetProperty(videoHandle, 'currentTime');
+    if (resumeTime > 5) {
+      logTS(`Amazon video resumed at ${resumeTime.toFixed(1)}s, seeking back to 0 via scrubber`);
+      const amazonVp = page.viewport();
+      const hoverX = Math.floor((amazonVp ? amazonVp.width : 1280) / 2);
+      const hoverY = Math.floor((amazonVp ? amazonVp.height : 720) / 2);
+      let sliderHandle = null;
+      for (let attempt = 0; attempt < 6 && !sliderHandle; attempt++) {
+        await page.mouse.move(hoverX, hoverY + attempt);
+        await delay(500);
+        sliderHandle = await frameHandle.$('input[type="range"][aria-label="Seek"]');
+      }
+      if (sliderHandle) {
+        const box = await sliderHandle.boundingBox();
+        if (box) {
+          const x = box.x + 3;
+          const y = box.y + box.height / 2;
+          await page.mouse.move(x, y);
+          await delay(200);
+          await page.mouse.down();
+          await delay(200);
+          await page.mouse.up();
+          await delay(1000);
+          const confirmedTime = await GetProperty(videoHandle, 'currentTime');
+          logTS(`Amazon video time after seek: ${confirmedTime.toFixed(1)}s`);
+        } else {
+          logTS('Amazon scrubber has no bounding box, skipping seek-to-start');
+        }
+        await sliderHandle.dispose();
+      } else {
+        logTS('Amazon scrubber not found even after hover, skipping seek-to-start');
+      }
+    }
 
     // Go fullscreen using the player's own fullscreen button
     logTS("Going fullscreen via Amazon player fullscreen button");
@@ -8892,7 +9196,33 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
 
         logTS(`[${availableEncoder.url}] Getting browser page for streaming`);
         const pages = await browser.pages();
-        page = pages.length > 0 ? pages[0] : await browser.newPage();
+        if (targetUrl.includes("peacocktv.com")) {
+          // Peacock's bot detection appears to key off tab reuse — a tab that has
+          // accumulated many prior navigations gets flagged with /watch/error, while
+          // a fresh tab (same browser/profile/cookies) works. Recycle the tab.
+          for (const oldPage of pages) {
+            await oldPage.close().catch(() => {});
+          }
+          logTS(`[${availableEncoder.url}] Peacock: opening a fresh tab to avoid tab-reuse bot detection`);
+          page = await browser.newPage();
+          // A brand-new window doesn't steal OS focus automatically — force it forward.
+          await page.bringToFront().catch(() => {});
+          if (process.platform === 'win32') {
+            // Windows blocks background processes from stealing foreground focus from
+            // whatever app is currently active (e.g. VS Code) — bringToFront() alone
+            // can't override that. AppActivate bypasses it the way Alt-Tab would.
+            try {
+              const chromePid = browser.process()?.pid;
+              if (chromePid) {
+                execSync(`powershell -NoProfile -Command "(New-Object -ComObject WScript.Shell).AppActivate(${chromePid})"`, { stdio: 'pipe', timeout: 5000 });
+              }
+            } catch (focusErr) {
+              logTS(`[${availableEncoder.url}] Could not force Peacock window to foreground: ${focusErr.message}`);
+            }
+          }
+        } else {
+          page = pages.length > 0 ? pages[0] : await browser.newPage();
+        }
 
         if (!page) {
           logTS(`[${availableEncoder.url}] Failed to get browser page`);
