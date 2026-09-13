@@ -2496,9 +2496,28 @@ async function openNetflixDetailModal(page) {
   const expandBtn = await page.waitForSelector('button[data-uia="expand-to-detail-button"]', { timeout: 5000 }).catch(() => null);
   if (!expandBtn) return { opened: false, previewDurationText };
   await expandBtn.click();
+  await delay(1000); // let the expand transition start before checking for the modal
 
   const opened = await page.waitForSelector('.detail-modal-container', { timeout: 10000 }).catch(() => null);
-  return { opened: !!opened, previewDurationText };
+  if (!opened) return { opened: false, previewDurationText };
+  await delay(1000); // the modal shell can render before its content does
+
+  // The modal's content (episode list for a series, or synopsis for a movie) can still
+  // take a moment to populate after the shell appears. Scoped INSIDE the modal (not
+  // page-wide) — the hover preview's videoMetadata--container from above can linger in
+  // the DOM after the modal opens, and an unscoped wait would be satisfied by that stale
+  // element instead of actual modal content, which is what let a series through as a movie.
+  await page.waitForFunction(() => {
+    const modal = document.querySelector('.detail-modal-container');
+    if (!modal) return false;
+    return !!(
+      modal.querySelector('.episodeSelector-container .titleCardList--container.episode-item') ||
+      modal.querySelector('[data-uia="preview-modal-synopsis"]')
+    );
+  }, { timeout: 8000 }).catch(() => {});
+  await delay(500); // settle time after content appears
+
+  return { opened: true, previewDurationText };
 }
 
 /**
@@ -2612,7 +2631,25 @@ async function searchNetflix(page, query) {
   await page.click('button[data-uia="navigation+actions+search+icon"]');
 
   const searchInput = await page.waitForSelector('input[data-uia="navigation+actions+search+input"]', { timeout: 10000 });
+  // Use a JS-level focus rather than a coordinate click — the search bar is still
+  // animating open right after the icon click, and a physical click can land on
+  // whatever's nearby if it fires before the layout has settled (observed: it
+  // navigated the whole page away by mis-clicking a nav link).
+  await searchInput.focus();
+  await delay(500);
   await searchInput.type(searchTerm, { delay: 60 });
+
+  // Verify what actually landed and retype if characters were dropped.
+  const typedValue = await page.evaluate(el => el.value, searchInput);
+  if (typedValue !== searchTerm) {
+    logTS(`Netflix: search input shows "${typedValue}", expected "${searchTerm}" — clearing and retyping`);
+    await searchInput.focus();
+    await page.evaluate(el => {
+      el.value = '';
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    }, searchInput);
+    await searchInput.type(searchTerm, { delay: 60 });
+  }
 
   // Wait for the results gallery to render (debounced)
   await page.waitForSelector('section[data-uia="gallery"] a[data-uia="standard-card"]', { timeout: 15000 });
