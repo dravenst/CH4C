@@ -8680,6 +8680,18 @@ async function main() {
   logTS(`CH4C version ${Constants.APP_VERSION}`);
   logTS(`Data directory: ${Constants.DATA_DIR}`);
 
+  // After a Windows restart (power outage, updates), the OS cursor can be left wherever
+  // it was before the reboot — if that's near the taskbar, Windows shows the Start
+  // tooltip over the fullscreen video the moment a stream starts. Nudge it to a safe
+  // interior spot before anything else runs, since no browser/CDP session exists yet.
+  if (process.platform === 'win32') {
+    try {
+      execSync(`powershell -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(350, 500)"`, { stdio: 'pipe', timeout: 5000 });
+    } catch (cursorErr) {
+      logTS(`Could not reset cursor position on startup (non-fatal): ${cursorErr.message}`);
+    }
+  }
+
   const app = express();
   app.use(express.json());
   app.use(express.urlencoded({ extended: false }));
