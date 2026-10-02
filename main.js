@@ -708,6 +708,16 @@ async function searchDisneyPlus(page, query) {
   logTS('Navigating to Disney+');
   await page.goto('https://www.disneyplus.com/home', { waitUntil: 'networkidle2', timeout: 30000 });
 
+  // Handle "Who's Watching?" profile gate if it appears — select the first profile.
+  // Real profile tiles have aria-label "Access <name>'s profile"; this excludes the
+  // "Link Profile" and "Add Profile" tiles, which don't match that prefix.
+  const profileButton = await page.$('button[aria-label^="Access "]');
+  if (profileButton) {
+    logTS('Disney+: profile gate detected — selecting first profile');
+    await profileButton.click();
+    await page.waitForFunction(() => !document.querySelector('[data-testid="choose-profile-title"]'), { timeout: 15000 }).catch(() => {});
+  }
+
   // Click the search icon in the nav
   await page.waitForSelector('a[data-testid="navigation-item-search"]', { timeout: 10000 });
   await page.click('a[data-testid="navigation-item-search"]');
