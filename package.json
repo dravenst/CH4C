@@ -38,8 +38,8 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.25.0",
-    "globals": "^16.0.0",
-    "pkg": "^5.8.1"
+    "@yao-pkg/pkg": "^6.24.0",
+    "globals": "^16.0.0"
   },
   "pkg": {
     "assets": [
@@ -50,8 +50,8 @@
   },
   "scripts": {
     "postinstall": "node -e \"if(process.platform==='linux'){console.log('\\nWARNING: Linux detected. CH4C is primarily supported on Windows and macOS.\\n  The \\'ch4c service install\\' command is not available on Linux.\\n  You can still run CH4C manually with: ch4c\\n')}\"",
-    "build": "pkg . --targets latest-win-x64 --output dist/ch4c.exe && pkg . --targets latest-macos-x64 --output dist/ch4c",
-    "build:win": "pkg . --targets latest-win-x64 --output dist/ch4c.exe",
-    "build:mac": "pkg . --targets latest-macos-x64 --output dist/ch4c"
+    "build": "pkg . --targets node24-win-x64 --output dist/ch4c.exe && pkg . --targets node24-macos-x64 --output dist/ch4c",
+    "build:win": "pkg . --targets node24-win-x64 --output dist/ch4c.exe",
+    "build:mac": "pkg . --targets node24-macos-x64 --output dist/ch4c"
   }
 }
