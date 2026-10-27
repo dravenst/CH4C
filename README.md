@@ -32,7 +32,7 @@ This project merges elements of the excellent [Chrome Capture for Channels](http
 
 ### Hardware
 
-- **Windows PC or Mac**: Most Windows PCs work well. macOS (Intel and Apple Silicon via Rosetta 2) is also supported. I run both Channels DVR and CH4C together on the same low-power Intel Celeron 5105 PC.
+- **Windows PC or Mac**: Most Windows PCs work well. macOS (Intel and Apple Silicon) is also supported. I run both Channels DVR and CH4C together on the same low-power Intel Celeron 5105 PC.
 - **Encoder**: Recommended [Link Pi ENC1-v3](https://a.co/d/76zJF9U) with dual input ports (HDMI and USB). For the USB port, use an HDMI to USB adapter.
 - **VNC Server** (for remote browser access):
   - **Windows**: Install [TightVNC](https://www.tightvnc.com/) and enable **loopback connections** so CH4C's built-in VNC viewer can connect locally.
@@ -363,14 +363,15 @@ node main.js --help
 
 ### Building
 
-Build executables for all platforms (Windows x64 and macOS x64):
+Build executables for all platforms (Windows x64, macOS x64 and macOS arm64):
 ```bash
 npm run build
 ```
 
 Output is placed in the `dist/` folder:
 - `ch4c.exe` — Windows
-- `ch4c` — macOS (Intel and Apple Silicon via Rosetta 2)
+- `ch4c` — macOS Intel (also runs on Apple Silicon via Rosetta 2)
+- `ch4c-arm64` — macOS Apple Silicon (native)
 
 ---
 
@@ -379,7 +380,7 @@ Output is placed in the `dist/` folder:
 This works surprisingly well, though streaming providers may have occasional glitches that prevent consistent loading.
 
 **Additional notes:**
-- **macOS**: Supported on Intel and Apple Silicon (via Rosetta 2). Audio device detection, display detection, service installation, and fullscreen streaming are all supported. Linux support is not currently implemented.
+- **macOS**: Supported on Intel and Apple Silicon (native `ch4c-arm64` build, or the Intel build via Rosetta 2). Audio device detection, display detection, service installation, and fullscreen streaming are all supported. Linux support is not currently implemented.
 - **Display Scale**: Display scale must be set to **100%** for correct window positioning on both Windows and macOS.
 - **HLS Support**: The examples use MPEG-TS, but HLS is also supported. Configure your encoder for HLS, update the Channels custom channel to use HLS, and adjust the encoder parameter to use the HLS stream URL
 - **Secondary Channels DVR Server**: Channels allows you to export an M3U playlist from your primary Channels DVR server and import it into a secondary server to allow remote access for a second Channels DVR instance (e.g. if you only want to run a single CH4C instance and share with another device.). See the [Channels DVR Export Channels](https://getchannels.com/docs/channels-dvr-server/how-to/export-channels/) documentation for details on how to export and customize the M3U parameters. I highly recommend using Tailscale to create a private network to provide connectivity between your Channels DVR servers.
