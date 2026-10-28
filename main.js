@@ -3198,6 +3198,11 @@ const createCleanupManager = () => {
             if (repoolSuccess) {
               logTS(`Successfully re-initialized and minimized browser for ${encoderUrl} in pool.`);
 
+              // Fresh browser - clear any unhealthy mark left over from the previous stream
+              if (global.browserHealthMonitor) {
+                global.browserHealthMonitor.updateBrowserHealth(encoderUrl, true);
+              }
+
               // Re-attach crash handlers if browser was successfully created
               if (browsers.has(encoderUrl)) {
                 const newBrowser = browsers.get(encoderUrl);
