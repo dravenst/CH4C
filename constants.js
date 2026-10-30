@@ -2343,13 +2343,13 @@ const INSTANT_PAGE_HTML = `
             <div class="form-row">
                 <div class="form-group narrow">
                     <label>
-                        Duration (mins)
+                        Duration
                     </label>
                     <input
                         type="number"
                         name="recording_duration"
                         id="recording_duration"
-                        placeholder="60"
+                        placeholder="mins"
                         min="1"
                         step="1"
                     />
@@ -2357,7 +2357,7 @@ const INSTANT_PAGE_HTML = `
 
                 <div class="form-group narrow">
                     <label>
-                        Closed Captions
+                        CC
                     </label>
                     <select
                         name="closed_captions"
@@ -2370,22 +2370,23 @@ const INSTANT_PAGE_HTML = `
                 </div>
 
                 <div class="form-group narrow">
-                    <label for="from_beginning">
-                        Record from Beginning
+                    <label for="from_beginning" style="text-align:center;">
+                        From Start
                     </label>
-                    <input
-                        type="checkbox"
-                        id="from_beginning"
-                        checked
-                        title="Uncheck to start at the live position instead (Prime Video only)"
-                        style="width:20px;height:20px;margin-top:10px;accent-color:#667eea;cursor:pointer;"
-                    />
+                    <div style="display:flex;align-items:center;justify-content:center;height:45px;">
+                        <input
+                            type="checkbox"
+                            id="from_beginning"
+                            checked
+                            title="Uncheck to start at the live position instead (Prime Video only)"
+                            style="width:20px;height:20px;margin:0;accent-color:#667eea;cursor:pointer;"
+                        />
+                    </div>
                 </div>
 
                 <div class="form-group wide">
                     <label>
                         Encoder
-                        <span class="label-hint">(optional - auto-select if blank)</span>
                     </label>
                     <select
                         name="selected_encoder"

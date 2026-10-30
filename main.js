@@ -8205,7 +8205,14 @@ async function fullScreenVideoAmazon(page, closedCaptions = '', encoderConfig = 
   const onDetailPage = await page.evaluate(() =>
     !!document.querySelector('a[data-testid="dp-atf-play-button"], a[data-testid="circular-playbutton"]')
   );
-  if (onDetailPage) {
+  // autoplay=1 URLs (e.g. the Watch Live link) open the player by themselves; clicking the
+  // detail page play button on top of that reloads the player and leaves it paused.
+  const autoplaying = /[?&]autoplay=1\b/.test(page.url());
+  // Captured now because the player rewrites the URL (drops type=live) once it opens
+  const isLive = /[?&]type=live\b/.test(page.url());
+  if (onDetailPage && autoplaying) {
+    logTS('Amazon: autoplay URL — player opens on its own, skipping play button click');
+  } else if (onDetailPage) {
     logTS('Amazon: detail page detected — clicking play button');
     const playBtn = await page.$('a[data-testid="dp-atf-play-button"], a[data-testid="circular-playbutton"]');
     if (playBtn) {
@@ -8325,12 +8332,16 @@ async function fullScreenVideoAmazon(page, closedCaptions = '', encoderConfig = 
     // during a previous over-running recording). Reset via a real click on the native
     // range scrubber, going through the player's own seek handling rather than
     // setting video.currentTime directly.
+    // Live streams join at the live edge with currentTime near 0, so they always need the
+    // scrubber click to reach the start of the event.
     // Skipped when the user chose to record live, so the stream stays at its current position.
     const resumeTime = await GetProperty(videoHandle, 'currentTime');
     if (!fromBeginning) {
       logTS(`Amazon: record from beginning disabled, staying at current position (${resumeTime.toFixed(1)}s)`);
-    } else if (resumeTime > 5) {
-      logTS(`Amazon video resumed at ${resumeTime.toFixed(1)}s, seeking back to 0 via scrubber`);
+    } else if (resumeTime > 5 || isLive) {
+      logTS(isLive
+        ? 'Amazon live stream, seeking to start of event via scrubber'
+        : `Amazon video resumed at ${resumeTime.toFixed(1)}s, seeking back to 0 via scrubber`);
       const amazonVp = page.viewport();
       const hoverX = Math.floor((amazonVp ? amazonVp.width : 1280) / 2);
       const hoverY = Math.floor((amazonVp ? amazonVp.height : 720) / 2);
