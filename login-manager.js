@@ -2661,4 +2661,4 @@ async function loginEncoders({
   statusCallback({ type: 'complete', success: successCount, failed: failCount });
 }
 
-module.exports = { LOGIN_SITES, loginEncoders, loginSling, loginDirectv };
+module.exports = { LOGIN_SITES, loginEncoders, loginSling, loginDirectv, bezierMouseMove };

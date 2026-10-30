@@ -36,7 +36,7 @@ const {
 
 const { AudioDeviceManager, DisplayManager } = require('./audio-device-manager');
 const { CONFIG_METADATA, ENCODER_FIELDS, validateAllSettings, validateEncoder, saveConfig, loadConfig, getDefaults } = require('./config-manager');
-const { LOGIN_SITES, loginEncoders, loginSling } = require('./login-manager');
+const { LOGIN_SITES, loginEncoders, loginSling, bezierMouseMove } = require('./login-manager');
 const credentialsStore = require('./credentials-store');
 const loginCheckScheduler = require('./login-check-scheduler');
 const { DIRECTV_GUIDE_URL, TUNE_TIMEOUT: DIRECTV_TUNE_TIMEOUT } = require('./services/directv-service');
@@ -327,16 +327,45 @@ async function searchPrimeVideo(page, query) {
   await page.goto('https://www.amazon.com/gp/video/storefront', { waitUntil: 'domcontentloaded', timeout: 30000 });
   await delay(2000);
 
+  // Move mouse to simulate human presence before interacting
+  await bezierMouseMove(page, 400 + Math.random() * 200, 200 + Math.random() * 150);
+  await delay(400 + Math.random() * 300);
+
   // Open the search dropdown
-  await page.waitForSelector('[data-testid="pv-nav-search-dropdown-trigger"]', { timeout: 10000 });
-  await page.click('[data-testid="pv-nav-search-dropdown-trigger"]');
+  const triggerEl = await page.waitForSelector('[data-testid="pv-nav-search-dropdown-trigger"]', { timeout: 10000 });
+  const triggerBox = await triggerEl.boundingBox();
+  let lastX, lastY;
+  if (triggerBox) {
+    lastX = triggerBox.x + triggerBox.width / 2;
+    lastY = triggerBox.y + triggerBox.height / 2;
+    await bezierMouseMove(page, lastX, lastY);
+    await page.mouse.click(lastX, lastY);
+  } else {
+    await triggerEl.click();
+  }
 
   // Wait for the search input to appear
-  await page.waitForSelector('#pv-search-nav', { timeout: 5000 });
-  await delay(300);
+  const searchInput = await page.waitForSelector('#pv-search-nav', { timeout: 5000 });
+  await delay(300 + Math.random() * 200);
 
-  // Type the query and submit
-  await page.type('#pv-search-nav', searchTerm, { delay: 40 });
+  // Move mouse to the search box and click to focus
+  const searchBox = await searchInput.boundingBox();
+  if (searchBox) {
+    const ix = searchBox.x + searchBox.width / 2;
+    const iy = searchBox.y + searchBox.height / 2;
+    await bezierMouseMove(page, ix, iy, lastX, lastY);
+    await page.mouse.click(ix, iy);
+  } else {
+    await searchInput.click();
+  }
+  await delay(200 + Math.random() * 200);
+
+  // Type the query with variable human speed to avoid bot detection
+  for (const char of searchTerm) {
+    await page.keyboard.type(char);
+    await delay(100 + Math.floor(Math.random() * 80));
+  }
+  await delay(400 + Math.random() * 300);
   await page.keyboard.press('Enter');
 
   // Wait for the search results main container
