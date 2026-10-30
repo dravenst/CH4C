@@ -2369,6 +2369,19 @@ const INSTANT_PAGE_HTML = `
                     </select>
                 </div>
 
+                <div class="form-group narrow">
+                    <label for="from_beginning">
+                        Record from Beginning
+                    </label>
+                    <input
+                        type="checkbox"
+                        id="from_beginning"
+                        checked
+                        title="Uncheck to start at the live position instead (Prime Video only)"
+                        style="width:20px;height:20px;margin-top:10px;accent-color:#667eea;cursor:pointer;"
+                    />
+                </div>
+
                 <div class="form-group wide">
                     <label>
                         Encoder
@@ -2735,6 +2748,11 @@ const INSTANT_PAGE_HTML = `
                 const urlEncodedData = new URLSearchParams();
                 for (const [key, value] of formData.entries()) {
                     urlEncodedData.append(key, value);
+                }
+
+                // Only sent when unchecked so the server default (from beginning) applies otherwise
+                if (!document.getElementById('from_beginning').checked) {
+                    urlEncodedData.set('from_beginning', '0');
                 }
 
                 // Convert datetime-local to UTC timestamp so the server gets an unambiguous time

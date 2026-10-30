@@ -146,7 +146,7 @@ function saveScheduledRecordings() {
 async function executeScheduledRecording(params, appLocals) {
   const { recording_name, recording_url, recording_duration, episode_title,
           recording_summary, season_number, episode_number, recording_image,
-          closed_captions, selected_encoder } = params;
+          closed_captions, from_beginning, selected_encoder } = params;
   const recordingName = recording_name || 'Scheduled Recording';
   const { cleanupManager, healthMonitor, browserHealthMonitor, streamMonitor } = appLocals;
 
@@ -190,7 +190,7 @@ async function executeScheduledRecording(params, appLocals) {
       catch (e) { logTS(`Cleanup error on scheduled recording timeout: ${e.message}`); }
     }, totalDurationMs);
 
-    const streamUrl = `http://localhost:${Constants.CH4C_PORT}/stream?url=${encodeURIComponent(recording_url)}&encoder=${encodeURIComponent(availableEncoder.url)}${closed_captions ? '&cc=' + encodeURIComponent(closed_captions) : ''}`;
+    const streamUrl = `http://localhost:${Constants.CH4C_PORT}/stream?url=${encodeURIComponent(recording_url)}&encoder=${encodeURIComponent(availableEncoder.url)}${closed_captions ? '&cc=' + encodeURIComponent(closed_captions) : ''}${from_beginning === '0' ? '&fromstart=0' : ''}`;
     fetch(streamUrl).catch(err => logTS(`Scheduled recording stream fetch error: ${err.message}`));
     logTS(`Scheduled recording "${recordingName}" started on Channel ${availableEncoder.channel}`);
   } else {
@@ -8196,7 +8196,7 @@ async function selectAmazonClosedCaptionsWithRetry(page, ccOption) {
   logTS(`Amazon CC: Could not select after ${maxAttempts} attempts`);
 }
 
-async function fullScreenVideoAmazon(page, closedCaptions = '', encoderConfig = null) {
+async function fullScreenVideoAmazon(page, closedCaptions = '', encoderConfig = null, fromBeginning = true) {
   logTS("URL contains amazon.com, setting up fullscreen for Amazon Prime Video");
 
   // If we're on a detail page (not the player), click the play/Watch Live button first.
@@ -8325,8 +8325,11 @@ async function fullScreenVideoAmazon(page, closedCaptions = '', encoderConfig = 
     // during a previous over-running recording). Reset via a real click on the native
     // range scrubber, going through the player's own seek handling rather than
     // setting video.currentTime directly.
+    // Skipped when the user chose to record live, so the stream stays at its current position.
     const resumeTime = await GetProperty(videoHandle, 'currentTime');
-    if (resumeTime > 5) {
+    if (!fromBeginning) {
+      logTS(`Amazon: record from beginning disabled, staying at current position (${resumeTime.toFixed(1)}s)`);
+    } else if (resumeTime > 5) {
       logTS(`Amazon video resumed at ${resumeTime.toFixed(1)}s, seeking back to 0 via scrubber`);
       const amazonVp = page.viewport();
       const hoverX = Math.floor((amazonVp ? amazonVp.width : 1280) / 2);
@@ -8515,7 +8518,7 @@ function getFullUrl (req) {
   const urlObj = new URL(req.query.url);
   
   // Add any additional query parameters (exclude CH4C routing params that shouldn't go to the target site)
-  const internalParams = new Set(['url', 'encoder', 'cc']);
+  const internalParams = new Set(['url', 'encoder', 'cc', 'fromstart']);
   Object.entries(req.query).forEach(([key, value]) => {
     if (!internalParams.has(key)) {
       urlObj.searchParams.append(key, value);
@@ -9202,6 +9205,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
 
     targetUrl = getFullUrl(req);
     const closedCaptions = req.query.cc || '';
+    const fromBeginning = req.query.fromstart !== '0';
     const channelName = req.query.channel || '';
     logTS(`[DEBUG] /stream endpoint - req.query.url: ${req.query.url}`);
     logTS(`[DEBUG] /stream endpoint - getFullUrl result: ${targetUrl}`);
@@ -9463,7 +9467,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
           }
 
           // Handle site-specific fullscreen (pass encoder config for audio re-application)
-          await handleSiteSpecificFullscreen(targetUrl, page, availableEncoder, closedCaptions);
+          await handleSiteSpecificFullscreen(targetUrl, page, availableEncoder, closedCaptions, fromBeginning);
         }
       }, availableEncoder.url, async () => {
         // Fallback action - attempt recovery
@@ -9616,7 +9620,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
 
   // POST /instant - Handle instant recording or tuning
   app.post('/instant', async (req, res) => {
-    const { recording_name, recording_url, recording_duration, button_record, button_tune, button_record_later, record_later_time, episode_title, recording_summary, season_number, episode_number, selected_encoder, recording_image, closed_captions } = req.body;
+    const { recording_name, recording_url, recording_duration, button_record, button_tune, button_record_later, record_later_time, episode_title, recording_summary, season_number, episode_number, selected_encoder, recording_image, closed_captions, from_beginning } = req.body;
 
     // Check if client wants JSON response
     const wantsJson = req.headers.accept && req.headers.accept.includes('application/json');
@@ -9667,7 +9671,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
         recording_url: targetUrl,
         recording_duration: duration,
         episode_title, recording_summary, season_number, episode_number,
-        recording_image, closed_captions, selected_encoder,
+        recording_image, closed_captions, from_beginning, selected_encoder,
       };
       scheduleRecording(id, params, scheduledTime, req.app.locals);
       const scheduledDate = new Date(scheduledTime).toLocaleString();
@@ -9801,7 +9805,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
 
         // Start the stream in the background (don't wait for response)
         // Pass the encoder URL so the stream uses the same encoder that was selected for recording
-        const streamUrl = `http://localhost:${Constants.CH4C_PORT}/stream?url=${encodeURIComponent(targetUrl)}&encoder=${encodeURIComponent(availableEncoder.url)}${closed_captions ? '&cc=' + encodeURIComponent(closed_captions) : ''}`;
+        const streamUrl = `http://localhost:${Constants.CH4C_PORT}/stream?url=${encodeURIComponent(targetUrl)}&encoder=${encodeURIComponent(availableEncoder.url)}${closed_captions ? '&cc=' + encodeURIComponent(closed_captions) : ''}${from_beginning === '0' ? '&fromstart=0' : ''}`;
         logTS(`[DEBUG] Initiating stream fetch to: ${streamUrl}`);
         logTS(`[DEBUG] Target URL being streamed: ${targetUrl}`);
         logTS(`[DEBUG] Using encoder: ${availableEncoder.url}`);
@@ -9858,7 +9862,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
 
       // Start the stream in the background (don't wait for response)
       // Pass the encoder URL so the stream uses the same encoder that was selected for tuning
-      fetch(`http://localhost:${Constants.CH4C_PORT}/stream?url=${encodeURIComponent(targetUrl)}&encoder=${encodeURIComponent(availableEncoder.url)}${closed_captions ? '&cc=' + encodeURIComponent(closed_captions) : ''}`)
+      fetch(`http://localhost:${Constants.CH4C_PORT}/stream?url=${encodeURIComponent(targetUrl)}&encoder=${encodeURIComponent(availableEncoder.url)}${closed_captions ? '&cc=' + encodeURIComponent(closed_captions) : ''}${from_beginning === '0' ? '&fromstart=0' : ''}`)
         .catch(err => logTS(`Stream fetch error (expected): ${err.message}`));
     } else {
       sendResponse(400, { success: false, error: 'Invalid form submission' });
@@ -11386,7 +11390,7 @@ async function fullScreenVideoFoxSports(page) {
 }
 
 // Helper function to consolidate site-specific fullscreen logic
-async function handleSiteSpecificFullscreen(targetUrl, page, encoderConfig = null, closedCaptions = '') {
+async function handleSiteSpecificFullscreen(targetUrl, page, encoderConfig = null, closedCaptions = '', fromBeginning = true) {
   try {
     if (targetUrl.includes("stream.directv.com")) {
       logTS("Handling DirecTV Stream video");
@@ -11396,7 +11400,7 @@ async function handleSiteSpecificFullscreen(targetUrl, page, encoderConfig = nul
       await fullScreenVideoYouTube(page, closedCaptions);
     } else if (targetUrl.includes("amazon.com")) {
       logTS("Handling Amazon Prime Video");
-      await fullScreenVideoAmazon(page, closedCaptions, encoderConfig);
+      await fullScreenVideoAmazon(page, closedCaptions, encoderConfig, fromBeginning);
     } else if (targetUrl.includes("watch.sling.com")) {
       logTS("Handling Sling video");
       await fullScreenVideoSling(page, encoderConfig, closedCaptions);
