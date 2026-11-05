@@ -30,6 +30,7 @@ const {
   StreamMonitor,
   validateEncoderConnection,
   setupBrowserCrashHandlers,
+  killChromeProcessesForUserData,
   safeStreamOperation,
   initializeBrowserPoolWithValidation
 } = require('./error-handling');
@@ -3091,8 +3092,23 @@ async function closeBrowser(encoderUrl) {
     try {
       const browser = browsers.get(encoderUrl);
       if (browser && browser.isConnected()) {
-        await browser.close();
-        logTS(`Browser closed for encoder ${encoderUrl}`);
+        try {
+          // browser.close() waits for Chrome to exit with no timeout, so a Chrome process
+          // that hangs on shutdown would otherwise block cleanup and the relaunch indefinitely
+          await Promise.race([
+            browser.close(),
+            new Promise((_, reject) =>
+              setTimeout(() => reject(new Error('browser.close() timeout')), 10000)
+            )
+          ]);
+          logTS(`Browser closed for encoder ${encoderUrl}`);
+        } catch (e) {
+          logTS(`Browser close failed for ${encoderUrl}: ${e.message} - will force kill processes`);
+          const encoderIndex = Constants.ENCODERS.findIndex(encoder => encoder.url === encoderUrl);
+          if (encoderIndex !== -1) {
+            await killChromeProcessesForUserData(path.join(chromeDataDir, `encoder_${encoderIndex}`));
+          }
+        }
       }
     } catch (e) {
       logTS(`Error closing browser for ${encoderUrl}:`, e);
@@ -3109,7 +3125,8 @@ const createCleanupManager = () => {
   let recoveryInProgress = new Map(); // Track recovery operations to prevent duplicates
   let intentionalClose = new Map(); // Track intentional browser closes
   let pendingLogin = new Map(); // encoderUrl → siteId for auto-login after cleanup
-  
+  let streamRequests = new Map(); // encoderUrl → callback that ends the stream request using this encoder
+
   process.on('SIGINT', async () => {
     logTS('Caught interrupt signal');
     for (const [encoderUrl] of activeBrowsers) {
@@ -3127,6 +3144,15 @@ const createCleanupManager = () => {
     }
     process.exit();
   });
+
+  // Tell the stream request using this encoder that it no longer owns it
+  function stopStreamRequest(encoderUrl) {
+    const stop = streamRequests.get(encoderUrl);
+    streamRequests.delete(encoderUrl);
+    if (stop) {
+      stop();
+    }
+  }
 
   // Mark encoder available, triggering background auto-login if a logout was detected.
   // Called from both the cleanup re-init path and all recovery manager paths so the
@@ -3170,6 +3196,8 @@ const createCleanupManager = () => {
 
   return {
     cleanup: async (encoderUrl, res) => {
+      stopStreamRequest(encoderUrl);
+
       if (closingStates.get(encoderUrl)) {
         logTS(`Cleanup already in progress for encoder ${encoderUrl}`);
         return;
@@ -3281,6 +3309,11 @@ const createCleanupManager = () => {
       }
     },
     isIntentionalClose: (encoderUrl) => intentionalClose.get(encoderUrl),
+    setStreamRequest: (encoderUrl, stop) => {
+      // A recovery can free an encoder mid-stream, so an earlier request may still be attached
+      stopStreamRequest(encoderUrl);
+      streamRequests.set(encoderUrl, stop);
+    },
     markLogoutDetected: (encoderUrl, siteId) => pendingLogin.set(encoderUrl, siteId),
     getState: () => ({
       closingStates: Array.from(closingStates.entries()),
@@ -9263,12 +9296,48 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
 
     logTS(`[${availableEncoder.url}] Selected encoder for streaming to ${targetUrl}`);
     logTS(`[${availableEncoder.url}] Browser exists: ${browsers.has(availableEncoder.url)}, Can start: ${cleanupManager.canStartBrowser(availableEncoder.url)}`);
+
+    // The client can leave while this request waits for an encoder. The close event has already
+    // fired by then, so the listener below would never run and the encoder would stay reserved.
+    if (res.destroyed) {
+      logTS(`[${availableEncoder.url}] Client disconnected before stream start, not reserving encoder`);
+      return;
+    }
+
     cleanupManager.setBrowserActive(availableEncoder.url);
+
+    // Once the client has left, or a cleanup has run for this encoder (Stop, a duration timer, or
+    // this request's own), this request must stop touching the encoder, which may already be
+    // re-pooled and assigned to a new request.
+    let clientDisconnected = false;
+    let encoderCleanedUp = false;
+    const requestStopped = () => clientDisconnected || encoderCleanedUp;
+    // Only aborting closes the socket to the encoder; destroying the node-fetch body does not
+    const encoderConnection = new AbortController();
+
+    // Stop and the duration timers clean up without ending this response, and the client would
+    // otherwise keep receiving whatever the encoder outputs next, so end it here
+    cleanupManager.setStreamRequest(availableEncoder.url, () => {
+      encoderCleanedUp = true;
+      if (res.destroyed || res.writableEnded) {
+        return;
+      }
+      if (res.headersSent) {
+        res.destroy();
+      } else {
+        res.status(499).end();
+      }
+    });
 
     // Enhanced cleanup on stream close
     res.on('close', async err => {
+      clientDisconnected = true;
+      encoderConnection.abort();
       const streamDurationMs = Date.now() - streamRequestStartTime;
       logTS(`response stream closed for ${availableEncoder.url} (client: ${clientIp}, duration: ${Math.round(streamDurationMs / 1000)}s)`);
+      if (encoderCleanedUp) {
+        return;
+      }
       streamMonitor.stopMonitoring(availableEncoder.url);
       try {
         await cleanupManager.cleanup(availableEncoder.url, res);
@@ -9282,8 +9351,12 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
     });
 
     res.on('error', async err => {
+      clientDisconnected = true;
       const streamDurationMs = Date.now() - streamRequestStartTime;
       logTS(`response stream error for ${availableEncoder.url} (client: ${clientIp}, duration: ${Math.round(streamDurationMs / 1000)}s):`, err);
+      if (encoderCleanedUp) {
+        return;
+      }
       streamMonitor.recordError(availableEncoder.url);
       streamMonitor.stopMonitoring(availableEncoder.url);
       try {
@@ -9458,7 +9531,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
         }
 
         // Stream setup with connection validation
-        if (!cleanupManager.getState().isClosing) {
+        if (!requestStopped()) {
           // Validate encoder connection before streaming
           const isValid = await validateEncoderConnection(availableEncoder.url, 2, 1000);
           if (!isValid) {
@@ -9466,15 +9539,28 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
           }
 
           const fetchResponse = await fetchWithRetry(availableEncoder.url, {
-            timeout: 30000
+            timeout: 30000,
+            signal: encoderConnection.signal
           });
 
           if (!fetchResponse.ok) {
             throw new Error(`Encoder stream HTTP error: ${fetchResponse.status}`);
           }
 
+          // Cleanup has already stopped monitoring, so don't restart it below for a stopped request
+          if (requestStopped()) {
+            return;
+          }
+
           if (res && !res.headersSent) {
             const stream = Readable.from(fetchResponse.body);
+
+            // Aborting the encoder connection surfaces here as an error, as does the encoder dropping it
+            stream.on('error', (error) => {
+              if (!requestStopped()) {
+                logTS(`Encoder stream error for ${availableEncoder.url}: ${error.message}`);
+              }
+            });
 
             // Only start monitoring if this is a real stream consumer (not internal fetch from /instant tune)
             // Internal fetches from localhost won't consume the stream, so monitoring would show false inactivity
@@ -9496,6 +9582,9 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
             stream.pipe(res, { end: true })
               .on('error', (error) => {
                 logTS(`Stream pipe error: ${error.message}`);
+                if (encoderCleanedUp) {
+                  return;
+                }
                 streamMonitor.recordError(availableEncoder.url);
                 cleanupManager.cleanup(availableEncoder.url, res);
               });
@@ -9522,10 +9611,14 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
         if (!recovered) {
           throw new Error('Recovery failed');
         }
-      });
+      }, requestStopped);
 
     } catch (error) {
       logTS(`Stream setup failed for ${availableEncoder.url}: ${error.message}`);
+      if (requestStopped()) {
+        return;
+      }
+
       streamMonitor.stopMonitoring(availableEncoder.url);
 
       if (!res.headersSent) {

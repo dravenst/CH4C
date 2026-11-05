@@ -720,6 +720,9 @@ class BrowserRecoveryManager {
         if (success) {
           logTS(`Successfully recovered browser for ${encoderUrl}`);
           this.resetRecoveryAttempts(encoderUrl);
+          if (browsers.has(encoderUrl)) {
+            setupBrowserCrashHandlers(browsers.get(encoderUrl), encoderUrl, this, encoderConfig, browsers, launchBrowserFunc, Constants);
+          }
           // Mark browser as healthy after successful recovery
           if (global.browserHealthMonitor) {
             global.browserHealthMonitor.updateBrowserHealth(encoderUrl, true);
@@ -877,9 +880,18 @@ async function validateEncoderConnection(encoderUrl, maxRetries = 3, retryDelay 
  * Enhanced browser crash detection and handling
  */
 
+// Browsers that already have crash handlers. Cleanup and recovery can share one launched
+// browser, so both may try to attach handlers to the same instance.
+const browsersWithCrashHandlers = new WeakSet();
+
 // Also update setupBrowserCrashHandlers in error-handling.js to check for intentional closes:
 
 function setupBrowserCrashHandlers(browser, encoderUrl, recoveryManager, encoderConfig, browsers, launchBrowserFunc, Constants) {
+  if (browsersWithCrashHandlers.has(browser)) {
+    return;
+  }
+  browsersWithCrashHandlers.add(browser);
+
   // Lock to prevent concurrent Sling auto-recovery attempts for this encoder
   let slingRecoveryInProgress = false;
   let slingRecoveryAttempts = 0;
@@ -1162,16 +1174,28 @@ class StreamMonitor {
 /**
  * Enhanced error wrapper for streaming operations
  */
-async function safeStreamOperation(operation, encoderUrl, fallbackAction) {
+async function safeStreamOperation(operation, encoderUrl, fallbackAction, shouldAbort) {
   const maxRetries = 3;
   let lastError;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    // Re-checked here because the error handling below can delay before the next attempt
+    if (shouldAbort()) {
+      logTS(`Stream stopped, not retrying stream operation for ${encoderUrl}`);
+      return;
+    }
+
     try {
       return await operation();
     } catch (error) {
       lastError = error;
       logTS(`Stream operation failed for ${encoderUrl} (attempt ${attempt}/${maxRetries}): ${error.message}`);
+
+      // Checked before the error handling below, which can run recovery on this encoder
+      if (shouldAbort()) {
+        logTS(`Stream stopped, not retrying stream operation for ${encoderUrl}`);
+        return;
+      }
 
       // Classify error types for appropriate handling
       if (error.code === 'ECONNRESET' || error.code === 'EPIPE') {
@@ -1299,6 +1323,7 @@ module.exports = {
   StreamMonitor,
   validateEncoderConnection,
   setupBrowserCrashHandlers,
+  killChromeProcessesForUserData,
   safeStreamOperation,
   initializeBrowserPoolWithValidation
 };
