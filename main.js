@@ -191,7 +191,7 @@ async function executeScheduledRecording(params, appLocals) {
       catch (e) { logTS(`Cleanup error on scheduled recording timeout: ${e.message}`); }
     }, totalDurationMs);
 
-    const streamUrl = `http://localhost:${Constants.CH4C_PORT}/stream?url=${encodeURIComponent(recording_url)}&encoder=${encodeURIComponent(availableEncoder.url)}${closed_captions ? '&cc=' + encodeURIComponent(closed_captions) : ''}${from_beginning === '0' ? '&fromstart=0' : ''}`;
+    const streamUrl = `http://localhost:${Constants.CH4C_PORT}/stream?url=${encodeURIComponent(recording_url)}&encoder=${encodeURIComponent(availableEncoder.url)}${closed_captions ? '&cc=' + encodeURIComponent(closed_captions) : ''}${from_beginning === '0' || from_beginning === '1' ? '&fromstart=' + from_beginning : ''}`;
     fetch(streamUrl).catch(err => logTS(`Scheduled recording stream fetch error: ${err.message}`));
     logTS(`Scheduled recording "${recordingName}" started on Channel ${availableEncoder.channel}`);
   } else {
@@ -8258,7 +8258,7 @@ async function selectAmazonClosedCaptionsWithRetry(page, ccOption) {
   logTS(`Amazon CC: Could not select after ${maxAttempts} attempts`);
 }
 
-async function fullScreenVideoAmazon(page, closedCaptions = '', encoderConfig = null, fromBeginning = true) {
+async function fullScreenVideoAmazon(page, closedCaptions = '', encoderConfig = null, fromBeginning = null) {
   logTS("URL contains amazon.com, setting up fullscreen for Amazon Prime Video");
 
   // If we're on a detail page (not the player), click the play/Watch Live button first.
@@ -8394,12 +8394,13 @@ async function fullScreenVideoAmazon(page, closedCaptions = '', encoderConfig = 
     // during a previous over-running recording). Reset via a real click on the native
     // range scrubber, going through the player's own seek handling rather than
     // setting video.currentTime directly.
-    // Live streams join at the live edge with currentTime near 0, so they always need the
-    // scrubber click to reach the start of the event.
-    // Skipped when the user chose to record live, so the stream stays at its current position.
+    // Live streams join at the live edge with currentTime near 0, so they need the
+    // scrubber click to reach the start of the event — but only when From Start was chosen.
+    // Skipped when From Start is unchecked, and for live streams when no choice was sent
+    // (M3U / Channels DVR), so the stream stays at its current position.
     const resumeTime = await GetProperty(videoHandle, 'currentTime');
-    if (!fromBeginning) {
-      logTS(`Amazon: record from beginning disabled, staying at current position (${resumeTime.toFixed(1)}s)`);
+    if (fromBeginning === false || (isLive && fromBeginning === null)) {
+      logTS(`Amazon: ${fromBeginning === false ? 'From Start unchecked' : 'live stream with no From Start choice'}, staying at current position (${resumeTime.toFixed(1)}s)`);
     } else if (resumeTime > 5 || isLive) {
       logTS(isLive
         ? 'Amazon live stream, seeking to start of event via scrubber'
@@ -9278,7 +9279,8 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
 
     targetUrl = getFullUrl(req);
     const closedCaptions = req.query.cc || '';
-    const fromBeginning = req.query.fromstart !== '0';
+    // true/false when the caller chose (instant page); null when not set (M3U, Channels DVR, API)
+    const fromBeginning = req.query.fromstart === '1' ? true : req.query.fromstart === '0' ? false : null;
     const channelName = req.query.channel || '';
     logTS(`[DEBUG] /stream endpoint - req.query.url: ${req.query.url}`);
     logTS(`[DEBUG] /stream endpoint - getFullUrl result: ${targetUrl}`);
@@ -9938,7 +9940,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
 
         // Start the stream in the background (don't wait for response)
         // Pass the encoder URL so the stream uses the same encoder that was selected for recording
-        const streamUrl = `http://localhost:${Constants.CH4C_PORT}/stream?url=${encodeURIComponent(targetUrl)}&encoder=${encodeURIComponent(availableEncoder.url)}${closed_captions ? '&cc=' + encodeURIComponent(closed_captions) : ''}${from_beginning === '0' ? '&fromstart=0' : ''}`;
+        const streamUrl = `http://localhost:${Constants.CH4C_PORT}/stream?url=${encodeURIComponent(targetUrl)}&encoder=${encodeURIComponent(availableEncoder.url)}${closed_captions ? '&cc=' + encodeURIComponent(closed_captions) : ''}${from_beginning === '0' || from_beginning === '1' ? '&fromstart=' + from_beginning : ''}`;
         logTS(`[DEBUG] Initiating stream fetch to: ${streamUrl}`);
         logTS(`[DEBUG] Target URL being streamed: ${targetUrl}`);
         logTS(`[DEBUG] Using encoder: ${availableEncoder.url}`);
@@ -9995,7 +9997,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
 
       // Start the stream in the background (don't wait for response)
       // Pass the encoder URL so the stream uses the same encoder that was selected for tuning
-      fetch(`http://localhost:${Constants.CH4C_PORT}/stream?url=${encodeURIComponent(targetUrl)}&encoder=${encodeURIComponent(availableEncoder.url)}${closed_captions ? '&cc=' + encodeURIComponent(closed_captions) : ''}${from_beginning === '0' ? '&fromstart=0' : ''}`)
+      fetch(`http://localhost:${Constants.CH4C_PORT}/stream?url=${encodeURIComponent(targetUrl)}&encoder=${encodeURIComponent(availableEncoder.url)}${closed_captions ? '&cc=' + encodeURIComponent(closed_captions) : ''}${from_beginning === '0' || from_beginning === '1' ? '&fromstart=' + from_beginning : ''}`)
         .catch(err => logTS(`Stream fetch error (expected): ${err.message}`));
     } else {
       sendResponse(400, { success: false, error: 'Invalid form submission' });
@@ -11523,7 +11525,7 @@ async function fullScreenVideoFoxSports(page) {
 }
 
 // Helper function to consolidate site-specific fullscreen logic
-async function handleSiteSpecificFullscreen(targetUrl, page, encoderConfig = null, closedCaptions = '', fromBeginning = true) {
+async function handleSiteSpecificFullscreen(targetUrl, page, encoderConfig = null, closedCaptions = '', fromBeginning = null) {
   try {
     if (targetUrl.includes("stream.directv.com")) {
       logTS("Handling DirecTV Stream video");

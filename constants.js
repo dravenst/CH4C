@@ -2751,10 +2751,8 @@ const INSTANT_PAGE_HTML = `
                     urlEncodedData.append(key, value);
                 }
 
-                // Only sent when unchecked so the server default (from beginning) applies otherwise
-                if (!document.getElementById('from_beginning').checked) {
-                    urlEncodedData.set('from_beginning', '0');
-                }
+                // Always sent so the server can tell an explicit choice from callers that don't set it
+                urlEncodedData.set('from_beginning', document.getElementById('from_beginning').checked ? '1' : '0');
 
                 // Convert datetime-local to UTC timestamp so the server gets an unambiguous time
                 if (submitButton.name === 'button_record_later') {
