@@ -4117,6 +4117,9 @@ async function setupBrowserAudio(page, encoderConfig, targetUrl = null) {
       clearInterval(activityUpdateInterval);
     }
   } else if (targetUrl && targetUrl.includes("peacocktv.com")) {
+    dismissPeacockPrivacyDialog(page)
+      .catch(err => logTS(`Peacock privacy dialog watcher error: ${err.message}`));
+
     // Peacock-specific video wait with profile redirect handling
     const activityUpdateInterval = setInterval(() => {
       if (global.streamMonitor && encoderConfig && encoderConfig.url) {
@@ -5510,8 +5513,29 @@ async function selectPeacockClosedCaptionsWithRetry(page, ccOption) {
   logTS(`Peacock CC: Could not select after ${maxAttempts} attempts`);
 }
 
-async function fullScreenVideoPeacock(page, encoderConfig = null, closedCaptions = '') {
+// Peacock can show a privacy choices dialog at any point while a stream starts up, so poll
+// in the background. Uses a DOM click rather than the mouse so it can't disturb the scrubber seek.
+async function dismissPeacockPrivacyDialog(page) {
+  const watchUntil = Date.now() + 120000;
+  while (Date.now() < watchUntil && !page.isClosed()) {
+    const clicked = await page.evaluate(() => {
+      const btn = [...document.querySelectorAll('[data-testid="notification-Privacy"]:not([aria-hidden="true"]) button[data-type="notification-button"]')]
+        .find(el => el.textContent.trim().toLowerCase() === 'got it' && el.getClientRects().length > 0);
+      if (btn) btn.click();
+      return !!btn;
+    }).catch(() => false);
+    if (clicked) logTS('Peacock: dismissed privacy choices dialog (Got It)');
+    await delay(1000);
+  }
+}
+
+async function fullScreenVideoPeacock(page, encoderConfig = null, closedCaptions = '', fromBeginning = null) {
   logTS("URL contains peacocktv.com, setting up video fullscreen");
+
+  // Live events open directly on a playback URL; on-demand ones use /watch/playback/vod/
+  const peacockUrl = page.url();
+  const isLive = peacockUrl.includes('/watch/playback/') && !peacockUrl.includes('/watch/playback/vod/');
+  logTS(`Peacock: ${isLive ? 'live' : 'on-demand'} stream detected from URL: ${peacockUrl}`);
 
   // Add minimal mouse movement to simulate human presence
   logTS("Adding mouse movement to simulate human presence");
@@ -5538,9 +5562,17 @@ async function fullScreenVideoPeacock(page, encoderConfig = null, closedCaptions
     // ran during a previous over-running recording). Reset via a real click on the
     // native range scrubber, going through the player's own seek handling rather
     // than setting video.currentTime directly.
+    // Live streams join at the live edge with currentTime near 0, so they need the
+    // scrubber click to reach the start of the event — but only when From Start was chosen.
+    // Skipped when From Start is unchecked, and for live streams when no choice was sent
+    // (M3U / Channels DVR), so the stream stays at its current position.
     const resumeTime = await GetProperty(videoHandle, 'currentTime');
-    if (resumeTime > 5) {
-      logTS(`Peacock video resumed at ${resumeTime.toFixed(1)}s, seeking back to 0 via scrubber`);
+    if (fromBeginning === false || (isLive && fromBeginning === null)) {
+      logTS(`Peacock: ${fromBeginning === false ? 'From Start unchecked' : 'live stream with no From Start choice'}, staying at current position (${resumeTime.toFixed(1)}s)`);
+    } else if (resumeTime > 5 || isLive) {
+      logTS(isLive
+        ? 'Peacock live stream, seeking to start of event via scrubber'
+        : `Peacock video resumed at ${resumeTime.toFixed(1)}s, seeking back to 0 via scrubber`);
       const hoverViewport = page.viewport();
       const hoverX = Math.floor((hoverViewport ? hoverViewport.width : 1280) / 2);
       const hoverY = Math.floor((hoverViewport ? hoverViewport.height : 720) / 2);
@@ -5548,7 +5580,8 @@ async function fullScreenVideoPeacock(page, encoderConfig = null, closedCaptions
       for (let attempt = 0; attempt < 6 && !sliderHandle; attempt++) {
         await page.mouse.move(hoverX, hoverY + attempt);
         await delay(500);
-        sliderHandle = await frameHandle.$('input[data-testid="scrubber-bar"]');
+        // On-demand uses a native range input; the live player uses a div slider
+        sliderHandle = await frameHandle.$('input[data-testid="scrubber-bar"], .playback-scrubber-bar [role="slider"]');
       }
       if (sliderHandle) {
         const box = await sliderHandle.boundingBox();
@@ -5562,7 +5595,8 @@ async function fullScreenVideoPeacock(page, encoderConfig = null, closedCaptions
           await page.mouse.up();
           await delay(1000);
           const confirmedTime = await GetProperty(videoHandle, 'currentTime');
-          logTS(`Peacock video time after seek: ${confirmedTime.toFixed(1)}s`);
+          const scrubberPosition = await sliderHandle.evaluate(el => el.getAttribute('aria-valuetext'));
+          logTS(`Peacock video time after seek: ${confirmedTime.toFixed(1)}s${scrubberPosition ? ` (scrubber: ${scrubberPosition})` : ''}`);
         } else {
           logTS('Peacock scrubber has no bounding box, skipping seek-to-start');
         }
@@ -5571,6 +5605,58 @@ async function fullScreenVideoPeacock(page, encoderConfig = null, closedCaptions
         logTS('Peacock scrubber not found even after hover, skipping seek-to-start');
       }
     }
+
+    // Peacock can start muted. Unmute via the player's own button (only rendered while the
+    // controls are showing) so its mute state stays in sync; clicks only if currently muted.
+    const unmuteViewport = page.viewport();
+    const unmuteX = Math.floor((unmuteViewport ? unmuteViewport.width : 1280) / 2);
+    const unmuteY = Math.floor((unmuteViewport ? unmuteViewport.height : 720) / 2);
+    let muteLabel = null;
+    for (let attempt = 0; attempt < 6 && !muteLabel; attempt++) {
+      await page.mouse.move(unmuteX, unmuteY + attempt);
+      await delay(500);
+      muteLabel = await frameHandle.evaluate(() => {
+        const btn = document.querySelector('button[data-testid="playback-mute-volume"]');
+        if (!btn) return null;
+        const label = btn.getAttribute('aria-label');
+        if (label === 'Unmute Sound') btn.click();
+        return label;
+      }).catch(() => null);
+    }
+    if (muteLabel === 'Unmute Sound') {
+      logTS('Peacock: video was muted, clicked Unmute Sound');
+    } else if (!muteLabel) {
+      logTS('Peacock: mute button not found, unmuting video element directly');
+      await frameHandle.evaluate((video) => { video.muted = false; }, videoHandle);
+    }
+
+    // Peacock can also start below full volume. The slider is a React-controlled range input
+    // shown when hovering the mute button, so set it with the native setter plus input/change
+    // events, which is what makes the player pick up the new value.
+    const muteBtnHandle = await frameHandle.$('button[data-testid="playback-mute-volume"]');
+    const muteBtnBox = muteBtnHandle ? await muteBtnHandle.boundingBox() : null;
+    if (muteBtnBox) {
+      await page.mouse.move(muteBtnBox.x + muteBtnBox.width / 2, muteBtnBox.y + muteBtnBox.height / 2);
+      await delay(500);
+    }
+    if (muteBtnHandle) await muteBtnHandle.dispose();
+    const peacockVolume = await frameHandle.evaluate(() => {
+      const input = document.querySelector('[data-testid="playback-volume-scrubber-bar"] input[type="range"]');
+      if (!input) return null;
+      const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      setValue.call(input, '100');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      return input.value;
+    }).catch(() => null);
+    if (peacockVolume !== null) {
+      logTS(`Peacock: set volume slider to ${peacockVolume}`);
+    } else {
+      logTS('Peacock: volume slider not found, setting video element volume directly');
+      await frameHandle.evaluate((video) => { video.volume = 1; }, videoHandle);
+    }
+    // Move off the control bar so the player controls fade out
+    await page.mouse.move(unmuteX, unmuteY);
 
     // Re-apply audio device after fullscreen transition (Peacock may recreate video elements)
     if (encoderConfig && encoderConfig.audioDevice) {
@@ -9383,11 +9469,12 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
           // Peacock's bot detection appears to key off tab reuse — a tab that has
           // accumulated many prior navigations gets flagged with /watch/error, while
           // a fresh tab (same browser/profile/cookies) works. Recycle the tab.
+          logTS(`[${availableEncoder.url}] Peacock: opening a fresh tab to avoid tab-reuse bot detection`);
+          page = await browser.newPage();
+          // Close old tabs only after the new one exists — closing the last tab makes Chrome exit
           for (const oldPage of pages) {
             await oldPage.close().catch(() => {});
           }
-          logTS(`[${availableEncoder.url}] Peacock: opening a fresh tab to avoid tab-reuse bot detection`);
-          page = await browser.newPage();
           // A brand-new window doesn't steal OS focus automatically — force it forward.
           await page.bringToFront().catch(() => {});
           if (process.platform === 'win32') {
@@ -11540,7 +11627,7 @@ async function handleSiteSpecificFullscreen(targetUrl, page, encoderConfig = nul
       logTS("Handling Sling video");
       await fullScreenVideoSling(page, encoderConfig, closedCaptions);
     } else if (targetUrl.includes("peacocktv.com")) {
-      await fullScreenVideoPeacock(page, encoderConfig, closedCaptions);
+      await fullScreenVideoPeacock(page, encoderConfig, closedCaptions, fromBeginning);
     } else if (targetUrl.includes("spectrum.net")) {
       await fullScreenVideoSpectrum(page);
     } else if (targetUrl.includes("photos.app.goo.gl")) {
