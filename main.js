@@ -37,7 +37,7 @@ const {
 
 const { AudioDeviceManager, DisplayManager } = require('./audio-device-manager');
 const { CONFIG_METADATA, ENCODER_FIELDS, validateAllSettings, validateEncoder, saveConfig, loadConfig, getDefaults } = require('./config-manager');
-const { LOGIN_SITES, loginEncoders, loginSling, bezierMouseMove } = require('./login-manager');
+const { LOGIN_SITES, loginEncoders, loginSling, bezierMouseMove, dismissWBDTermsBanner } = require('./login-manager');
 const credentialsStore = require('./credentials-store');
 const loginCheckScheduler = require('./login-check-scheduler');
 const { DIRECTV_GUIDE_URL, TUNE_TIMEOUT: DIRECTV_TUNE_TIMEOUT } = require('./services/directv-service');
@@ -4000,7 +4000,14 @@ async function setupBrowserAudio(page, encoderConfig, targetUrl = null) {
       return [...videos, ...iframeVideos];
     };
   });
- 
+
+  // TBS/TNT: the WBD "Legal Terms and Privacy" banner must be agreed to — otherwise it
+  // stays over the player in the recording. Done before the logout check, which also
+  // gives the free-preview "SIGN IN FOR FULL ACCESS" button time to render.
+  if (targetUrl && (targetUrl.includes('tbs.com') || targetUrl.includes('tntdrama.com'))) {
+    await dismissWBDTermsBanner(page, `[${encoderConfig.url}] stream`);
+  }
+
   // Detect logged-out state for any site with an immediate loggedOutIndicator. When found,
   // the video wait ends right away with an isLoggedOut error so the stream handler can log
   // in while the stream stays open. Sites with checkLoginWaitMs need SPA hydration time and
@@ -4035,6 +4042,18 @@ async function setupBrowserAudio(page, encoderConfig, targetUrl = null) {
     }
     if (loggedOutEl) throw failLoggedOut();
   }
+
+  // Wait for a playable video while also watching for the site's logged-out indicator, so a
+  // logout screen (or a free preview's sign-in button) that renders after the initial check
+  // ends the wait immediately instead of timing out or recording the preview.
+  const waitForVideoOrLogout = async (timeout) => {
+    const result = await page.waitForFunction((loggedOutSelector) => {
+      if (loggedOutSelector && document.querySelector(loggedOutSelector)) return 'logged-out';
+      const videos = window.checkForVideos();
+      return videos.length > 0 && videos.some(v => v.readyState >= 2) ? 'video' : false;
+    }, { timeout, polling: 1000 }, loggedOutSite?.loggedOutIndicator || null);
+    if (await result.jsonValue() === 'logged-out') throw failLoggedOut();
+  };
 
   // Fox Sports: click the JWPlayer overlay play button before starting the video wait.
   // The overlay appears a few seconds after domcontentloaded; without clicking it, JWPlayer
@@ -4463,10 +4482,7 @@ async function setupBrowserAudio(page, encoderConfig, targetUrl = null) {
     }, 10000);
 
     try {
-      await page.waitForFunction(() => {
-        const videos = window.checkForVideos();
-        return videos.length > 0 && videos.some(v => v.readyState >= 2);
-      }, { timeout: 30000 });
+      await waitForVideoOrLogout(30000);
     } finally {
       clearInterval(activityUpdateInterval);
     }
@@ -4482,14 +4498,7 @@ async function setupBrowserAudio(page, encoderConfig, targetUrl = null) {
     }, 10000); // Update every 10 seconds during video wait
 
     try {
-      // Also watch for the site's logged-out indicator so a logout screen that renders
-      // after the initial check ends the wait immediately instead of timing out.
-      const result = await page.waitForFunction((loggedOutSelector) => {
-        if (loggedOutSelector && document.querySelector(loggedOutSelector)) return 'logged-out';
-        const videos = window.checkForVideos();
-        return videos.length > 0 && videos.some(v => v.readyState >= 2) ? 'video' : false;
-      }, { timeout: 60000, polling: 1000 }, loggedOutSite?.loggedOutIndicator || null);
-      if (await result.jsonValue() === 'logged-out') throw failLoggedOut();
+      await waitForVideoOrLogout(60000);
     } finally {
       clearInterval(activityUpdateInterval);
     }
@@ -7606,6 +7615,24 @@ async function fullScreenVideoTBS(page) {
   });
 
   logTS(`TBS fullscreen status: ${fullscreenResult}`);
+
+  // The control-reveal click and the fullscreen switch can leave the player paused —
+  // make sure it's playing before handing off
+  await delay(1500);
+  const resumeResult = await page.evaluate(() => {
+    const video = [...document.querySelectorAll('video')].find(v => v.readyState >= 2);
+    if (!video) return 'no video';
+    if (!video.paused) return 'playing';
+    const btn = document.querySelector('span.tui-play.tui-btn[aria-label="Play"]');
+    if (btn) {
+      btn.click();
+      return 'paused, clicked play button';
+    }
+    video.play().catch(() => {});
+    return 'paused, called video.play()';
+  }).catch(e => `check failed: ${e.message}`);
+  logTS(`TBS playback after fullscreen: ${resumeResult}`);
+
   logTS("finished TBS fullscreen setup");
 }
 

@@ -420,7 +420,10 @@ const LOGIN_SITES = [
     providerPageTriggers2: ['button.taui-viewallbutton'],
     searchSelector: 'input.taui-mvpdsearch',
     resultSelector: 'div.taui-searchpane ul.taui-mvpdsbyname li, .taui-mvpdsbyname li',
-    redirectWindowOpen: true,
+    // The provider sign-in runs in a real popup (not redirected into the main tab): when the
+    // provider session is cached, Adobe's completeBackgroundLogin.html must hand the token
+    // to window.opener and close itself. The 'back' handling finds a popup login form.
+    injectPopupEvasion: true,
   },
   {
     id: 'tnt',
@@ -435,7 +438,7 @@ const LOGIN_SITES = [
     providerPageTriggers2: ['button.taui-viewallbutton'],
     searchSelector: 'input.taui-mvpdsearch',
     resultSelector: 'div.taui-searchpane ul.taui-mvpdsbyname li, .taui-mvpdsbyname li',
-    redirectWindowOpen: true,
+    injectPopupEvasion: true, // provider sign-in runs in a real popup — see TBS
   },
   {
     id: 'usa',
@@ -1510,37 +1513,6 @@ async function loginTve(page, siteConfig, tveProviderName, tveProviderUsername, 
 
     await dismissWBDTermsBanner(page, `TVE(${siteConfig.id})`);
 
-    // Intercept window.open() on TAUI-based sites (TBS, TNT) — the TAUI provider picker
-    // calls window.open('about:blank') then sets popup.location.href = providerUrl on the
-    // returned object. We return a fake window whose location setter redirects the main tab,
-    // keeping the SAML chain in the current tab so the post-click polling loop can track it.
-    if (siteConfig.redirectWindowOpen) {
-      try {
-        await page.evaluate(() => {
-          window.open = (url) => {
-            if (url && url !== 'about:blank' && url !== '') {
-              window.location.href = url;
-              return null;
-            }
-            // Return a fake window object — TAUI will set location.href on it next
-            const locObj = {
-              get href() { return 'about:blank'; },
-              set href(val) { if (val && val !== 'about:blank' && val !== '') window.location.href = val; },
-            };
-            return {
-              get location() { return locObj; },
-              set location(val) {
-                const href = typeof val === 'string' ? val : val && val.href;
-                if (href && href !== 'about:blank' && href !== '') window.location.href = href;
-              },
-              focus: () => {}, close: () => {}, closed: false, opener: window,
-            };
-          };
-        });
-        logTS(`TVE: window.open redirect injected for ${siteConfig.id}`);
-      } catch (_) {}
-    }
-
     // Remove the one-shot localStorage clear script so subsequent navigations
     // (e.g. checkUrl) don't re-clear the auth token AccessEnabler just wrote.
     if (localStorageClearScriptId) {
@@ -2127,10 +2099,9 @@ async function loginTve(page, siteConfig, tveProviderName, tveProviderUsername, 
 
     // ── 'login' handling ─────────────────────────────────────────────────────────
     // Runs for the original outcome=login AND when the 'back' branch detected a login page.
-    // loginPopupPage set → login form is in a separate popup/tab (sites without interceptWindowOpen)
+    // loginPopupPage set → login form is in a separate popup/tab
     // loginFrame set     → login form is in a child iframe on the service page
     // neither set        → main tab navigated directly to the provider login page
-    //                      (includes interceptWindowOpen sites where window.open was redirected)
     if (outcome === 'login') {
       // For popup case: use the popup page and its keyboard.
       // For iframe/main-tab cases: use our page with the appropriate frame.
@@ -2661,4 +2632,4 @@ async function loginEncoders({
   statusCallback({ type: 'complete', success: successCount, failed: failCount });
 }
 
-module.exports = { LOGIN_SITES, loginEncoders, loginSling, loginDirectv, bezierMouseMove };
+module.exports = { LOGIN_SITES, loginEncoders, loginSling, loginDirectv, bezierMouseMove, dismissWBDTermsBanner };
