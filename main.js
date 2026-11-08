@@ -3119,6 +3119,46 @@ async function closeBrowser(encoderUrl) {
 }
 
 // Attempts to close browser in a safe fashion
+// Same lookup as the Login Manager: site-specific first, then shared TVE provider creds
+function getAutoLoginCredentials(siteId) {
+  const siteConfig = LOGIN_SITES.find(s => s.id === siteId);
+  return credentialsStore.getCredentials(siteId)
+    || (siteConfig?.type === 'tve' ? credentialsStore.getCredentials('_tve_provider') : null);
+}
+
+// Restore the encoder's browser window from minimized/normal to its streaming state
+async function setStreamWindowState(page, encoderConfig, targetUrl) {
+  try {
+    const session = await page.createCDPSession();
+    const {windowId} = await session.send('Browser.getWindowForTarget');
+
+    // First restore to normal state (from minimized), preserving the correct monitor position
+    await session.send('Browser.setWindowBounds', {
+      windowId,
+      bounds: {
+        windowState: 'normal',
+        left: encoderConfig.width,
+        top: encoderConfig.height,
+        width: 1280,
+        height: 720
+      }
+    });
+    await delay(100); // Brief delay to let window restore
+
+    // Peacock works better with a maximized (not OS-fullscreen) browser window;
+    // its player will handle fullscreen internally via the 'f' key.
+    // All other sites use OS-level fullscreen.
+    // Peacock, Disney+, and Max use maximized so the player handles fullscreen internally
+    // Amazon uses OS-level fullscreen — the player's 'f' key fills the already-fullscreen browser
+    const windowState = (targetUrl.includes('peacocktv.com') || targetUrl.includes('disneyplus.com') || targetUrl.includes('hbomax.com') || targetUrl.includes('max.com')) ? 'maximized' : 'fullscreen';
+    await session.send('Browser.setWindowBounds', {windowId, bounds: {windowState}});
+    await session.detach();
+    logTS(`[${encoderConfig.url}] Browser window restored and set to ${windowState} via CDP`);
+  } catch (cdpError) {
+    logTS(`CDP fullscreen error (non-fatal): ${cdpError.message}`);
+  }
+}
+
 const createCleanupManager = () => {
   let closingStates = new Map(); // Track closing state per encoder
   let activeBrowsers = new Map(); // Track active browser instances by encoder URL
@@ -3161,9 +3201,7 @@ const createCleanupManager = () => {
     if (pendingLogin.has(encoderUrl)) {
       const siteId = pendingLogin.get(encoderUrl);
       pendingLogin.delete(encoderUrl);
-      const siteConfig = LOGIN_SITES.find(s => s.id === siteId);
-      const credKey = siteConfig?.type === 'tve' ? '_tve_provider' : siteId;
-      const creds = credentialsStore.getCredentials(credKey);
+      const creds = getAutoLoginCredentials(siteId);
       if (!creds) {
         logTS(`${siteId} auto-login skipped for ${encoderUrl} — no credentials saved in ${Constants.DATA_DIR} (use Login Manager to save them)`);
       } else if (!browsers.has(encoderUrl)) {
@@ -3963,27 +4001,39 @@ async function setupBrowserAudio(page, encoderConfig, targetUrl = null) {
     };
   });
  
-  // Detect logged-out state early for any site with an immediate loggedOutIndicator,
-  // so we can auto-login after this stream attempt fails.
-  // Sites with checkLoginWaitMs need SPA hydration time and are skipped here (Phase 2).
+  // Detect logged-out state for any site with an immediate loggedOutIndicator. When found,
+  // the video wait ends right away with an isLoggedOut error so the stream handler can log
+  // in while the stream stays open. Sites with checkLoginWaitMs need SPA hydration time and
+  // are skipped here (Phase 2). The generic video wait below keeps polling for the indicator.
+  let loggedOutSite = null;
   if (targetUrl && encoderConfig?.url) {
     try {
       const targetHost = new URL(targetUrl).hostname.replace(/^www\./, '');
-      const siteConfig = LOGIN_SITES.find(s => {
+      loggedOutSite = LOGIN_SITES.find(s => {
         if (!s.loggedOutIndicator || s.checkLoginWaitMs) return false;
         try {
           const siteHost = new URL(s.checkUrl).hostname.replace(/^www\./, '');
           return targetHost === siteHost || targetHost.endsWith('.' + siteHost);
         } catch (_) { return false; }
-      });
-      if (siteConfig) {
-        const loggedOutEl = await page.$(siteConfig.loggedOutIndicator).catch(() => null);
-        if (loggedOutEl) {
-          logTS(`${siteConfig.name} logged out on ${encoderConfig.url} — scheduling auto-login after cleanup`);
-          if (global.cleanupManager) global.cleanupManager.markLogoutDetected(encoderConfig.url, siteConfig.id);
-        }
-      }
+      }) || null;
     } catch (_) {}
+  }
+  const failLoggedOut = () => {
+    logTS(`${loggedOutSite.name} logged out on ${encoderConfig.url}`);
+    const err = new Error(`${loggedOutSite.name} is logged out`);
+    err.isLoggedOut = true;
+    err.siteId = loggedOutSite.id;
+    return err;
+  };
+  if (loggedOutSite) {
+    let loggedOutEl = null;
+    try {
+      loggedOutEl = await page.$(loggedOutSite.loggedOutIndicator);
+      logTS(`${loggedOutSite.name} logout check on ${encoderConfig.url}: indicator ${loggedOutEl ? 'FOUND' : 'not found'} (url: ${page.url()})`);
+    } catch (e) {
+      logTS(`${loggedOutSite.name} logout check on ${encoderConfig.url} failed: ${e.message}`);
+    }
+    if (loggedOutEl) throw failLoggedOut();
   }
 
   // Fox Sports: click the JWPlayer overlay play button before starting the video wait.
@@ -4432,10 +4482,14 @@ async function setupBrowserAudio(page, encoderConfig, targetUrl = null) {
     }, 10000); // Update every 10 seconds during video wait
 
     try {
-      await page.waitForFunction(() => {
+      // Also watch for the site's logged-out indicator so a logout screen that renders
+      // after the initial check ends the wait immediately instead of timing out.
+      const result = await page.waitForFunction((loggedOutSelector) => {
+        if (loggedOutSelector && document.querySelector(loggedOutSelector)) return 'logged-out';
         const videos = window.checkForVideos();
-        return videos.length > 0 && videos.some(v => v.readyState >= 2);
-      }, { timeout: 60000 });
+        return videos.length > 0 && videos.some(v => v.readyState >= 2) ? 'video' : false;
+      }, { timeout: 60000, polling: 1000 }, loggedOutSite?.loggedOutIndicator || null);
+      if (await result.jsonValue() === 'logged-out') throw failLoggedOut();
     } finally {
       clearInterval(activityUpdateInterval);
     }
@@ -5970,6 +6024,42 @@ async function fullScreenVideoESPN(page, encoderConfig = null, closedCaptions = 
 
   // Wait for fullscreen transition to complete, then click play to resume
   await delay(1000);
+
+  // A synthetic .click() only enters fullscreen if the page still holds user activation
+  // from an earlier trusted input. After a relaunch/auto-login that can be missing and the
+  // request is silently rejected — verify, and fall back to a trusted mouse click.
+  if (fullscreenResult === 'clicked') {
+    const isFullscreen = () => page.evaluate(() => !!document.fullscreenElement).catch(() => false);
+    if (!(await isFullscreen())) {
+      const fsRect = await page.evaluate(() => {
+        function querySelectorDeep(selector, root = document) {
+          const element = root.querySelector(selector);
+          if (element) return element;
+          for (const el of root.querySelectorAll('*')) {
+            if (el.shadowRoot) {
+              const found = querySelectorDeep(selector, el.shadowRoot);
+              if (found) return found;
+            }
+          }
+          return null;
+        }
+        const btn = querySelectorDeep('button.fullscreen-icon');
+        if (!btn) return null;
+        const r = btn.getBoundingClientRect();
+        return { x: r.x + r.width / 2, y: r.y + r.height / 2, w: r.width };
+      }).catch(() => null);
+      if (fsRect && fsRect.w > 0) {
+        await page.bringToFront().catch(() => {});
+        await page.mouse.move(fsRect.x, fsRect.y);
+        await delay(300);
+        await page.mouse.click(fsRect.x, fsRect.y);
+        await delay(1000);
+        logTS(`ESPN fullscreen retry (trusted click): ${(await isFullscreen()) ? 'fullscreen' : 'still not fullscreen'}`);
+      } else {
+        logTS(`ESPN fullscreen not active and button not visible for retry`);
+      }
+    }
+  }
 
   const playResult = await page.evaluate(() => {
     // Helper to search in shadow DOM
@@ -9499,38 +9589,8 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
           throw new Error('Failed to get browser page');
         }
 
-        // Set browser window state with error handling
-        // First restore from minimized, then set to fullscreen or maximized
-        // Peacock works better with maximized browser (video will go fullscreen via player controls)
-        try {
-          const session = await page.createCDPSession();
-          const {windowId} = await session.send('Browser.getWindowForTarget');
-
-          // First restore to normal state (from minimized), preserving the correct monitor position
-          await session.send('Browser.setWindowBounds', {
-            windowId,
-            bounds: {
-              windowState: 'normal',
-              left: availableEncoder.width,
-              top: availableEncoder.height,
-              width: 1280,
-              height: 720
-            }
-          });
-          await delay(100); // Brief delay to let window restore
-
-          // Peacock works better with a maximized (not OS-fullscreen) browser window;
-          // its player will handle fullscreen internally via the 'f' key.
-          // All other sites use OS-level fullscreen.
-          // Peacock, Disney+, and Max use maximized so the player handles fullscreen internally
-          // Amazon uses OS-level fullscreen — the player's 'f' key fills the already-fullscreen browser
-          const windowState = (targetUrl.includes('peacocktv.com') || targetUrl.includes('disneyplus.com') || targetUrl.includes('hbomax.com') || targetUrl.includes('max.com')) ? 'maximized' : 'fullscreen';
-          await session.send('Browser.setWindowBounds', {windowId, bounds: {windowState}});
-          await session.detach();
-          logTS(`[${availableEncoder.url}] Browser window restored and set to ${windowState} via CDP`);
-        } catch (cdpError) {
-          logTS(`CDP fullscreen error (non-fatal): ${cdpError.message}`);
-        }
+        // Set browser window state: restore from minimized, then fullscreen or maximized
+        await setStreamWindowState(page, availableEncoder, targetUrl);
 
         // Navigate with timeout and retry logic
         const navigationTimeout = 30000;
@@ -9681,7 +9741,57 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
 
           // Setup audio and fullscreen AFTER starting encoder stream
           if (!targetUrl.includes("photos.app.goo.gl")) {
-            await setupBrowserAudio(page, availableEncoder, targetUrl);
+            try {
+              await setupBrowserAudio(page, availableEncoder, targetUrl);
+            } catch (setupError) {
+              if (!setupError.isLoggedOut) throw setupError;
+
+              // Client already gone — let cleanup run the login in the background
+              if (requestStopped()) {
+                cleanupManager.markLogoutDetected(availableEncoder.url, setupError.siteId);
+                throw setupError;
+              }
+
+              const creds = getAutoLoginCredentials(setupError.siteId);
+              if (!creds) {
+                logTS(`${setupError.siteId} login skipped for ${availableEncoder.url} — no credentials saved in ${Constants.DATA_DIR} (use Login Manager to save them)`);
+                throw setupError;
+              }
+
+              // Log in on this browser while the encoder stream stays open, so the client
+              // keeps recording (the login screens) and picks up the video once it starts
+              logTS(`${setupError.siteId} logged out — logging in during stream for ${availableEncoder.url}`);
+              let loginOutcome = 'error';
+              let loginMessage = '';
+              await loginEncoders({
+                siteId: setupError.siteId,
+                ...creds,
+                encoders: Constants.ENCODERS,
+                browsers: new Map([[availableEncoder.url, browsers.get(availableEncoder.url)]]),
+                activeStreams: null,
+                statusCallback: (s) => {
+                  if (['success', 'already_logged_in', 'error'].includes(s.type)) {
+                    loginOutcome = s.type;
+                    loginMessage = s.message || '';
+                  }
+                }
+              });
+              if (loginOutcome === 'error') {
+                logTS(`${setupError.siteId} login during stream failed for ${availableEncoder.url}${loginMessage ? `: ${loginMessage}` : ''}`);
+                throw setupError;
+              }
+              logTS(`${setupError.siteId} login during stream ${loginOutcome === 'success' ? 'succeeded' : 'found already logged in'} for ${availableEncoder.url} — resuming stream`);
+
+              if (requestStopped()) return;
+
+              // Login re-minimizes the window and may leave the tab elsewhere — restore and retune
+              await page.bringToFront().catch(() => {});
+              await setStreamWindowState(page, availableEncoder, targetUrl);
+              await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: navigationTimeout });
+              if (requestStopped()) return;
+              // A second logout here throws isLoggedOut, which ends the stream without retrying
+              await setupBrowserAudio(page, availableEncoder, targetUrl);
+            }
           }
 
           // Handle site-specific fullscreen (pass encoder config for audio re-application)

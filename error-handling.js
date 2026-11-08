@@ -1191,6 +1191,11 @@ async function safeStreamOperation(operation, encoderUrl, fallbackAction, should
       lastError = error;
       logTS(`Stream operation failed for ${encoderUrl} (attempt ${attempt}/${maxRetries}): ${error.message}`);
 
+      // Site is logged out — retrying can't help and the browser is fine; let cleanup run the auto-login
+      if (error.isLoggedOut) {
+        throw error;
+      }
+
       // Checked before the error handling below, which can run recovery on this encoder
       if (shouldAbort()) {
         logTS(`Stream stopped, not retrying stream operation for ${encoderUrl}`);
