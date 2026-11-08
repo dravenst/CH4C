@@ -3969,7 +3969,7 @@ async function navigateSlingLikeHuman(page, channelWatchUrl, encoderUrl = 'unkno
   }
 }
 
-async function setupBrowserAudio(page, encoderConfig, targetUrl = null) {
+async function setupBrowserAudio(page, encoderConfig, targetUrl = null, skipLogoutCheck = false) {
   // For Sling, just navigate to channel if not already there
   if (page.url().includes("watch.sling.com") && targetUrl) {
     // If not on the channel page, navigate there
@@ -4013,7 +4013,7 @@ async function setupBrowserAudio(page, encoderConfig, targetUrl = null) {
   // in while the stream stays open. Sites with checkLoginWaitMs need SPA hydration time and
   // are skipped here (Phase 2). The generic video wait below keeps polling for the indicator.
   let loggedOutSite = null;
-  if (targetUrl && encoderConfig?.url) {
+  if (targetUrl && encoderConfig?.url && !skipLogoutCheck) {
     try {
       const targetHost = new URL(targetUrl).hostname.replace(/^www\./, '');
       loggedOutSite = LOGIN_SITES.find(s => {
@@ -9808,6 +9808,12 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
                 throw setupError;
               }
               logTS(`${setupError.siteId} login during stream ${loginOutcome === 'success' ? 'succeeded' : 'found already logged in'} for ${availableEncoder.url} — resuming stream`);
+              // Already logged in means the logged-out indicator matched a logged-in channel page —
+              // don't trust it on the retry, or the stream would end on the same false match
+              const alreadyLoggedIn = loginOutcome === 'already_logged_in';
+              if (alreadyLoggedIn) {
+                logTS(`WARNING: ${setupError.siteId} logged-out indicator matched but site reports logged in — selector may need updating (skipping logout check for this stream)`);
+              }
 
               if (requestStopped()) return;
 
@@ -9817,7 +9823,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
               await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: navigationTimeout });
               if (requestStopped()) return;
               // A second logout here throws isLoggedOut, which ends the stream without retrying
-              await setupBrowserAudio(page, availableEncoder, targetUrl);
+              await setupBrowserAudio(page, availableEncoder, targetUrl, alreadyLoggedIn);
             }
           }
 
