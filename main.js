@@ -7920,49 +7920,103 @@ async function selectDisneyPlusClosedCaptions(page, ccOption) {
     await page.mouse.move(cx, cy);
     await delay(500);
 
-    // Click the Audio and subtitles settings button
-    const settingsBtn = await page.waitForSelector('button[aria-label="Audio and subtitles menu"]', { timeout: 5000 }).catch(() => null);
-    if (!settingsBtn) {
+    // Disney+ renders its player controls as Lit components, so everything below searches
+    // inside shadow roots. There's one settings-modal-control per viewport width; only the
+    // visible one can be clicked.
+    const settingsRect = await page.evaluate(() => {
+      const deepAll = (sel, root = document, out = []) => {
+        out.push(...root.querySelectorAll(sel));
+        for (const el of root.querySelectorAll('*')) if (el.shadowRoot) deepAll(sel, el.shadowRoot, out);
+        return out;
+      };
+      const visible = el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+      const host = deepAll('settings-modal-control').find(visible);
+      const btn = (host ? deepAll('button', host.shadowRoot || host).find(visible) : null)
+        || deepAll('button[aria-label="Audio and subtitles menu"]').find(visible);
+      if (!btn) return null;
+      const r = btn.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    });
+    if (!settingsRect) {
       logTS('Disney+ CC: Settings button not found, skipping');
       return false;
     }
-    await settingsBtn.click();
-    await delay(300);
+    await page.mouse.click(settingsRect.x, settingsRect.y);
+    await delay(500);
 
-    // Match by label text — value is just a track index and varies by content
-    const clicked = await page.evaluate((ccOpt) => {
-      const inputs = document.querySelectorAll('input[name="subtitleTrackPicker"]');
-      for (const input of inputs) {
-        // Check aria-label on input, or text of associated <label>
-        const ariaLabel = input.getAttribute('aria-label') || '';
-        const labelEl = input.id ? document.querySelector(`label[for="${input.id}"]`) : null;
-        const labelText = labelEl ? labelEl.textContent : '';
-        const text = (ariaLabel + ' ' + labelText).toLowerCase();
+    // The settings menu has a "Subtitles, <current>" item that opens the track list.
+    // Its label already shows the current track, so there's nothing to do if it matches.
+    const result = await page.evaluate(async (ccOpt) => {
+      const deepAll = (sel, root = document, out = []) => {
+        out.push(...root.querySelectorAll(sel));
+        for (const el of root.querySelectorAll('*')) if (el.shadowRoot) deepAll(sel, el.shadowRoot, out);
+        return out;
+      };
+      const visible = el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+      const wanted = ccOpt.toLowerCase();
+      const matches = text => wanted === 'off'
+        ? (text === 'off' || text === 'none')
+        : text.includes(wanted);
 
-        if (ccOpt === 'Off' && (input.value === 'off' || text.includes('off') || text.includes('none'))) {
-          input.click();
-          return true;
-        }
-        if (ccOpt !== 'Off' && text.includes(ccOpt.toLowerCase())) {
-          input.click();
-          return true;
-        }
+      const navItem = deepAll('button[data-view="subtitlesSelection"]').find(visible);
+      if (!navItem) return { clicked: false, reason: 'Subtitles item not found in settings menu' };
+      const current = (navItem.getAttribute('aria-label') || '').replace(/^Subtitles,\s*/i, '').trim();
+      if (matches(current.toLowerCase())) return { clicked: true, alreadySet: current };
+
+      navItem.click();
+      await new Promise(r => setTimeout(r, 500));
+
+      // Tracks are role="radio" buttons in the subtitles-selection-list. Caption (SDH) tracks
+      // carry a "cc" badge, which is stripped from the label. "English" means the CC track when
+      // there is one, the same distinction Amazon and Netflix draw.
+      const tracks = deepAll('ul.subtitles-selection-list button[role="radio"]').filter(visible);
+      if (!tracks.length) return { clicked: false, reason: 'subtitle track list did not appear' };
+      const labelOf = el => {
+        const labelEl = el.querySelector('.subtitles-selection-list__label') || el;
+        const badge = labelEl.querySelector('.subtitles-selection-list__sdh-badge');
+        return labelEl.textContent.replace(badge ? badge.textContent : '', '').replace(/\s+/g, ' ').trim();
+      };
+      const isCc = el => !!el.querySelector('.subtitles-selection-list__sdh-badge') || /\[cc\]/i.test(labelOf(el));
+      let option;
+      if (wanted === 'off') {
+        option = tracks.find(el => (el.getAttribute('data-qa') || '').includes('offButton') || labelOf(el).toLowerCase() === 'off');
+      } else {
+        const named = tracks.filter(el => labelOf(el).toLowerCase().includes(wanted));
+        option = named.find(isCc) || named[0];
       }
-      return false;
+      if (!option) {
+        return { clicked: false, reason: `no track matched (tracks: ${tracks.map(labelOf).join(' | ')})` };
+      }
+      if (option.getAttribute('aria-checked') === 'true') return { clicked: true, alreadySet: labelOf(option) };
+      option.click();
+      return { clicked: true, selected: labelOf(option) };
     }, ccOption);
+    const clicked = result.clicked;
 
-    if (clicked) {
-      logTS(`Disney+ CC: Selected "${ccOption}"`);
+    if (result.alreadySet) {
+      logTS(`Disney+ CC: already set to "${result.alreadySet}"`);
+    } else if (clicked) {
+      logTS(`Disney+ CC: Selected "${result.selected}" for "${ccOption}"`);
     } else {
-      logTS(`Disney+ CC: Option "${ccOption}" not found in menu`);
+      logTS(`Disney+ CC: Option "${ccOption}" not selected — ${result.reason}`);
     }
 
-    // Close the drawer using its dedicated close button
-    const closeBtn = await page.$('button[aria-label="Press back on your remote to close the audio and subtitles menu."]');
-    if (closeBtn) {
-      await closeBtn.click();
+    // Close the menu: it toggles from the same settings button. Only click it if a settings
+    // menu is still showing, so a menu that closed on its own isn't reopened.
+    await delay(300);
+    const menuOpen = await page.evaluate(() => {
+      const deepAll = (sel, root = document, out = []) => {
+        out.push(...root.querySelectorAll(sel));
+        for (const el of root.querySelectorAll('*')) if (el.shadowRoot) deepAll(sel, el.shadowRoot, out);
+        return out;
+      };
+      // The track list is a radiogroup rather than a menu, so check for either
+      return deepAll('[role="menu"], ul.subtitles-selection-list[role="radiogroup"]').some(el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; });
+    });
+    if (menuOpen) {
+      await page.mouse.click(settingsRect.x, settingsRect.y);
+      await delay(300);
     }
-    await delay(200);
 
     // Move mouse to corner so player controls fade out
     await page.mouse.move(0, 0);
@@ -7994,7 +8048,73 @@ async function selectDisneyPlusClosedCaptionsWithRetry(page, ccOption) {
   logTS(`Disney+ CC: Could not select after ${maxAttempts} attempts`);
 }
 
-async function fullScreenVideoDisneyPlus(page, closedCaptions = '') {
+// An ad playing at startup can swallow the F key, leaving the player windowed. F toggles
+// fullscreen, so only press it again while the page is confirmed not to be fullscreen.
+async function retryDisneyPlusFullscreen(page) {
+  const retryUntil = Date.now() + 180000;
+  let attempts = 0;
+  while (Date.now() < retryUntil && !page.isClosed()) {
+    await delay(3000);
+    const isFullscreen = await page.evaluate(() => !!document.fullscreenElement).catch(() => null);
+    if (isFullscreen === null) continue;
+    if (isFullscreen) {
+      if (attempts > 0) logTS(`Disney+: fullscreen confirmed after ${attempts} retr${attempts === 1 ? 'y' : 'ies'}`);
+      return;
+    }
+    attempts++;
+    logTS(`Disney+: not fullscreen yet (an ad may be playing), pressing F again (retry ${attempts})`);
+    await page.keyboard.press('f');
+  }
+  if (!page.isClosed()) logTS('Disney+: could not confirm fullscreen after 3 minutes');
+}
+
+// Disney+ swaps in a new video element at ad breaks (its /play/ URL changes at the same
+// moment), and the new element plays to the default output. Re-apply the encoder's audio
+// device to every video on the page, from Node so it survives page reloads. Checks every
+// second for 10s after each URL change, since the new element can take a moment to appear,
+// and every 15s otherwise as a backup.
+async function monitorDisneyPlusAudioSink(page, audioDevice) {
+  let fastUntil = 0;
+  let wake = null;
+  const onNavigated = (frame) => {
+    if (frame !== page.mainFrame()) return;
+    fastUntil = Date.now() + 10000;
+    if (wake) wake();
+  };
+  page.on('framenavigated', onNavigated);
+  try {
+    while (!page.isClosed() && page.url().includes('disneyplus.com')) {
+      await new Promise(resolve => {
+        wake = resolve;
+        setTimeout(resolve, Date.now() < fastUntil ? 1000 : 15000);
+      });
+      wake = null;
+      if (page.isClosed()) break;
+      for (const frame of page.frames()) {
+        const fixed = await frame.evaluate(async (deviceName) => {
+          const videos = [...document.querySelectorAll('video')];
+          if (!videos.length || !navigator.mediaDevices) return 0;
+          const devices = await navigator.mediaDevices.enumerateDevices();
+          const target = devices.find(d => d.kind === 'audiooutput' && d.label.includes(deviceName));
+          if (!target) return 0;
+          let count = 0;
+          for (const v of videos) {
+            if (v.setSinkId && v.sinkId !== target.deviceId) {
+              await v.setSinkId(target.deviceId);
+              count++;
+            }
+          }
+          return count;
+        }, audioDevice).catch(() => 0);
+        if (fixed) logTS(`Disney+: re-applied audio device to ${fixed} video element(s) that had lost it`);
+      }
+    }
+  } finally {
+    page.off('framenavigated', onNavigated);
+  }
+}
+
+async function fullScreenVideoDisneyPlus(page, closedCaptions = '', encoderConfig = null) {
   logTS("URL contains disneyplus.com, setting up Disney+ video");
 
   let frameHandle, videoHandle;
@@ -8129,6 +8249,12 @@ async function fullScreenVideoDisneyPlus(page, closedCaptions = '') {
 
     logTS("Disney+: pressing F key for fullscreen");
     await page.keyboard.press('f');
+    retryDisneyPlusFullscreen(page)
+      .catch(err => logTS(`Disney+ fullscreen retry error: ${err.message}`));
+    if (encoderConfig && encoderConfig.audioDevice) {
+      monitorDisneyPlusAudioSink(page, encoderConfig.audioDevice)
+        .catch(err => logTS(`Disney+ audio monitor error: ${err.message}`));
+    }
 
     await setupPauseMonitor(frameHandle, videoHandle, page);
   } else {
@@ -11781,7 +11907,7 @@ async function handleSiteSpecificFullscreen(targetUrl, page, encoderConfig = nul
       await fullScreenVideoESPN(page, encoderConfig, closedCaptions);
     } else if (targetUrl.includes("disneyplus.com")) {
       logTS("Handling Disney+ video");
-      await fullScreenVideoDisneyPlus(page, closedCaptions);
+      await fullScreenVideoDisneyPlus(page, closedCaptions, encoderConfig);
     } else if (targetUrl.includes("tv.apple.com")) {
       logTS("Handling Apple TV+ video");
       await fullScreenVideoAppleTV(page, encoderConfig, closedCaptions);
