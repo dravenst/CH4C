@@ -378,6 +378,14 @@ Output is placed in the `dist/` folder:
 - `ch4c` — macOS Intel (also runs on Apple Silicon via Rosetta 2)
 - `ch4c-arm64` — macOS Apple Silicon (native)
 
+### Claude Code Skills
+
+The repo includes two [Claude Code](https://claude.com/claude-code) skills in `.claude/skills/` for working against your own CH4C machines from a development Mac:
+- **`/ch4c-deploy test|prod`**: builds the Windows exe, checks nothing is recording, copies it to the machine's share, swaps it in, restarts CH4C through its API and confirms the new build is running. It assumes CH4C runs as a Windows service (`ch4c service install`), whose launcher restarts CH4C after it exits.
+- **`/ch4c-logs test|prod [search term]`**: reads a machine's recent log (`/api/logs`) or the previous run's log.
+
+Both read the machine details (CH4C address, SMB share, mount point, exe folder) from a gitignored `CLAUDE.local.md` at the repo root. To set it up, copy [CLAUDE.local.example.md](./CLAUDE.local.example.md) to `CLAUDE.local.md` and fill in your machines.
+
 ---
 
 ## Performance Notes

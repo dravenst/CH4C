@@ -63,7 +63,7 @@ Chrome HDMI for Channels (CH4C) is a Node.js application that captures web strea
 - **Local install**: `npm install` to install dependencies
 - **Syntax check**: `node --check main.js`, and `node -e "require('./constants.js')"` for the admin page HTML
 - There's no automated test suite. Changes are verified by running them against the real site on a test machine and reading the logs, so have each automation step log what it found and did (`logTS`). One test run should show where a flow failed.
-- Deploying to the test/prod machines and reading their logs goes through the local `ch4c-deploy` and `ch4c-logs` skills in `.claude/skills/` (gitignored, so not in every checkout).
+- Deploying to the test/prod machines and reading their logs goes through the `ch4c-deploy` and `ch4c-logs` skills in `.claude/skills/`. They read machine details from a gitignored `CLAUDE.local.md`; its format is defined in `CLAUDE.local.example.md`.
 
 ## Key Architecture
 - **main.js**: Entry point, HTTP routes, per-site search (`search<Site>`) and playback setup (`fullScreenVideo<Site>`, dispatched from `handleSiteSpecificFullscreen`)
