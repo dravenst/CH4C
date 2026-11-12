@@ -57,7 +57,8 @@ The mount point name can change (macOS adds a `-1` suffix when names clash), so 
    This closes the browsers cleanly and exits, and the launcher starts the new `ch4c.exe` about 5 seconds later.
 
 7. **Confirm the new build is running.** Poll `<host>/health` every few seconds until it stops answering and then answers again, up to about 2 minutes. Then read the startup lines from `/api/logs` (see the `ch4c-logs` skill) and check:
-   - `Executable: <path> (<size> bytes)`: the size matches `dist/ch4c.exe`, and the path is the share folder's `ch4c.exe`.
+   - `Executable: <path> (<size> bytes)`: the size matches `dist/ch4c.exe`, and the path is the share folder's `ch4c.exe`. Builds of different code can occasionally come out the same size, so if the old exe (now `ch4c-old.exe`) has the same size as the new one, the size alone doesn't prove anything; say so.
+   - `CH4C version <x.y.z>`: matches `package.json`. After a version bump this is what tells the new build apart from the old one.
    - No errors before `CH4C HTTP server listening on port 2442`.
    - Builds from before this line was added won't log it. If it's missing, the old build is still running.
 
