@@ -7923,7 +7923,7 @@ async function selectDisneyPlusClosedCaptions(page, ccOption) {
     // Disney+ renders its player controls as Lit components, so everything below searches
     // inside shadow roots. There's one settings-modal-control per viewport width; only the
     // visible one can be clicked.
-    const settingsRect = await page.evaluate(() => {
+    const findSettingsButton = () => page.evaluate(() => {
       const deepAll = (sel, root = document, out = []) => {
         out.push(...root.querySelectorAll(sel));
         for (const el of root.querySelectorAll('*')) if (el.shadowRoot) deepAll(sel, el.shadowRoot, out);
@@ -7937,6 +7937,7 @@ async function selectDisneyPlusClosedCaptions(page, ccOption) {
       const r = btn.getBoundingClientRect();
       return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
     });
+    const settingsRect = await findSettingsButton();
     if (!settingsRect) {
       logTS('Disney+ CC: Settings button not found, skipping');
       return false;
@@ -8002,9 +8003,11 @@ async function selectDisneyPlusClosedCaptions(page, ccOption) {
     }
 
     // Close the menu: it toggles from the same settings button. Only click it if a settings
-    // menu is still showing, so a menu that closed on its own isn't reopened.
+    // menu is still showing, so a menu that closed on its own isn't reopened. Look the button
+    // up again — fullscreen can kick in meanwhile and move it, and clicking the old spot
+    // lands on another menu item (seen opening Subtitle Styling).
     await delay(300);
-    const menuOpen = await page.evaluate(() => {
+    const isMenuOpen = () => page.evaluate(() => {
       const deepAll = (sel, root = document, out = []) => {
         out.push(...root.querySelectorAll(sel));
         for (const el of root.querySelectorAll('*')) if (el.shadowRoot) deepAll(sel, el.shadowRoot, out);
@@ -8013,9 +8016,16 @@ async function selectDisneyPlusClosedCaptions(page, ccOption) {
       // The track list is a radiogroup rather than a menu, so check for either
       return deepAll('[role="menu"], ul.subtitles-selection-list[role="radiogroup"]').some(el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; });
     });
-    if (menuOpen) {
-      await page.mouse.click(settingsRect.x, settingsRect.y);
-      await delay(300);
+    if (await isMenuOpen()) {
+      // The controls may have faded by now, which hides the settings button — hover to show them
+      await page.mouse.move(cx, cy + 1);
+      await delay(500);
+      const closeRect = await findSettingsButton();
+      if (closeRect) {
+        await page.mouse.click(closeRect.x, closeRect.y);
+        await delay(300);
+      }
+      if (await isMenuOpen()) logTS('Disney+ CC: settings menu still open after trying to close it');
     }
 
     // Move mouse to corner so player controls fade out
@@ -8048,8 +8058,9 @@ async function selectDisneyPlusClosedCaptionsWithRetry(page, ccOption) {
   logTS(`Disney+ CC: Could not select after ${maxAttempts} attempts`);
 }
 
-// An ad playing at startup can swallow the F key, leaving the player windowed. F toggles
-// fullscreen, so only press it again while the page is confirmed not to be fullscreen.
+// The first F press doesn't always take: a pre-roll ad can swallow it, and Chrome refuses
+// fullscreen ("not granted") when the tab isn't in the foreground, which happened on live
+// events. Retry while the page is confirmed not fullscreen (F and the button both toggle).
 async function retryDisneyPlusFullscreen(page) {
   const retryUntil = Date.now() + 180000;
   let attempts = 0;
@@ -8062,8 +8073,43 @@ async function retryDisneyPlusFullscreen(page) {
       return;
     }
     attempts++;
-    logTS(`Disney+: not fullscreen yet (an ad may be playing), pressing F again (retry ${attempts})`);
-    await page.keyboard.press('f');
+    // Bring the tab forward first. Windows blocks background processes from taking focus,
+    // so also use AppActivate, the same way the Peacock path does.
+    await page.bringToFront().catch(() => {});
+    if (process.platform === 'win32') {
+      try {
+        const chromePid = page.browser().process()?.pid;
+        if (chromePid) {
+          execSync(`powershell -NoProfile -Command "(New-Object -ComObject WScript.Shell).AppActivate(${chromePid})"`, { stdio: 'pipe', timeout: 5000 });
+        }
+      } catch (focusErr) {
+        logTS(`Disney+: could not force browser window to foreground: ${focusErr.message}`);
+      }
+    }
+    // Click the player's own fullscreen button. It's inside Lit shadow roots and only renders
+    // while the controls are showing, so hover first. Fall back to F if it isn't found.
+    const viewport = page.viewport();
+    await page.mouse.move(Math.floor((viewport ? viewport.width : 1280) / 2), Math.floor((viewport ? viewport.height : 720) / 2) + (attempts % 2));
+    await delay(500);
+    const clicked = await page.evaluate(() => {
+      const deepAll = (sel, root = document, out = []) => {
+        out.push(...root.querySelectorAll(sel));
+        for (const el of root.querySelectorAll('*')) if (el.shadowRoot) deepAll(sel, el.shadowRoot, out);
+        return out;
+      };
+      const btn = deepAll('button[data-qa="toggle-fullscreen.fullscreenButton"]')
+        .find(el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; });
+      if (btn) btn.click();
+      return !!btn;
+    }).catch(() => false);
+    if (clicked) {
+      logTS(`Disney+: not fullscreen yet, clicked player fullscreen button (retry ${attempts})`);
+    } else {
+      logTS(`Disney+: not fullscreen yet (an ad may be playing), pressing F again (retry ${attempts})`);
+      await page.keyboard.press('f');
+    }
+    // Move off the controls so they fade out
+    await page.mouse.move(0, 0);
   }
   if (!page.isClosed()) logTS('Disney+: could not confirm fullscreen after 3 minutes');
 }
@@ -8114,7 +8160,7 @@ async function monitorDisneyPlusAudioSink(page, audioDevice) {
   }
 }
 
-async function fullScreenVideoDisneyPlus(page, closedCaptions = '', encoderConfig = null) {
+async function fullScreenVideoDisneyPlus(page, closedCaptions = '', encoderConfig = null, fromBeginning = null) {
   logTS("URL contains disneyplus.com, setting up Disney+ video");
 
   let frameHandle, videoHandle;
@@ -8181,8 +8227,12 @@ async function fullScreenVideoDisneyPlus(page, closedCaptions = '', encoderConfi
     // ran during a previous over-running recording). Reset via a real click on the
     // player's own timeline track — setting video.currentTime directly breaks the
     // DRM session, and the slider's Home key isn't wired to an actual seek.
+    // Skipped when From Start is unchecked, so it stays at the saved position. Disney+ live
+    // streams can't be rewound, so From Start has nothing to do for them.
     const resumeTime = await GetProperty(videoHandle, 'currentTime');
-    if (resumeTime > 5) {
+    if (fromBeginning === false) {
+      logTS(`Disney+: From Start unchecked, staying at current position (${resumeTime.toFixed(1)}s)`);
+    } else if (resumeTime > 5) {
       logTS(`Disney+ video resumed at ${resumeTime.toFixed(1)}s, seeking back to 0 via timeline`);
       // The timeline slider only renders once the controls UI has mounted, which can
       // lag behind the video itself reporting ready — retry the hover a few times.
@@ -11907,7 +11957,7 @@ async function handleSiteSpecificFullscreen(targetUrl, page, encoderConfig = nul
       await fullScreenVideoESPN(page, encoderConfig, closedCaptions);
     } else if (targetUrl.includes("disneyplus.com")) {
       logTS("Handling Disney+ video");
-      await fullScreenVideoDisneyPlus(page, closedCaptions, encoderConfig);
+      await fullScreenVideoDisneyPlus(page, closedCaptions, encoderConfig, fromBeginning);
     } else if (targetUrl.includes("tv.apple.com")) {
       logTS("Handling Apple TV+ video");
       await fullScreenVideoAppleTV(page, encoderConfig, closedCaptions);
