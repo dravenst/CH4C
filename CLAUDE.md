@@ -58,22 +58,45 @@ Chrome HDMI for Channels (CH4C) is a Node.js application that captures web strea
 - Focus on the Windows and Mac platforms, but may want to add Linux compatibility in the future.
 - Web Admin UI needs to support phone, tablet, desktop
 
-## Build & Test Commands
-- **Build**: `npm run build` (creates Windows executable using pkg)
+## Build & Verify
+- **Build**: `npm run build` (Windows x64, macOS x64 and macOS arm64 executables in `dist/`, via `@yao-pkg/pkg`); `npm run build:win` for Windows only
 - **Local install**: `npm install` to install dependencies
+- **Syntax check**: `node --check main.js`, and `node -e "require('./constants.js')"` for the admin page HTML
+- There's no automated test suite. Changes are verified by running them against the real site on a test machine and reading the logs, so have each automation step log what it found and did (`logTS`). One test run should show where a flow failed.
+- Deploying to the test/prod machines and reading their logs goes through the local `ch4c-deploy` and `ch4c-logs` skills in `.claude/skills/` (gitignored, so not in every checkout).
 
 ## Key Architecture
-- **main.js**: Primary application entry point
-- **error-handling.js**: Comprehensive error handling and recovery systems
+- **main.js**: Entry point, HTTP routes, per-site search (`search<Site>`) and playback setup (`fullScreenVideo<Site>`, dispatched from `handleSiteSpecificFullscreen`)
+- **constants.js**: Configuration constants, plus the admin pages' HTML/JS as template strings (`INSTANT_PAGE_HTML`, `SETTINGS_PAGE_HTML`, `LOGS_PAGE_HTML`, ...)
+- **error-handling.js**: Error handling, retries and browser recovery
 - **audio-device-manager.js**: Cross-platform audio device management
-- **constants.js**: Configuration constants and site-specific settings
+- **login-manager.js**: Per-site login automation
+- **service-manager.js** / **ch4c-launcher.cs**: Windows service (and macOS launchd) install. On Windows the service runs the launcher, which starts CH4C in the user's session and starts it again 5 seconds after it exits.
+- **services/**: M3U channel sources (Sling, DirecTV, custom)
+- **logger.js**: `logTS`; the last 500 lines are served at `/api/logs`
 
 ## Project-Specific Context
 - Uses `puppeteer-core` and `rebrowser-puppeteer-core` for bot detection avoidance
 - Supports multiple external HDMI encoders
 - Browser instances are pooled per encoder for performance
 - Audio routing requires platform-specific device name matching
-- Supports major streaming platforms: NBC, NFL Network, Disney, Sling TV, Peacock, Spectrum
+- Supported sites: `handleSiteSpecificFullscreen` in main.js is the source of truth (Amazon, Apple TV+, Disney+, ESPN, Max, Netflix, Peacock, Sling, YouTube, DirecTV, TBS/TNT and others)
+
+## From Start (record from beginning vs. live)
+- The instant page always sends `from_beginning=1` or `0`, passed to `/stream` as `fromstart=1|0`. Requests without it (M3U, Channels DVR, API) arrive as `null`.
+- Handlers use three states: `false` → stay at the current/saved position; `null` on a live stream → stay live; on-demand (`null` or `true`) → seek to 0 if resumed past 5s; `true` on a live stream → seek to the start of the event, if the site allows rewinding.
+- Implemented for Amazon and Peacock (on-demand and live) and Disney+ (on-demand only; its live streams can't be rewound). When adding a service, update the checkbox's hover text in `INSTANT_PAGE_HTML`, which lists them.
+
+## Site Automation Patterns
+- Drive the player's own controls with real mouse clicks rather than setting `video.currentTime` (breaks DRM sessions on some sites). Seek by clicking near the left end of the player's scrubber.
+- Controls usually only render while the mouse hovers over the video, so hover first and retry the lookup.
+- Some players put their controls in shadow DOM (Disney+ uses Lit components); use `pierce/` selectors or walk `shadowRoot`s.
+- The F key and fullscreen buttons toggle. Confirm `document.fullscreenElement` before pressing again. Chrome refuses fullscreen ("not granted") when the tab isn't in the foreground; bring it forward first (`bringToFront`, plus `AppActivate` on Windows).
+- Look an element up again right before clicking it: going fullscreen moves the layout, so a saved position can land on a different control.
+- Ads interfere: a pre-roll can swallow key presses and seeks, and players can swap in a new `<video>` element at ad breaks, which loses its audio output device (`setSinkId`) and mute state.
+
+## Editing main.js
+- main.js is ~12,000 lines and each site's handler repeats near-identical blocks (seek-to-start, CC, unmute). Anchor every edit on text unique to that site's function, and check `git diff --stat` afterwards for unexpectedly large changes.
 
 ## Critical Requirements
 - Handle browser crashes gracefully with recovery mechanisms  
