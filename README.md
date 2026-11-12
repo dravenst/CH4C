@@ -263,6 +263,8 @@ For services not listed, use [Remote Access](#remote-access) to log in manually 
 
 **Automatic Login Check**: opt individual services in via their **Include in Automatic Login Check** checkbox to have CH4C periodically re-verify they're still logged in on each running encoder — and log back in immediately if a session has expired — without waiting for a failed stream to notice. Checks run during low-usage hours (1-3 AM local time) on a configurable weekly interval; encoders that are actively streaming are skipped, and the last run's result is shown on the Login Manager.
 
+**Login during a stream**: if a stream finds a service logged out (for example, the "Sign in for full access" prompt on a TBS/TNT free preview), CH4C logs in on that encoder's browser using the saved credentials, preferring the service's own over the shared TV provider credentials. It then restores fullscreen and carries on with the stream, which stays open throughout.
+
 ### Settings
 
 Navigate to `http://<CH4C_IP>:<CH4C_PORT>/settings` to configure:
@@ -309,6 +311,8 @@ http://<CH4C_IP>:2442/stream?url=https%3A%2F%2Fwatch.sling.com%2F1%2Fchannel%2F.
 http://<CH4C_IP>:2442/stream?url=https%3A%2F%2Fwww.espn.com%2Fwatch%2F...&cc=English
 ```
 
+**From Start in M3U URLs**: Streams started from Channels DVR or an M3U entry stay at the live point on live events, and seek back to the beginning when an on-demand show resumes partway. Append `&fromstart=1` to start a live event from the beginning, or `&fromstart=0` to keep an on-demand show's saved position. This works on Prime Video, Peacock, and Disney+ (Disney+ live events can't be rewound). See [From Start](#instant-recording) for details.
+
 **Create a new Custom Channel in Channels DVR using the playlist.m3u URL found in your M3U Manager main screen:**
 
 ![Custom Channel in Channels DVR](./assets/customchannelm3umgr.jpg)
@@ -322,6 +326,7 @@ Navigate to `http://<CH4C_IP>:<CH4C_PORT>/instant` to:
 - Add your own show metadata that will be visible in the Channels DVR Recordings
 - **Show Search**: automatically look up a specific episode or movie from a supported streaming service and pre-fill all recording metadata (title, episode, duration, artwork, and direct watch URL)
 - **Closed Captions**: select Default, English, or Off from the CC dropdown. Default leaves the service's caption state unchanged. English or Off will open the player's subtitle menu and apply the selection after playback starts. If the CC menu is unavailable at startup (e.g., during pre-roll ads), CH4C retries in the background for up to 3 minutes. Supported on Prime Video, Disney+, Peacock, Max (HBO Max), Sling TV, ESPN, Apple TV+, Netflix, and YouTube.
+- **From Start**: checked by default. A live event is rewound to its start, and an on-demand show that resumes partway (from an earlier viewing) is moved back to the beginning. Uncheck it to record from where playback starts instead: the live point for live events, or the saved position for on-demand shows. Supported on Prime Video, Peacock, and Disney+. Disney+ live events can't be rewound, so they always record from the live point. The duration is counted from when the recording starts, so when rewinding a live event that's already underway, enter the event's full length rather than the time remaining.
 
 Enter the show name and optionally an episode in the Show Search field, select a service, and click **Search**. The matching episode or movie details will be populated automatically — just select an encoder and start the recording.
 

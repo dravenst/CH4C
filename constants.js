@@ -2281,6 +2281,16 @@ const INSTANT_PAGE_HTML = `
                 margin-bottom: 24px;
             }
 
+            /* Keep Duration, CC and From Start on one line; Encoder wraps below at full width */
+            .form-row.options-row {
+                flex-direction: row;
+                flex-wrap: wrap;
+            }
+
+            .form-row.options-row .form-group.wide {
+                flex: 1 1 100%;
+            }
+
             .header h1 {
                 font-size: 24px;
             }
@@ -2340,8 +2350,8 @@ const INSTANT_PAGE_HTML = `
                 <div id="search_status" style="margin-top:6px;font-size:12px;color:#718096;display:none;"></div>
             </div>
 
-            <div class="form-row">
-                <div class="form-group narrow">
+            <div class="form-row options-row">
+                <div class="form-group narrow" style="flex:0.5;">
                     <label>
                         Duration
                     </label>
@@ -2350,12 +2360,14 @@ const INSTANT_PAGE_HTML = `
                         name="recording_duration"
                         id="recording_duration"
                         placeholder="mins"
+                        style="padding-left:10px;padding-right:10px;"
                         min="1"
                         step="1"
                     />
                 </div>
 
-                <div class="form-group narrow">
+                <!-- Wider than the other narrow fields so "Default" isn't cut off -->
+                <div class="form-group narrow" style="flex:0.75;">
                     <label>
                         CC
                     </label>
