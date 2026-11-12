@@ -380,11 +380,13 @@ Output is placed in the `dist/` folder:
 
 ### Claude Code Skills
 
-The repo includes two [Claude Code](https://claude.com/claude-code) skills in `.claude/skills/` for working against your own CH4C machines from a development Mac:
+The repo includes [Claude Code](https://claude.com/claude-code) skills in `.claude/skills/` for working against your own CH4C machines from a development Mac:
 - **`/ch4c-deploy test|prod`**: builds the Windows exe, checks nothing is recording, copies it to the machine's share, swaps it in, restarts CH4C through its API and confirms the new build is running. It assumes CH4C runs as a Windows service (`ch4c service install`), whose launcher restarts CH4C after it exits.
 - **`/ch4c-logs test|prod [search term]`**: reads a machine's recent log (`/api/logs`) or the previous run's log.
+- **`/ch4c-test-stream`**: tunes the test machine's encoder to a URL (no Channels DVR recording), with optional CC and From Start settings, waits for setup to finish, summarizes the log and stops the stream.
+- **`/ch4c-release`**: bumps the version, builds all platforms, drafts release notes from the commits since the last tag, and after you approve them, tags and publishes the GitHub release. It can then deploy the released exe with `ch4c-deploy`.
 
-Both read the machine details (CH4C address, SMB share, mount point, exe folder) from a gitignored `CLAUDE.local.md` at the repo root. To set it up, copy [CLAUDE.local.example.md](./CLAUDE.local.example.md) to `CLAUDE.local.md` and fill in your machines.
+The deploy, logs and test-stream skills read the machine details (CH4C address, SMB share, mount point, exe folder) from a gitignored `CLAUDE.local.md` at the repo root. To set it up, copy [CLAUDE.local.example.md](./CLAUDE.local.example.md) to `CLAUDE.local.md` and fill in your machines.
 
 ---
 
