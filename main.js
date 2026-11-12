@@ -9149,6 +9149,15 @@ async function main() {
 
   initLogger(Constants.DATA_DIR);
   logTS(`CH4C version ${Constants.APP_VERSION}`);
+  // Every build reports the same version, so log the exe's size too — lets a deploy confirm
+  // the restarted process is the build it just copied
+  if (process.pkg) {
+    try {
+      logTS(`Executable: ${process.execPath} (${fs.statSync(process.execPath).size} bytes)`);
+    } catch (e) {
+      logTS(`Executable: ${process.execPath}`);
+    }
+  }
   logTS(`Data directory: ${Constants.DATA_DIR}`);
 
   // After a Windows restart (power outage, updates), the OS cursor can be left wherever
