@@ -1,7 +1,9 @@
 # Node.js
 node_modules/
 dist/
-.claude/
+# Local Claude settings stay private; the project skills are shared
+.claude/*
+!.claude/skills/
 *.ps1
 *.bat
 package-lock.json
@@ -10,3 +12,4 @@ data*
 tmpclaude*
 Screenshot*
 **/.DS_Store
+CLAUDE.local.md
