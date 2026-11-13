@@ -7867,7 +7867,7 @@ async function selectMaxClosedCaptionsWithRetry(page, ccOption) {
   logTS(`Max CC: Could not select after ${maxAttempts} attempts`);
 }
 
-async function fullScreenVideoMax(page, closedCaptions = '') {
+async function fullScreenVideoMax(page, closedCaptions = '', fromBeginning = null) {
   logTS("URL contains hbomax.com/max.com, setting up Max video");
 
   let frameHandle, videoHandle;
@@ -7887,7 +7887,9 @@ async function fullScreenVideoMax(page, closedCaptions = '') {
       // native range scrubber, going through the player's own seek handling rather
       // than setting video.currentTime directly.
       const resumeTime = await GetProperty(videoHandle, 'currentTime');
-      if (resumeTime > 5) {
+      if (fromBeginning === false) {
+        logTS(`Max: From Start unchecked, staying at current position (${resumeTime.toFixed(1)}s)`);
+      } else if (resumeTime > 5) {
         logTS(`Max video resumed at ${resumeTime.toFixed(1)}s, seeking back to 0 via scrubber`);
         const maxVp = page.viewport();
         const hoverX = Math.floor((maxVp ? maxVp.width : 1280) / 2);
@@ -8439,7 +8441,7 @@ async function selectNetflixClosedCaptionsWithRetry(page, ccOption) {
   logTS(`Netflix CC: Could not select after ${maxAttempts} attempts`);
 }
 
-async function fullScreenVideoNetflix(page, closedCaptions = '') {
+async function fullScreenVideoNetflix(page, closedCaptions = '', fromBeginning = null) {
   logTS("URL contains netflix.com, setting up Netflix video");
 
   let frameHandle, videoHandle;
@@ -8507,7 +8509,9 @@ async function fullScreenVideoNetflix(page, closedCaptions = '') {
     // timeline track, going through the player's own seek handling rather than
     // setting video.currentTime directly.
     const resumeTime = await GetProperty(videoHandle, 'currentTime');
-    if (resumeTime > 5) {
+    if (fromBeginning === false) {
+      logTS(`Netflix: From Start unchecked, staying at current position (${resumeTime.toFixed(1)}s)`);
+    } else if (resumeTime > 5) {
       logTS(`Netflix video resumed at ${resumeTime.toFixed(1)}s, seeking back to 0 via timeline`);
       const netflixVp = page.viewport();
       const hoverX = Math.floor((netflixVp ? netflixVp.width : 1280) / 2);
@@ -12012,10 +12016,10 @@ async function handleSiteSpecificFullscreen(targetUrl, page, encoderConfig = nul
       await fullScreenVideoAppleTV(page, encoderConfig, closedCaptions, fromBeginning);
     } else if (targetUrl.includes("hbomax.com") || targetUrl.includes("max.com")) {
       logTS("Handling Max (HBO Max) video");
-      await fullScreenVideoMax(page, closedCaptions);
+      await fullScreenVideoMax(page, closedCaptions, fromBeginning);
     } else if (targetUrl.includes("netflix.com")) {
       logTS("Handling Netflix video");
-      await fullScreenVideoNetflix(page, closedCaptions);
+      await fullScreenVideoNetflix(page, closedCaptions, fromBeginning);
     } else if (targetUrl.includes("disneynow.com")) {
       logTS("Handling DisneyNow video");
       await fullScreenVideoDisneyNow(page);

@@ -12,8 +12,8 @@ General patterns that apply to every site are in CLAUDE.md under Site Automation
 | Peacock | `/watch/playback/` but not `/watch/playback/vod/` | Yes, live div slider | Yes (live + on-demand) | F key | No |
 | Disney+ | None reliable from the URL; live player shows a `live-button` | No | On-demand only | F, then retry with player button + foreground | Yes (Lit) |
 | Apple TV+ | Version picker dialog on live events | Picker offers "Watch from Start" | Yes (live via picker, on-demand via scrubber) | Player button (`amp-playback-controls-full-screen`), F fallback | Likely (amp-* components) |
-| Netflix | n/a (on-demand) | n/a | Not yet (always seeks back if resumed) | Player button | No |
-| Max | n/a | n/a | Not yet (always seeks back if resumed) | F key | No |
+| Netflix | n/a (on-demand) | n/a | On-demand only (unchecked keeps the saved position) | Player button | No |
+| Max | n/a | n/a | On-demand only (unchecked keeps the saved position; no live detection, so a live stream that reports a position past 5s would be rewound) | F key | No |
 
 Not listed: sites whose handler just finds the video, unmutes and goes fullscreen (YouTube, Sling, DirecTV, ESPN, TBS/TNT, Discovery, Fox Sports and others). Linear channels (Sling, DirecTV, most TV Everywhere sites) are always live and never rewound.
 
