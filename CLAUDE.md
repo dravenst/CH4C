@@ -85,7 +85,7 @@ Chrome HDMI for Channels (CH4C) is a Node.js application that captures web strea
 ## From Start (record from beginning vs. live)
 - The instant page always sends `from_beginning=1` or `0`, passed to `/stream` as `fromstart=1|0`. Requests without it (M3U, Channels DVR, API) arrive as `null`.
 - Handlers use three states: `false` → stay at the current/saved position; `null` on a live stream → stay live; on-demand (`null` or `true`) → seek to 0 if resumed past 5s; `true` on a live stream → seek to the start of the event, if the site allows rewinding.
-- Implemented for Amazon and Peacock (on-demand and live) and Disney+ (on-demand only; its live streams can't be rewound). When adding a service, update the checkbox's hover text in `INSTANT_PAGE_HTML`, which lists them.
+- Implemented for Amazon, Peacock and Apple TV+ (on-demand and live; Apple TV+ live picks "Watch from Start" or "Watch Live" in its version picker) and Disney+ (on-demand only; its live streams can't be rewound). When adding a service, update the checkbox's hover text in `INSTANT_PAGE_HTML`, which lists them.
 
 ## Site Automation Patterns
 - Before changing a site's handler, read that site's section in `SITE_NOTES.md` (live detection, rewinding, player quirks), and update it with anything new you learn.

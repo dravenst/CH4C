@@ -3969,7 +3969,7 @@ async function navigateSlingLikeHuman(page, channelWatchUrl, encoderUrl = 'unkno
   }
 }
 
-async function setupBrowserAudio(page, encoderConfig, targetUrl = null, skipLogoutCheck = false) {
+async function setupBrowserAudio(page, encoderConfig, targetUrl = null, skipLogoutCheck = false, fromBeginning = null) {
   // For Sling, just navigate to channel if not already there
   if (page.url().includes("watch.sling.com") && targetUrl) {
     // If not on the channel page, navigate there
@@ -4340,6 +4340,28 @@ async function setupBrowserAudio(page, encoderConfig, targetUrl = null, skipLogo
     //   - Live sporting events: version picker dialog with Watch Live / Catch Up / Watch from Start
     //   - VOD / series episodes: capsule play button (Svelte-mounted, needs handler settle time)
     logTS("Apple TV+ detected, waiting for page to fully load before clicking play");
+    page._ch4cAppleTVLive = false;
+
+    // Live events: pick "Watch from Start" when From Start is checked, otherwise "Watch Live".
+    // Match by label rather than button order, and log the labels so a mismatch shows up.
+    const clickAppleTVVersion = async () => {
+      page._ch4cAppleTVLive = true;
+      const want = fromBeginning === true ? 'watch from start' : 'watch live';
+      const result = await page.evaluate((want) => {
+        const btns = [...document.querySelectorAll('button[data-testid^="version-picker-cta"]')];
+        const labels = btns.map(b => b.textContent.trim());
+        const btn = btns.find(b => b.textContent.trim().toLowerCase().includes(want));
+        if (btn) btn.click();
+        return { labels, clicked: btn ? btn.textContent.trim() : null };
+      }, want);
+      logTS(`Apple TV+: version picker options: ${result.labels.join(' | ')}`);
+      if (result.clicked) {
+        logTS(`Apple TV+: clicked "${result.clicked}" (From Start ${fromBeginning === true ? 'checked' : fromBeginning === false ? 'unchecked' : 'not set'})`);
+      } else {
+        logTS(`Apple TV+: no "${want}" option, clicking the first option`);
+        await page.click('button[data-testid="version-picker-cta-en-0"]');
+      }
+    };
 
     const clickOutcome = await Promise.race([
       page.waitForSelector('[data-testid="version-picker-cta-en-0"]', { timeout: 15000 }).then(() => 'dialog'),
@@ -4347,42 +4369,55 @@ async function setupBrowserAudio(page, encoderConfig, targetUrl = null, skipLogo
     ]).catch(() => 'timeout');
 
     if (clickOutcome === 'dialog') {
-      logTS('Apple TV+: version picker dialog — clicking Watch Live');
-      await page.click('button[data-testid="version-picker-cta-en-0"]');
+      logTS('Apple TV+: version picker dialog');
+      await clickAppleTVVersion();
     } else if (clickOutcome === 'capsule') {
-      // Svelte attaches event handlers slightly after the button appears in DOM — wait 2s then click.
+      // The page can have several capsule buttons; the play one has a play glyph.
+      // Svelte attaches event handlers slightly after the button appears, so wait 2s,
+      // then click again (DOM click on retries) if no video starts.
+      const findPlayCapsule = () => page.evaluate(() => {
+        const btns = [...document.querySelectorAll('button[data-testid="capsule-button"]')];
+        const visible = btns.filter(b => { const r = b.getBoundingClientRect(); return r.width > 0 && r.height > 0; });
+        const btn = visible.find(b => b.querySelector('[class*="PlayGlyph"]')) || visible[0];
+        if (!btn) return null;
+        const r = btn.getBoundingClientRect();
+        return { x: r.left + r.width / 2, y: r.top + r.height / 2, count: btns.length,
+                 hasGlyph: !!btn.querySelector('[class*="PlayGlyph"]'), label: btn.textContent.trim().replace(/\s+/g, ' ') };
+      });
+      await delay(2000);
       let playClicked = false;
-      for (let i = 0; i < 20; i++) {
-        const btnFound = await page.evaluate(() => !!document.querySelector('button[data-testid="capsule-button"]'));
-        if (btnFound) {
-          logTS(`Apple TV+: capsule button found on attempt ${i + 1}, waiting 2s for Svelte to attach handlers`);
-          await delay(2000);
-          const rect = await page.evaluate(() => {
-            const btn = document.querySelector('button[data-testid="capsule-button"]');
-            if (!btn) return null;
-            const r = btn.getBoundingClientRect();
-            return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        const btn = await findPlayCapsule();
+        if (!btn) break;
+        if (attempt === 1) {
+          await page.mouse.click(btn.x, btn.y);
+        } else {
+          await page.evaluate(() => {
+            const btns = [...document.querySelectorAll('button[data-testid="capsule-button"]')]
+              .filter(b => { const r = b.getBoundingClientRect(); return r.width > 0 && r.height > 0; });
+            (btns.find(b => b.querySelector('[class*="PlayGlyph"]')) || btns[0])?.click();
           });
-          if (rect) {
-            await page.mouse.click(rect.x, rect.y);
-            logTS(`Apple TV+: mouse clicked capsule button at (${Math.round(rect.x)}, ${Math.round(rect.y)})`);
-            playClicked = true;
-            break;
-          }
         }
-        await delay(500);
+        playClicked = true;
+        logTS(`Apple TV+: ${attempt === 1 ? 'mouse' : 'DOM'} clicked capsule button "${btn.label}" at (${Math.round(btn.x)}, ${Math.round(btn.y)}) (play glyph: ${btn.hasGlyph}, ${btn.count} capsule buttons, attempt ${attempt})`);
+        const started = await page.waitForFunction(
+          () => [...document.querySelectorAll('video')].some(v => v.readyState >= 1) ||
+                !!document.querySelector('[data-testid="version-picker-cta-en-0"]'),
+          { timeout: 8000 }).then(() => true).catch(() => false);
+        if (started) break;
+        logTS('Apple TV+: no video 8s after clicking play, clicking again');
       }
       if (!playClicked) {
         logTS("Apple TV+: capsule play button not found, pressing Space as fallback");
         await page.keyboard.press('Space');
       }
       // Clicking the capsule on a live sporting event opens a version picker dialog.
-      // Check for it and click Watch Live if present.
+      // Check for it and pick the version if present.
       const dialogAfterCapsule = await page.waitForSelector('[data-testid="version-picker-cta-en-0"]', { timeout: 5000 })
         .catch(() => null);
       if (dialogAfterCapsule) {
-        logTS('Apple TV+: version picker appeared after capsule click — clicking Watch Live');
-        await page.click('button[data-testid="version-picker-cta-en-0"]');
+        logTS('Apple TV+: version picker appeared after capsule click');
+        await clickAppleTVVersion();
       }
     } else {
       logTS("Apple TV+: neither version picker nor capsule button appeared within 15s, pressing Space");
@@ -6391,7 +6426,7 @@ async function selectAppleTVClosedCaptions(page, ccOption) {
 }
 
 
-async function fullScreenVideoAppleTV(page, encoderConfig = null, closedCaptions = '') {
+async function fullScreenVideoAppleTV(page, encoderConfig = null, closedCaptions = '', fromBeginning = null) {
   logTS("URL contains tv.apple.com, setting up Apple TV+ video");
 
   const vp = page.viewport();
@@ -6418,8 +6453,13 @@ async function fullScreenVideoAppleTV(page, encoderConfig = null, closedCaptions
     // ran during a previous over-running recording). Reset via a real click on the
     // native range scrubber, going through the player's own seek handling rather
     // than setting video.currentTime directly.
+    // Live events already chose their start point in the version picker.
     const resumeTime = await GetProperty(videoHandle, 'currentTime');
-    if (resumeTime > 5) {
+    if (page._ch4cAppleTVLive) {
+      logTS(`Apple TV+: live event, start point set by the version picker (${resumeTime.toFixed(1)}s)`);
+    } else if (fromBeginning === false) {
+      logTS(`Apple TV+: From Start unchecked, staying at current position (${resumeTime.toFixed(1)}s)`);
+    } else if (resumeTime > 5) {
       logTS(`Apple TV+ video resumed at ${resumeTime.toFixed(1)}s, seeking back to 0 via scrubber`);
       let sliderHandle = null;
       for (let attempt = 0; attempt < 6 && !sliderHandle; attempt++) {
@@ -9954,7 +9994,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
           // Setup audio and fullscreen AFTER starting encoder stream
           if (!targetUrl.includes("photos.app.goo.gl")) {
             try {
-              await setupBrowserAudio(page, availableEncoder, targetUrl);
+              await setupBrowserAudio(page, availableEncoder, targetUrl, false, fromBeginning);
             } catch (setupError) {
               if (!setupError.isLoggedOut) throw setupError;
 
@@ -10008,7 +10048,7 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
               await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: navigationTimeout });
               if (requestStopped()) return;
               // A second logout here throws isLoggedOut, which ends the stream without retrying
-              await setupBrowserAudio(page, availableEncoder, targetUrl, alreadyLoggedIn);
+              await setupBrowserAudio(page, availableEncoder, targetUrl, alreadyLoggedIn, fromBeginning);
             }
           }
 
@@ -11969,7 +12009,7 @@ async function handleSiteSpecificFullscreen(targetUrl, page, encoderConfig = nul
       await fullScreenVideoDisneyPlus(page, closedCaptions, encoderConfig, fromBeginning);
     } else if (targetUrl.includes("tv.apple.com")) {
       logTS("Handling Apple TV+ video");
-      await fullScreenVideoAppleTV(page, encoderConfig, closedCaptions);
+      await fullScreenVideoAppleTV(page, encoderConfig, closedCaptions, fromBeginning);
     } else if (targetUrl.includes("hbomax.com") || targetUrl.includes("max.com")) {
       logTS("Handling Max (HBO Max) video");
       await fullScreenVideoMax(page, closedCaptions);

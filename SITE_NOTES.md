@@ -11,7 +11,7 @@ General patterns that apply to every site are in CLAUDE.md under Site Automation
 | Prime Video | URL has `type=live` (read before the player rewrites it) | Yes, scrubber | Yes (live + on-demand) | Player button, F fallback | No |
 | Peacock | `/watch/playback/` but not `/watch/playback/vod/` | Yes, live div slider | Yes (live + on-demand) | F key | No |
 | Disney+ | None reliable from the URL; live player shows a `live-button` | No | On-demand only | F, then retry with player button + foreground | Yes (Lit) |
-| Apple TV+ | Version picker dialog on live events | Picker offers "Watch from Start" | Not yet (always picks Watch Live) | Player button (`amp-playback-controls-full-screen`), F fallback | Likely (amp-* components) |
+| Apple TV+ | Version picker dialog on live events | Picker offers "Watch from Start" | Yes (live via picker, on-demand via scrubber) | Player button (`amp-playback-controls-full-screen`), F fallback | Likely (amp-* components) |
 | Netflix | n/a (on-demand) | n/a | Not yet (always seeks back if resumed) | Player button | No |
 | Max | n/a | n/a | Not yet (always seeks back if resumed) | F key | No |
 
@@ -40,8 +40,8 @@ Not listed: sites whose handler just finds the video, unmutes and goes fullscree
 - **Live URLs** look like on-demand ones. The `contextId` parameter can contain `from_live`, but it's tracking data about where you clicked from, and search-built URLs don't have it. Live events can't be rewound.
 
 ## Apple TV+ (`tv.apple.com`)
-- **Live events** open a version picker dialog (Watch Live / Catch Up / Watch from Start); CH4C clicks Watch Live. That's where From Start could hook in.
-- **On-demand** uses a capsule play button whose handlers attach about 2 seconds after it appears.
+- **Live events** open a version picker dialog (Watch Live / Catch Up / Watch from Start). CH4C picks Watch from Start when From Start is checked, otherwise Watch Live, matching the button label (`button[data-testid^="version-picker-cta"]`), and skips the scrubber seek.
+- **On-demand** uses a capsule play button (`button[data-testid="capsule-button"]` with a `ResourceImagePlayGlyph` span, a progress bar and the time left as its label). Its handlers attach about 2 seconds after it appears, and a click can do nothing with the URL unchanged, so the click is retried until a video appears.
 - Player controls are likely shadow-DOM components; the seek code pierces shadow roots.
 
 ## Netflix (`netflix.com`)

@@ -2390,7 +2390,7 @@ const INSTANT_PAGE_HTML = `
                             type="checkbox"
                             id="from_beginning"
                             checked
-                            title="Uncheck to start at the live or saved position instead (Prime Video, Peacock and Disney+ only)"
+                            title="Uncheck to start at the live or saved position instead (Prime Video, Peacock, Disney+ and Apple TV+ only)"
                             style="width:20px;height:20px;margin:0;accent-color:#667eea;cursor:pointer;"
                         />
                     </div>

@@ -311,7 +311,7 @@ http://<CH4C_IP>:2442/stream?url=https%3A%2F%2Fwatch.sling.com%2F1%2Fchannel%2F.
 http://<CH4C_IP>:2442/stream?url=https%3A%2F%2Fwww.espn.com%2Fwatch%2F...&cc=English
 ```
 
-**From Start in M3U URLs**: Streams started from Channels DVR or an M3U entry stay at the live point on live events, and seek back to the beginning when an on-demand show resumes partway. Append `&fromstart=1` to start a live event from the beginning, or `&fromstart=0` to keep an on-demand show's saved position. This works on Prime Video, Peacock, and Disney+ (Disney+ live events can't be rewound). See [From Start](#instant-recording) for details.
+**From Start in M3U URLs**: Streams started from Channels DVR or an M3U entry stay at the live point on live events, and seek back to the beginning when an on-demand show resumes partway. Append `&fromstart=1` to start a live event from the beginning, or `&fromstart=0` to keep an on-demand show's saved position. This works on Prime Video, Peacock, Apple TV+, and Disney+ (Disney+ live events can't be rewound). See [From Start](#instant-recording) for details.
 
 **Create a new Custom Channel in Channels DVR using the playlist.m3u URL found in your M3U Manager main screen:**
 
@@ -326,7 +326,7 @@ Navigate to `http://<CH4C_IP>:<CH4C_PORT>/instant` to:
 - Add your own show metadata that will be visible in the Channels DVR Recordings
 - **Show Search**: automatically look up a specific episode or movie from a supported streaming service and pre-fill all recording metadata (title, episode, duration, artwork, and direct watch URL)
 - **Closed Captions**: select Default, English, or Off from the CC dropdown. Default leaves the service's caption state unchanged. English or Off will open the player's subtitle menu and apply the selection after playback starts. If the CC menu is unavailable at startup (e.g., during pre-roll ads), CH4C retries in the background for up to 3 minutes. Supported on Prime Video, Disney+, Peacock, Max (HBO Max), Sling TV, ESPN, Apple TV+, Netflix, and YouTube.
-- **From Start**: checked by default. A live event is rewound to its start, and an on-demand show that resumes partway (from an earlier viewing) is moved back to the beginning. Uncheck it to record from where playback starts instead: the live point for live events, or the saved position for on-demand shows. Supported on Prime Video, Peacock, and Disney+. Disney+ live events can't be rewound, so they always record from the live point. The duration is counted from when the recording starts, so when rewinding a live event that's already underway, enter the event's full length rather than the time remaining.
+- **From Start**: checked by default. A live event is rewound to its start, and an on-demand show that resumes partway (from an earlier viewing) is moved back to the beginning. Uncheck it to record from where playback starts instead: the live point for live events, or the saved position for on-demand shows. Supported on Prime Video, Peacock, Apple TV+, and Disney+. Disney+ live events can't be rewound, so they always record from the live point. The duration is counted from when the recording starts, so when rewinding a live event that's already underway, enter the event's full length rather than the time remaining.
 
 Enter the show name and optionally an episode in the Show Search field, select a service, and click **Search**. The matching episode or movie details will be populated automatically — just select an encoder and start the recording.
 
