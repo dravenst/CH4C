@@ -88,6 +88,7 @@ Chrome HDMI for Channels (CH4C) is a Node.js application that captures web strea
 - Implemented for Amazon and Peacock (on-demand and live) and Disney+ (on-demand only; its live streams can't be rewound). When adding a service, update the checkbox's hover text in `INSTANT_PAGE_HTML`, which lists them.
 
 ## Site Automation Patterns
+- Before changing a site's handler, read that site's section in `SITE_NOTES.md` (live detection, rewinding, player quirks), and update it with anything new you learn.
 - Drive the player's own controls with real mouse clicks rather than setting `video.currentTime` (breaks DRM sessions on some sites). Seek by clicking near the left end of the player's scrubber.
 - Controls usually only render while the mouse hovers over the video, so hover first and retry the lookup.
 - Some players put their controls in shadow DOM (Disney+ uses Lit components); use `pierce/` selectors or walk `shadowRoot`s.
