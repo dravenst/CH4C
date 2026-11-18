@@ -2208,10 +2208,8 @@ async function searchPeacock(page, query) {
   }
 
   // Find the search input and type the query
-  const searchInput = await page.waitForSelector(
-    'input[type="search"], input[aria-label*="search" i], input[placeholder*="search" i], input[data-testid*="search" i]',
-    { timeout: 10000 }
-  );
+  const searchInputSel = 'input[type="search"], input[aria-label*="search" i], input[placeholder*="search" i], input[data-testid*="search" i]';
+  let searchInput = await page.waitForSelector(searchInputSel, { timeout: 10000 });
   await searchInput.click({ clickCount: 3 });
   await delay(500); // ensure input is focused and ready
 
@@ -2221,17 +2219,47 @@ async function searchPeacock(page, query) {
     return el ? el.textContent.trim() : '__none__';
   });
 
-  await searchInput.type(searchTerm, { delay: 60 });
+  // Type, then wait for results to update away from the initial default results.
+  // The input can appear before Peacock's scripts are ready, which then reset it and lose the typing,
+  // so read the value back shortly after typing and retype straight away if it's gone.
+  const retypeAttempts = 3;
+  for (let attempt = 1; attempt <= retypeAttempts; attempt++) {
+    await searchInput.type(searchTerm, { delay: 60 });
+    await delay(1000);
+    const typedValue = await page.$eval(searchInputSel, el => el.value).catch(() => '(no input)');
+    if (typedValue !== searchTerm) {
+      logTS(`Peacock: typed query didn't stick (attempt ${attempt}) — input value: "${typedValue}"`);
+      if (attempt === retypeAttempts) break;
+      searchInput = await page.waitForSelector(searchInputSel, { timeout: 10000 });
+      await searchInput.click({ clickCount: 3 });
+      await page.keyboard.press('Backspace');
+      await delay(500);
+      continue;
+    }
 
-  // Wait for results to update away from the initial default results
-  await page.waitForFunction(
-    (prev) => {
-      const el = document.querySelector('ul[data-testid="search-results-grid"] li[data-testid="collection-tile"] h4[data-testid="title"]');
-      return el && el.textContent.trim() !== prev;
-    },
-    { timeout: 15000 },
-    initialFirstTitle
-  ).catch(() => {});
+    const updated = await page.waitForFunction(
+      (prev) => {
+        const el = document.querySelector('ul[data-testid="search-results-grid"] li[data-testid="collection-tile"] h4[data-testid="title"]');
+        return el && el.textContent.trim() !== prev;
+      },
+      { timeout: 15000 },
+      initialFirstTitle
+    ).then(() => true).catch(() => false);
+    if (updated) break;
+
+    const state = await page.evaluate((sel) => ({
+      inputValue: document.querySelector(sel)?.value ?? '(no input)',
+      tiles: document.querySelectorAll('ul[data-testid="search-results-grid"] li[data-testid="collection-tile"]').length,
+    }), searchInputSel);
+    logTS(`Peacock: results didn't update after typing (attempt ${attempt}) — input value: "${state.inputValue}", result tiles: ${state.tiles}`);
+    if (attempt === retypeAttempts) break;
+
+    // Look the input up again (the page may have replaced it), clear it and retype
+    searchInput = await page.waitForSelector(searchInputSel, { timeout: 10000 });
+    await searchInput.click({ clickCount: 3 });
+    await page.keyboard.press('Backspace');
+    await delay(500);
+  }
 
   // Wait for results grid (in case it wasn't present initially)
   await page.waitForSelector('ul[data-testid="search-results-grid"] li[data-testid="collection-tile"]', { timeout: 5000 }).catch(() => {});
@@ -2271,23 +2299,55 @@ async function searchPeacock(page, query) {
   };
   page.on('response', captureHandler);
 
-  // Click the first result and navigate to the detail page
-  const firstResult = await page.$('ul[data-testid="search-results-grid"] li[data-testid="collection-tile"] [role="link"]');
-  if (!firstResult) {
-    page.off('response', captureHandler);
-    throw new Error('No search results found on Peacock');
+  // Click the first result and navigate to the detail page.
+  // A click while the results are still re-rendering can be lost, so retry once if the page stays on search.
+  const firstResultSel = 'ul[data-testid="search-results-grid"] li[data-testid="collection-tile"] [role="link"]';
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const firstResult = await page.$(firstResultSel);
+    if (!firstResult) {
+      page.off('response', captureHandler);
+      throw new Error('No search results found on Peacock');
+    }
+    const navigated = await Promise.all([
+      page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 10000 }),
+      firstResult.click(),
+    ]).then(() => true).catch(() => false);
+    if (navigated || !page.url().includes('/watch/search')) break;
+    logTS(`Peacock: clicking the first result didn't leave the search page (attempt ${attempt})`);
+    if (attempt === 2) {
+      page.off('response', captureHandler);
+      throw new Error('Peacock: clicking the search result did not open the show page');
+    }
   }
-
-  await Promise.all([
-    page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 20000 }),
-    firstResult.click(),
-  ]);
 
   const detailUrl = page.url();
   logTS(`Peacock navigated to detail page: ${detailUrl}`);
 
   // Live events navigate directly to a playback URL — skip episode tab wait
   const isPlaybackUrl = detailUrl.includes('/watch/playback/');
+
+  const findEpisode = (obj, depth = 0) => {
+    if (!obj || typeof obj !== 'object' || depth > 10) return null;
+    if (Array.isArray(obj)) {
+      for (const item of obj) {
+        const r = findEpisode(item, depth + 1);
+        if (r) return r;
+      }
+    } else {
+      const sn = parseInt(obj.seasonNumber ?? obj.season_number ?? obj.season ?? -1, 10);
+      const en = parseInt(obj.episodeNumber ?? obj.episode_number ?? obj.episodeNum
+                       ?? obj.number ?? obj.order ?? -1, 10);
+      if (sn === targetSeason && en === targetEpisode) return obj;
+      // Match on episode number alone if object has title + id/slug (episode-like)
+      if (sn === -1 && en === targetEpisode && (obj.title || obj.name || obj.episodeName)
+          && (obj.id || obj.guid || obj.slug || obj.programmeUuid)) return obj;
+      for (const val of Object.values(obj)) {
+        const r = findEpisode(val, depth + 1);
+        if (r) return r;
+      }
+    }
+    return null;
+  };
 
   // Click Episodes tab to trigger BFF rails API calls for episode list
   if (!isPlaybackUrl) {
@@ -2299,6 +2359,23 @@ async function searchPeacock(page, query) {
       logTS('Peacock: clicked Episodes tab, waiting for API responses');
     } catch (e) {
       logTS(`Peacock: episodes button not found — ${e.message}`);
+    }
+
+    // The tiles can render before the response with the episode list has been captured
+    // (it may arrive later, or still be being read), so keep capturing until it shows up
+    if (targetSeason && targetEpisode) {
+      const waitStart = Date.now();
+      let checked = 0, found = false;
+      while (!found && Date.now() - waitStart < 10000) {
+        for (; checked < capturedApiResponses.length; checked++) {
+          if (findEpisode(capturedApiResponses[checked].json)) { found = true; break; }
+        }
+        if (!found) await delay(250);
+      }
+      const waited = ((Date.now() - waitStart) / 1000).toFixed(1);
+      logTS(found
+        ? `Peacock: S${targetSeason}E${targetEpisode} found in captured responses after ${waited}s`
+        : `Peacock: S${targetSeason}E${targetEpisode} not in captured responses after waiting ${waited}s`);
     }
   } else {
     logTS('Peacock: live event — waiting for playback overlay to render');
@@ -2331,29 +2408,6 @@ async function searchPeacock(page, query) {
 
   // If a specific episode was requested, search captured API responses for it
   if (targetSeason && targetEpisode) {
-    const findEpisode = (obj, depth = 0) => {
-      if (!obj || typeof obj !== 'object' || depth > 10) return null;
-      if (Array.isArray(obj)) {
-        for (const item of obj) {
-          const r = findEpisode(item, depth + 1);
-          if (r) return r;
-        }
-      } else {
-        const sn = parseInt(obj.seasonNumber ?? obj.season_number ?? obj.season ?? -1, 10);
-        const en = parseInt(obj.episodeNumber ?? obj.episode_number ?? obj.episodeNum
-                         ?? obj.number ?? obj.order ?? -1, 10);
-        if (sn === targetSeason && en === targetEpisode) return obj;
-        // Match on episode number alone if object has title + id/slug (episode-like)
-        if (sn === -1 && en === targetEpisode && (obj.title || obj.name || obj.episodeName)
-            && (obj.id || obj.guid || obj.slug || obj.programmeUuid)) return obj;
-        for (const val of Object.values(obj)) {
-          const r = findEpisode(val, depth + 1);
-          if (r) return r;
-        }
-      }
-      return null;
-    };
-
     // Scan the episode tile DOM for the matching episode's thumbnail image
     const episodeTileImageUrl = await page.evaluate((season, episode) => {
       const label = `S${season} E${episode}`;

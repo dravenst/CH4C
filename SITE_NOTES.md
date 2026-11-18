@@ -30,6 +30,8 @@ Not listed: sites whose handler just finds the video, unmutes and goes fullscree
 - **Audio:** can start muted and at volume 50. Use the player's mute button (`playback-mute-volume`, label "Unmute Sound") and the volume slider shown when hovering it (React range input: set it with the native value setter plus input/change events).
 - **Seek:** on-demand uses `input[data-testid="scrubber-bar"]`; live uses a div slider, `.playback-scrubber-bar [role="slider"]`, whose `aria-valuetext` shows the position.
 - **Live URLs** (`/watch/playback/live/<id>`) may also include 24/7 channels, which From Start would rewind if checked.
+- **Search:** the search input can appear before Peacock's scripts are ready; they then reset it and the typed query is lost (seen about 1 in 5 on the test machine, more often on faster machines). Search reads the value back 1s after typing and retypes if it's gone. Clicking the first result can also be lost (the page stays on search), so search clicks it once more.
+- **Episode lookup:** the episode list comes from the `atom.peacocktv.com/.../provider_series_id/...` response. Episode tiles can render before that response has been captured (seen on the slow test machine), so search keeps capturing for up to 10s until the requested episode shows up.
 
 ## Disney+ (`disneyplus.com`)
 - **Lit components:** the player's controls (settings, timeline, fullscreen, live button) are inside shadow roots and only render while hovered. Three copies of some controls exist for different viewport widths; use the visible one.
