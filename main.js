@@ -328,6 +328,11 @@ async function searchPrimeVideo(page, query) {
   await page.goto('https://www.amazon.com/gp/video/storefront', { waitUntil: 'domcontentloaded', timeout: 30000 });
   await delay(2000);
 
+  if (page.url().includes('/checkpoint/')) {
+    logTS('Prime Video: Amazon checkpoint encountered on storefront ("I am human")');
+    throw new Error('Amazon checkpoint encountered ("I am human"). Please open Remote Access (VNC) to complete verification in the browser.');
+  }
+
   // Move mouse to simulate human presence before interacting
   await bezierMouseMove(page, 400 + Math.random() * 200, 200 + Math.random() * 150);
   await delay(400 + Math.random() * 300);
@@ -400,8 +405,27 @@ async function searchPrimeVideo(page, query) {
   const resultHref = await page.evaluate(el => el.href, firstResultLink);
   logTS(`Navigating to Prime Video detail page: ${resultHref}`);
 
-  // Navigate to the detail page
-  await page.goto(resultHref, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  // Click first result naturally with mouse movement to avoid bot detection on direct goto
+  const searchUrl = page.url();
+  const resultBox = await firstResultLink.boundingBox();
+  if (resultBox) {
+    const rx = resultBox.x + resultBox.width / 2;
+    const ry = resultBox.y + resultBox.height / 2;
+    await bezierMouseMove(page, rx, ry);
+    await delay(200 + Math.random() * 200);
+    await Promise.all([
+      page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {}),
+      page.mouse.click(rx, ry),
+    ]);
+  }
+  if (page.url() === searchUrl) {
+    await page.goto(resultHref, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  }
+
+  if (page.url().includes('/checkpoint/')) {
+    logTS('Prime Video: Amazon checkpoint encountered on detail page ("I am human")');
+    throw new Error('Amazon checkpoint encountered ("I am human"). Please open Remote Access (VNC) to complete verification in the browser.');
+  }
 
   // Holds episode metadata if found in list but play URL unavailable (used in ATF fallback)
   let foundEpisodeMeta = null;
@@ -713,6 +737,10 @@ async function searchPrimeVideo(page, query) {
     .replace(/^Watch\s+/i, '')
     .replace(/\s*[-|]\s*(Amazon|Prime\s*Video|Watch|Stream).*$/i, '')
     .trim() || null;
+  if (page.url().includes('/checkpoint/')) {
+    logTS('Prime Video: Amazon checkpoint encountered ("I am human")');
+    throw new Error('Amazon checkpoint encountered ("I am human"). Please open Remote Access (VNC) to complete verification in the browser.');
+  }
   logTS(`Watch Now button not found, returning detail page URL: ${page.url()}`);
   return {
     url:             page.url(),
