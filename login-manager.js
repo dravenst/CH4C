@@ -141,9 +141,10 @@ const LOGIN_SITES = [
     id: 'discovery',
     name: 'Discovery',
     type: 'tve',
-    // go.discovery.com now redirects to play.discovery.com. Signed out, a channel page
-    // redirects (via /consent-wall) to play.discovery.com/error within a few seconds.
-    checkUrl: 'https://play.discovery.com/channel/discovery',
+    // go.discovery.com now redirects to play.discovery.com. /channel/<name> URLs are no longer valid
+    // (they always go to /error); live channels are /channel/watch/<id>/<id>. This is Discovery's.
+    // Signed out, it's expected to redirect to /error like other pages.
+    checkUrl: 'https://play.discovery.com/channel/watch/94d97d27-d193-57ab-9d10-e9ffdc2e7c2e/ce3cc4f8-1a5d-599a-9ec2-b6577571c377',
     loggedOutUrlFragment: 'play.discovery.com/error',
     checkLoginWaitMs: 6000,
     providerPageUrl: 'https://play.discovery.com/',
@@ -152,9 +153,12 @@ const LOGIN_SITES = [
     // The menu item's text varies ("Sign In", "Sign in with TV Provider"); both link to /auth/providers.
     // <a aria-label="Sign in with TV Provider. 3 of 7" href="https://play.discovery.com/auth/providers?_referrer=...">
     providerPageTriggers: ['button[data-testid="profile_button"]', 'a[href*="/auth/providers"]'],
-    // The provider picker is at /auth/providers, not providerPageUrl's path; the post-click wait
-    // treats leaving this path as sign-in finished.
-    providerPickerPath: '/auth/providers',
+    // Sign-in pages are under /auth/ (the /auth/providers picker, then /auth/partner-sync?code=...
+    // which saves the provider link). The post-click wait treats leaving /auth/ as sign-in finished;
+    // leaving partner-sync early loses the link.
+    providerPickerPath: '/auth/',
+    // ...except the last one, which says the sign-in succeeded and stays until clicked away
+    providerSuccessPath: '/auth/purchase-confirmation',
     // Real mouse click only: Discovery's bot detection blocked the browser after logins that also sent a script click
     triggerMouseOnly: true,
     // /auth/providers renders the provider search in gisdk web components (shadow DOM), so pierce/:
@@ -2152,7 +2156,11 @@ async function loginTve(page, siteConfig, tveProviderName, tveProviderUsername, 
           if (outcome === 'login') break;
 
           // Sub-case a: returned to a success page on the service domain
-          if (onServiceDomain && currentUrl.pathname !== pickerPath) {
+          const stillInPicker = siteConfig.providerPickerPath
+            ? currentUrl.pathname.startsWith(pickerPath) &&
+              !(siteConfig.providerSuccessPath && currentUrl.pathname.startsWith(siteConfig.providerSuccessPath))
+            : currentUrl.pathname === pickerPath;
+          if (onServiceDomain && !stillInPicker) {
             logTS(`TVE: background SAML settled at ${page.url()}`);
             samlSettledSuccess = true;
             await delay(500);
@@ -2164,7 +2172,7 @@ async function loginTve(page, siteConfig, tveProviderName, tveProviderUsername, 
       // Settle loop timed out without detecting a login page or success navigation.
       // Don't blindly trust this as success — clear the flag and fall through to checkLogin.
       if (outcome === 'back' && !samlSettledSuccess) {
-        logTS(`TVE: back-settle timed out for ${siteConfig.id} — running checkLogin to verify`);
+        logTS(`TVE: back-settle timed out for ${siteConfig.id} at ${page.url()} — running checkLogin to verify`);
         samlReturnedToService = false;
       }
     }
@@ -2318,7 +2326,11 @@ async function loginTve(page, siteConfig, tveProviderName, tveProviderUsername, 
             // NBC's SPA receives the auth callback from the popup via window.opener and
             // navigates away from the picker page to confirm the link succeeded.
             const mainUrl = new URL(page.url());
-            if (mainUrl.hostname.endsWith(serviceDomain) && mainUrl.pathname !== popupPickerPath) {
+            const mainInPicker = siteConfig.providerPickerPath
+              ? mainUrl.pathname.startsWith(popupPickerPath) &&
+                !(siteConfig.providerSuccessPath && mainUrl.pathname.startsWith(siteConfig.providerSuccessPath))
+              : mainUrl.pathname === popupPickerPath;
+            if (mainUrl.hostname.endsWith(serviceDomain) && !mainInPicker) {
               logTS(`TVE: main tab navigated to ${page.url()} — popup auth complete`);
               samlReturnedToService = true;
               break;

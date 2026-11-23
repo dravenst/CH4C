@@ -5129,8 +5129,8 @@ const M3U_MANAGER_PAGE_HTML = `
             { group: 'USA Network', name: 'E!', url: 'https://www.usanetwork.com/live#E-_East', category: 'Entertainment', callSign: 'ELHD' },
             { group: 'A&E', name: 'A&E', url: 'https://play.aetv.com/live', category: 'Other', callSign: 'AETV' },
             { group: 'A&E', name: 'History', url: 'https://play.history.com/live', category: 'Other', callSign: 'HISTORY', stationId: '14771' },
-            { group: 'Discovery', name: 'Discovery', url: 'https://go.discovery.com/channel/discovery', category: 'Other', callSign: 'DSC' },
-            { group: 'Discovery', name: 'Travel Channel', url: 'https://go.discovery.com/channel/travel-channel', category: 'Other', callSign: 'TRAV' },
+            { group: 'Discovery', name: 'Discovery', url: 'https://play.discovery.com/channel/watch/94d97d27-d193-57ab-9d10-e9ffdc2e7c2e/ce3cc4f8-1a5d-599a-9ec2-b6577571c377', category: 'Other', callSign: 'DSC' },
+            { group: 'Discovery', name: 'Travel Channel', url: 'https://play.discovery.com/channel/watch/0a57401d-440b-5269-8123-d167a9bbfd22/0ddcc2f9-8d69-5f67-b1ee-37e4e70e1420', category: 'Other', callSign: 'TRAV' },
             { group: 'CBS', name: 'CBS Local', url: 'https://www.cbs.com/live-tv/stream/', category: 'Other', callSign: '', needsCallsign: true }
         ];
 
