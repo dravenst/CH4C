@@ -149,12 +149,21 @@ const LOGIN_SITES = [
     providerPageUrl: 'https://play.discovery.com/',
     // Account icon at top right opens a menu with Sign In, which leads to /auth/providers
     // <button aria-haspopup="true" data-testid="profile_button" ...><img ...></button>
-    // The Sign In item's markup hasn't been captured yet, so it's matched by its text.
-    providerPageTriggers: ['button[data-testid="profile_button"]', '::-p-text(Sign In)'],
-    // Provider search/results below are from the old auth.go.discovery.com page and not yet
-    // confirmed on play.discovery.com/auth/providers; the generic input[type="search"] is a fallback.
-    searchSelector: 'input#searchPartners, input.search-input__input__3kbc2, input[aria-label*="TV provider" i], input[type="search"]',
-    resultSelector: 'ul.affiliate-picker-list__all-partners__2VJgq li button, button.affiliate-partner__link__F4Zt_',
+    // The menu item's text varies ("Sign In", "Sign in with TV Provider"); both link to /auth/providers.
+    // <a aria-label="Sign in with TV Provider. 3 of 7" href="https://play.discovery.com/auth/providers?_referrer=...">
+    providerPageTriggers: ['button[data-testid="profile_button"]', 'a[href*="/auth/providers"]'],
+    // The provider picker is at /auth/providers, not providerPageUrl's path; the post-click wait
+    // treats leaving this path as sign-in finished.
+    providerPickerPath: '/auth/providers',
+    // Real mouse click only: Discovery's bot detection blocked the browser after logins that also sent a script click
+    triggerMouseOnly: true,
+    // /auth/providers renders the provider search in gisdk web components (shadow DOM), so pierce/:
+    // <gi-form-input id="mvpdSearch-searchPartners"><input id="mvpdSearch-searchPartners-input" name="searchPartners"
+    //   placeholder="Search for your provider" data-testid="gisdk.gi-partner-list.providerSearch_box">
+    searchSelector: 'pierce/input[name="searchPartners"]',
+    // Result markup not captured yet: search every button/link; the first whose text or aria-label
+    // contains the provider name is clicked.
+    resultSelector: 'pierce/button, a, [role="button"]',
   },
   {
     id: 'disney',
@@ -536,7 +545,19 @@ function isLoggedOutUrl(url, siteConfig) {
 
 async function checkLogin(page, siteConfig) {
   try {
-    await page.goto(siteConfig.checkUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
+    const response = await page.goto(siteConfig.checkUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
+
+    // A bot-detection block (Akamai's "Access Denied" 403, seen on Discovery) isn't a sign-out:
+    // stop here so the login flow doesn't load more pages and extend the block.
+    const status = response ? response.status() : 0;
+    const title = await page.title().catch(() => '');
+    if (status === 403 || /^access denied$/i.test(title.trim())) {
+      const ref = await page.evaluate(() => (document.body.innerText.match(/Reference #\S+/) || [''])[0]).catch(() => '');
+      logTS(`checkLogin [${siteConfig.id}]: blocked by the site (HTTP ${status}, "${title}") ${ref}`);
+      const err = new Error(`${siteConfig.name} blocked this browser (HTTP ${status} Access Denied, likely bot detection). Wait an hour or more before trying again.`);
+      err.blocked = true;
+      throw err;
+    }
 
     // Dismiss any sign-in confirmation modal that may appear on the check page.
     // Disney/ABC "You've been signed in!" overlays the nav bar so the loggedInIndicator
@@ -681,6 +702,7 @@ async function checkLogin(page, siteConfig) {
     logTS(`checkLogin [${siteConfig.id}]: URL after ${waitMs}ms is ${page.url()} — ${loggedOutUrl ? 'not logged in' : 'logged in'}`);
     return !loggedOutUrl;
   } catch (e) {
+    if (e.blocked) throw e;
     logTS(`checkLogin error for ${siteConfig.id}: ${e.message}`);
     return false;
   }
@@ -1520,6 +1542,33 @@ async function loginTve(page, siteConfig, tveProviderName, tveProviderUsername, 
 
     await dismissWBDTermsBanner(page, `TVE(${siteConfig.id})`);
 
+    // Discovery sends a signed-out browser to /consent-wall, a legal terms page that stays
+    // until Agree is clicked. Its markup isn't known, so match a button/link whose text starts with "Agree".
+    for (let i = 0; i < 10 && page.url().includes('/consent-wall'); i++) {
+      const agreeBox = await page.evaluate(() => {
+        const el = [...document.querySelectorAll('button, a, [role="button"]')].find(e => {
+          const r = e.getBoundingClientRect();
+          return r.width > 0 && r.height > 0 && /^agree/i.test(e.textContent.trim());
+        });
+        return el ? (r => ({ x: r.x + r.width / 2, y: r.y + r.height / 2, text: el.textContent.trim() }))(el.getBoundingClientRect()) : null;
+      }).catch(() => null);
+      if (!agreeBox) {
+        if (i === 9) {
+          const buttons = await page.evaluate(() => [...document.querySelectorAll('button, a, [role="button"]')]
+            .map(e => e.textContent.trim()).filter(Boolean).slice(0, 15).join(' | ')).catch(() => '');
+          logTS(`TVE(${siteConfig.id}): on ${page.url()} but no Agree button found; buttons: ${buttons}`);
+        }
+        await delay(1000);
+        continue;
+      }
+      logTS(`TVE(${siteConfig.id}): consent wall, clicking "${agreeBox.text}" at (${Math.round(agreeBox.x)}, ${Math.round(agreeBox.y)})`);
+      await bezierMouseMove(page, agreeBox.x, agreeBox.y);
+      await page.mouse.click(agreeBox.x, agreeBox.y);
+      await delay(3000);
+      logTS(`TVE(${siteConfig.id}): URL after Agree is ${page.url()}`);
+      break;
+    }
+
     // Remove the one-shot localStorage clear script so subsequent navigations
     // (e.g. checkUrl) don't re-clear the auth token AccessEnabler just wrote.
     if (localStorageClearScriptId) {
@@ -1653,8 +1702,10 @@ async function loginTve(page, siteConfig, tveProviderName, tveProviderUsername, 
                 // (TBS/TNT taui-viewallbutton, ESPN) need one or the other depending on their
                 // event listener type (native vs React synthetic)
                 await page.mouse.click(tx, ty);
-                await delay(80);
-                await triggerEl.evaluate(el => el.click());
+                if (!siteConfig.triggerMouseOnly) {
+                  await delay(80);
+                  await triggerEl.evaluate(el => el.click());
+                }
               }
             }
           } else {
@@ -1793,7 +1844,18 @@ async function loginTve(page, siteConfig, tveProviderName, tveProviderUsername, 
         }
       }
 
-      await page.waitForSelector(siteConfig.searchSelector, { timeout: 15000, visible: true });
+      try {
+        await page.waitForSelector(siteConfig.searchSelector, { timeout: 15000, visible: true });
+      } catch (e) {
+        // Log what the page has instead, so one failed run shows the provider page's markup
+        const inputs = await page.evaluate(() => [...document.querySelectorAll('input')]
+          .map(i => i.outerHTML.slice(0, 200)).slice(0, 5).join(' | ')).catch(() => '');
+        const buttons = await page.evaluate(() => [...document.querySelectorAll('button, a, [role="button"]')]
+          .map(e => (e.getAttribute('aria-label') || e.textContent).trim()).filter(Boolean).slice(0, 20).join(' | ')).catch(() => '');
+        const frames = page.frames().slice(1).map(f => f.url()).filter(Boolean).join(' | ');
+        logTS(`TVE(${siteConfig.id}): provider search box not found on ${page.url()}; inputs: ${inputs || 'none'}; buttons: ${buttons || 'none'}; iframes: ${frames || 'none'}`);
+        throw e;
+      }
 
       // Scroll back to top — prior scrollIntoView calls on trigger buttons may have
       // shifted the page, pushing the provider search modal out of the visible area.
@@ -1951,6 +2013,9 @@ async function loginTve(page, siteConfig, tveProviderName, tveProviderUsername, 
     }
 
     if (!clicked) {
+      const seen = await page.$$eval(siteConfig.resultSelector, els => els
+        .map(e => (e.getAttribute('aria-label') || e.textContent).trim()).filter(Boolean).slice(0, 25).join(' | ')).catch(() => '');
+      logTS(`TVE(${siteConfig.id}): "${tveProviderName}" not found among results: ${seen || 'none'}`);
       return { success: false, message: `Provider "${tveProviderName}" not found in results. Check the name matches exactly as shown on the site.` };
     }
 
@@ -2007,7 +2072,7 @@ async function loginTve(page, siteConfig, tveProviderName, tveProviderUsername, 
     //      (NBC/Adobe Pass navigates the page) or in a child iframe. → transition to 'login'
     if (outcome === 'back') {
       samlReturnedToService = true; // tentative — cleared if we timeout or detect login page
-      const pickerPath = new URL(siteConfig.providerPageUrl).pathname;
+      const pickerPath = siteConfig.providerPickerPath || new URL(siteConfig.providerPageUrl).pathname;
       // 20s window: Adobe Pass SDK may take several seconds to initiate the SAML redirect
       const settleDeadline = Date.now() + 20000;
       let samlSettledSuccess = false;
@@ -2222,7 +2287,7 @@ async function loginTve(page, siteConfig, tveProviderName, tveProviderUsername, 
         //   1. popupClosed flag (set by the 'close' event listener above)
         //   2. popup.url() changed to service domain (popup redirected back)
         //   3. page.url() (main tab) moved to a non-picker path on service domain
-        const popupPickerPath = new URL(siteConfig.providerPageUrl).pathname;
+        const popupPickerPath = siteConfig.providerPickerPath || new URL(siteConfig.providerPageUrl).pathname;
         while (Date.now() < loginDeadline) {
           await delay(300);
 
