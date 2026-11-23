@@ -5294,8 +5294,8 @@ const M3U_MANAGER_PAGE_HTML = `
                     <td>\${ch.stationId ? ch.stationId : (ch.duration ? \`\${ch.duration}min placeholder\` : '-')}</td>
                     <td>
                         <button class="btn btn-secondary btn-small" onclick="showEditModal('\${ch.id}')">✏️ Edit</button>
-                        \${ch.service === 'custom' && ch.id.startsWith('custom-') ? \`<button class="btn btn-danger btn-small" onclick="deleteChannel('\${ch.id}')">🗑️ Delete</button>\` : ''}
                         <button class="btn btn-secondary btn-small" data-watch-id="\${ch.id}" onclick="watchChannel('\${ch.id}')" title="Watch in a browser window. Channels DVR tunes it through CH4C, which uses an available encoder." \${ch.enabled === false ? 'disabled' : ''}>▶ Watch</button>
+                        \${ch.service === 'custom' && ch.id.startsWith('custom-') ? \`<button class="btn btn-danger btn-small" onclick="deleteChannel('\${ch.id}')">🗑️ Delete</button>\` : ''}
                     </td>
                 </tr>
             \`).join('');
@@ -7446,6 +7446,7 @@ const SETTINGS_PAGE_HTML = `
             html += '<div class="encoder-card-title">Encoder ' + (index + 1) + '</div>';
             html += '<div class="encoder-card-actions">';
             html += '<button class="btn btn-sm btn-secondary" onclick="showEditEncoder(' + index + ')">Edit</button>';
+            html += '<button class="btn btn-sm btn-secondary" onclick="watchEncoder(' + index + ')" title="Watch this encoder\\'s channel in a browser window, streamed from Channels DVR">▶ Watch</button>';
             html += '<button class="btn btn-sm btn-danger" onclick="deleteEncoder(' + index + ')">Delete</button>';
             html += '</div></div>';
             html += '<div class="encoder-details">';
@@ -7643,6 +7644,11 @@ const SETTINGS_PAGE_HTML = `
                     showMessage(formatErrors(data.errors), 'error');
                 }
             } catch (e) { showMessage('Failed to update encoder: ' + e.message, 'error'); }
+        }
+
+        // Open the player for this encoder's channel (its encoder-<index> entry in CH4C's M3U playlist)
+        function watchEncoder(index) {
+            window.open('/watch?m3u=' + encodeURIComponent('encoder-' + index), '_blank', 'popup,width=960,height=600');
         }
 
         async function deleteEncoder(index) {
