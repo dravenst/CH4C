@@ -413,12 +413,26 @@ async function searchPrimeVideo(page, query) {
     const ry = resultBox.y + resultBox.height / 2;
     await bezierMouseMove(page, rx, ry);
     await delay(200 + Math.random() * 200);
-    await Promise.all([
-      page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {}),
-      page.mouse.click(rx, ry),
-    ]);
+    // Hovering can expand the card into a preview with its own Play button, so only click
+    // if the point under the mouse is still a link to a detail page
+    const hit = await page.evaluate((x, y) => {
+      const el = document.elementFromPoint(x, y);
+      const link = el?.closest('a[href*="/gp/video/detail/"]');
+      return link ? 'detail link' : (el ? `${el.tagName.toLowerCase()}${el.getAttribute('data-testid') ? `[data-testid="${el.getAttribute('data-testid')}"]` : ''}` : 'nothing');
+    }, rx, ry);
+    if (hit === 'detail link') {
+      await Promise.all([
+        page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {}),
+        page.mouse.click(rx, ry),
+      ]);
+    } else {
+      logTS(`Prime Video: mouse is over ${hit}, not the result link — not clicking`);
+    }
+  } else {
+    logTS('Prime Video: first result has no on-screen position — not clicking');
   }
   if (page.url() === searchUrl) {
+    logTS('Prime Video: still on search results, opening the detail page URL directly');
     await page.goto(resultHref, { waitUntil: 'domcontentloaded', timeout: 30000 });
   }
 
@@ -2188,6 +2202,45 @@ async function searchYouTube(page, query) {
 // div.profiles__avatar--image[role="button"], and a newer data-testid="profile-item-<Name>".
 const PEACOCK_PROFILE_SELECTOR = '.profiles__avatar--image[role="button"], [data-testid^="profile-item-"][role="button"]';
 
+// Select the first profile on /watch/profiles for search. A dialog can cover the page while it
+// loads and swallow the click, so close the privacy dialog if it's there, log what's under the
+// tile, and click again if the page doesn't leave the profile picker.
+async function selectPeacockProfileForSearch(page) {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    await page.waitForSelector(PEACOCK_PROFILE_SELECTOR, { visible: true, timeout: 8000 });
+    await delay(1000);
+    const state = await page.evaluate((sel) => {
+      const privacyBtn = [...document.querySelectorAll('[data-testid="notification-Privacy"]:not([aria-hidden="true"]) button[data-type="notification-button"]')]
+        .find(el => el.textContent.trim().toLowerCase() === 'got it' && el.getClientRects().length > 0);
+      if (privacyBtn) privacyBtn.click();
+      const tile = [...document.querySelectorAll(sel)].find(el => el.getClientRects().length > 0);
+      if (!tile) return null;
+      const r = tile.getBoundingClientRect();
+      const x = r.left + r.width / 2, y = r.top + r.height / 2;
+      const top = document.elementFromPoint(x, y);
+      const dialogs = [...document.querySelectorAll('[role="dialog"], [role="alertdialog"], [data-testid^="notification-"]')]
+        .filter(el => el.getClientRects().length > 0 && el.getAttribute('aria-hidden') !== 'true')
+        .map(el => el.textContent.trim().replace(/\s+/g, ' ').substring(0, 80));
+      return { x, y, privacyClosed: !!privacyBtn, dialogs,
+               onTile: !!top && tile.contains(top),
+               topEl: top ? `${top.tagName.toLowerCase()}${top.getAttribute('data-testid') ? `[data-testid="${top.getAttribute('data-testid')}"]` : ''}` : 'nothing' };
+    }, PEACOCK_PROFILE_SELECTOR);
+    if (!state) throw new Error('profile tile not visible');
+    if (state.privacyClosed) logTS('Peacock: dismissed privacy choices dialog (Got It) on profile page');
+    logTS(`Peacock: profile tile at (${Math.round(state.x)}, ${Math.round(state.y)}), under mouse: ${state.onTile ? 'the tile' : state.topEl}` +
+      (state.dialogs.length ? `, dialogs: ${state.dialogs.map(d => `"${d}"`).join(', ')}` : '') + ` (attempt ${attempt})`);
+    await page.mouse.click(state.x, state.y);
+    const left = await page.waitForFunction(() => !window.location.href.includes('/watch/profiles'), { timeout: 8000 })
+      .then(() => true).catch(() => false);
+    if (left) {
+      logTS(`Peacock profile selected — now at: ${page.url()}`);
+      return;
+    }
+    logTS(`Peacock: still on the profile page 8s after clicking (attempt ${attempt})`);
+  }
+  throw new Error('still on the profile page after 3 clicks');
+}
+
 async function searchPeacock(page, query) {
   const episodeMatch  = query.match(/\bs(\d+)\s*e(\d+)\b/i);
   const targetSeason  = episodeMatch ? parseInt(episodeMatch[1], 10) : null;
@@ -2201,13 +2254,8 @@ async function searchPeacock(page, query) {
   // Handle profile selection page if redirected (URL contains /watch/profiles)
   if (page.url().includes('/watch/profiles')) {
     logTS('Peacock profile selection page detected — selecting first profile');
-    // The profile avatar is a div.profiles__avatar--image[role="button"]
-    const profileSel = PEACOCK_PROFILE_SELECTOR;
     try {
-      const profileEl = await page.waitForSelector(profileSel, { timeout: 8000 });
-      await profileEl.click();
-      await page.waitForFunction(() => !window.location.href.includes('/watch/profiles'), { timeout: 15000 });
-      logTS(`Peacock profile selected — now at: ${page.url()}`);
+      await selectPeacockProfileForSearch(page);
     } catch (e) {
       logTS(`Peacock: could not click profile — ${e.message}`);
       throw new Error('Peacock profile selection failed. Check that a profile is set up in the browser.');
@@ -2221,12 +2269,8 @@ async function searchPeacock(page, query) {
   // Peacock may redirect to profiles again after navigating to search — handle it
   if (page.url().includes('/watch/profiles')) {
     logTS('Peacock redirected to profile page after search navigation — selecting first profile again');
-    const profileSel = PEACOCK_PROFILE_SELECTOR;
     try {
-      const profileEl = await page.waitForSelector(profileSel, { timeout: 8000 });
-      await profileEl.click();
-      await page.waitForFunction(() => !window.location.href.includes('/watch/profiles'), { timeout: 15000 });
-      logTS(`Peacock profile selected — now at: ${page.url()}`);
+      await selectPeacockProfileForSearch(page);
       // Re-navigate to search after profile selection
       await page.goto(`https://www.peacocktv.com/watch/search`, { waitUntil: 'networkidle2', timeout: 20000 });
     } catch (e) {
@@ -2257,12 +2301,14 @@ async function searchPeacock(page, query) {
     const typedValue = await page.$eval(searchInputSel, el => el.value).catch(() => '(no input)');
     if (typedValue !== searchTerm) {
       logTS(`Peacock: typed query didn't stick (attempt ${attempt}) — input value: "${typedValue}"`);
-      if (attempt === retypeAttempts) break;
-      searchInput = await page.waitForSelector(searchInputSel, { timeout: 10000 });
-      await searchInput.click({ clickCount: 3 });
-      await page.keyboard.press('Backspace');
-      await delay(500);
-      continue;
+      // On the last attempt, still wait for the results below so a stale default result isn't picked
+      if (attempt < retypeAttempts) {
+        searchInput = await page.waitForSelector(searchInputSel, { timeout: 10000 });
+        await searchInput.click({ clickCount: 3 });
+        await page.keyboard.press('Backspace');
+        await delay(500);
+        continue;
+      }
     }
 
     const updated = await page.waitForFunction(
@@ -4433,12 +4479,15 @@ async function setupBrowserAudio(page, encoderConfig, targetUrl = null, skipLogo
         const btns = [...document.querySelectorAll('button[data-testid^="version-picker-cta"]')];
         const labels = btns.map(b => b.textContent.trim());
         const btn = btns.find(b => b.textContent.trim().toLowerCase().includes(want));
-        if (btn) btn.click();
-        return { labels, clicked: btn ? btn.textContent.trim() : null };
+        const r = btn?.getBoundingClientRect();
+        return { labels, clicked: btn ? btn.textContent.trim() : null,
+                 x: r ? r.left + r.width / 2 : 0, y: r ? r.top + r.height / 2 : 0 };
       }, want);
       logTS(`Apple TV+: version picker options: ${result.labels.join(' | ')}`);
       if (result.clicked) {
-        logTS(`Apple TV+: clicked "${result.clicked}" (From Start ${fromBeginning === true ? 'checked' : fromBeginning === false ? 'unchecked' : 'not set'})`);
+        // Real mouse click, as the previous button-order click used
+        await page.mouse.click(result.x, result.y);
+        logTS(`Apple TV+: mouse clicked "${result.clicked}" at (${Math.round(result.x)}, ${Math.round(result.y)}) (From Start ${fromBeginning === true ? 'checked' : fromBeginning === false ? 'unchecked' : 'not set'})`);
       } else {
         logTS(`Apple TV+: no "${want}" option, clicking the first option`);
         await page.click('button[data-testid="version-picker-cta-en-0"]');
