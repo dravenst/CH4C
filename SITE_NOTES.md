@@ -53,3 +53,12 @@ Not listed: sites whose handler just finds the video, unmutes and goes fullscree
 - Provider sign-in has to run in a real popup: with a cached provider session, Adobe's `completeBackgroundLogin.html` needs `window.opener` to hand back the token.
 - A free preview shows a "SIGN IN FOR FULL ACCESS" button; it's treated as logged out, so CH4C logs in instead of recording the preview.
 - Dismiss the WBD "Legal Terms and Privacy" banner, and resume playback if the player is paused after fullscreen.
+
+## History (`play.history.com`)
+- When signed in, the page keeps its "Sign In" link (`a[href*="mvpd-auth"]`, the logged-out indicator) in the DOM but hidden. CH4C's in-stream logout checks only count a visible indicator; counting a hidden one flagged History as logged out on every tune, and the login then failed because it waits for a visible link.
+- Fullscreen: a script `click()` on the player's "Show Fullscreen" button was reported as clicked but didn't take effect. The handler now clicks it with the real mouse while hovering, confirms `document.fullscreenElement`, and retries with the window brought to the foreground.
+
+## Discovery (`play.discovery.com`)
+- `go.discovery.com` now redirects to `play.discovery.com`. Signed out, a channel page goes through `/consent-wall` to `/error` within a few seconds, so the login check uses that URL rather than an element.
+- Sign-in starts from the account icon at the top right (`button[data-testid="profile_button"]`), whose menu has Sign In, leading to `/auth/providers`. The Sign In item and the provider picker's markup weren't captured when this was written; check the TVE step logs on the first run.
+- Bot detection blocked the encoder's browser after a few manual and automated sign-in attempts in a row. Space out test runs.

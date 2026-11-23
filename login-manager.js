@@ -141,14 +141,19 @@ const LOGIN_SITES = [
     id: 'discovery',
     name: 'Discovery',
     type: 'tve',
-    checkUrl: 'https://go.discovery.com/',
-    // Logged out: "Link TV Provider" anchor present
-    // <a aria-label="Link TV Provider" href="https://auth.go.discovery.com/login-affiliates?...">
-    loggedOutIndicator: 'a[aria-label="Link TV Provider"]',
-    providerPageUrl: 'https://go.discovery.com/',
-    // Trigger navigates to a new page (auth.go.discovery.com) — full page navigation
-    providerPageTriggers: ['a[aria-label="Link TV Provider"]'],
-    searchSelector: 'input#searchPartners, input.search-input__input__3kbc2, input[aria-label*="TV provider" i]',
+    // go.discovery.com now redirects to play.discovery.com. Signed out, a channel page
+    // redirects (via /consent-wall) to play.discovery.com/error within a few seconds.
+    checkUrl: 'https://play.discovery.com/channel/discovery',
+    loggedOutUrlFragment: 'play.discovery.com/error',
+    checkLoginWaitMs: 6000,
+    providerPageUrl: 'https://play.discovery.com/',
+    // Account icon at top right opens a menu with Sign In, which leads to /auth/providers
+    // <button aria-haspopup="true" data-testid="profile_button" ...><img ...></button>
+    // The Sign In item's markup hasn't been captured yet, so it's matched by its text.
+    providerPageTriggers: ['button[data-testid="profile_button"]', '::-p-text(Sign In)'],
+    // Provider search/results below are from the old auth.go.discovery.com page and not yet
+    // confirmed on play.discovery.com/auth/providers; the generic input[type="search"] is a fallback.
+    searchSelector: 'input#searchPartners, input.search-input__input__3kbc2, input[aria-label*="TV provider" i], input[type="search"]',
     resultSelector: 'ul.affiliate-picker-list__all-partners__2VJgq li button, button.affiliate-partner__link__F4Zt_',
   },
   {
@@ -672,7 +677,9 @@ async function checkLogin(page, siteConfig) {
     }
 
     // URL fallback
-    return !isLoggedOutUrl(page.url(), siteConfig);
+    const loggedOutUrl = isLoggedOutUrl(page.url(), siteConfig);
+    logTS(`checkLogin [${siteConfig.id}]: URL after ${waitMs}ms is ${page.url()} — ${loggedOutUrl ? 'not logged in' : 'logged in'}`);
+    return !loggedOutUrl;
   } catch (e) {
     logTS(`checkLogin error for ${siteConfig.id}: ${e.message}`);
     return false;

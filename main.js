@@ -4160,27 +4160,51 @@ async function setupBrowserAudio(page, encoderConfig, targetUrl = null, skipLogo
     err.siteId = loggedOutSite.id;
     return err;
   };
+  // Only a visible indicator counts: History keeps its Sign In link in the DOM, hidden, when signed in,
+  // and the login flow waits for a visible one, so a hidden match would start a login that can't succeed.
+  // (The same test is repeated in waitForVideoOrLogout below.)
   if (loggedOutSite) {
-    let loggedOutEl = null;
+    let loggedOutVisible = false;
     try {
-      loggedOutEl = await page.$(loggedOutSite.loggedOutIndicator);
-      logTS(`${loggedOutSite.name} logout check on ${encoderConfig.url}: indicator ${loggedOutEl ? 'FOUND' : 'not found'} (url: ${page.url()})`);
+      loggedOutVisible = await page.evaluate((sel) => [...document.querySelectorAll(sel)].some(el => {
+        const r = el.getBoundingClientRect(); const s = getComputedStyle(el);
+        return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
+      }), loggedOutSite.loggedOutIndicator);
+      const inDom = !loggedOutVisible && !!(await page.$(loggedOutSite.loggedOutIndicator));
+      logTS(`${loggedOutSite.name} logout check on ${encoderConfig.url}: indicator ${loggedOutVisible ? 'FOUND' : inDom ? 'in page but hidden, ignoring' : 'not found'} (url: ${page.url()})`);
     } catch (e) {
       logTS(`${loggedOutSite.name} logout check on ${encoderConfig.url} failed: ${e.message}`);
     }
-    if (loggedOutEl) throw failLoggedOut();
+    if (loggedOutVisible) throw failLoggedOut();
   }
 
   // Wait for a playable video while also watching for the site's logged-out indicator, so a
   // logout screen (or a free preview's sign-in button) that renders after the initial check
   // ends the wait immediately instead of timing out or recording the preview.
+  // Waits in chunks shorter than the browser's 30s protocolTimeout: a single waitForFunction is one
+  // protocol call, so a longer wait failed at 30s with "Runtime.callFunctionOn timed out".
   const waitForVideoOrLogout = async (timeout) => {
-    const result = await page.waitForFunction((loggedOutSelector) => {
-      if (loggedOutSelector && document.querySelector(loggedOutSelector)) return 'logged-out';
-      const videos = window.checkForVideos();
-      return videos.length > 0 && videos.some(v => v.readyState >= 2) ? 'video' : false;
-    }, { timeout, polling: 1000 }, loggedOutSite?.loggedOutIndicator || null);
-    if (await result.jsonValue() === 'logged-out') throw failLoggedOut();
+    const deadline = Date.now() + timeout;
+    while (true) {
+      const remaining = deadline - Date.now();
+      try {
+        const result = await page.waitForFunction((loggedOutSelector) => {
+          // Visible logged-out indicator only (see the logout check above)
+          const loggedOut = loggedOutSelector && [...document.querySelectorAll(loggedOutSelector)].some(el => {
+            const r = el.getBoundingClientRect(); const s = getComputedStyle(el);
+            return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
+          });
+          if (loggedOut) return 'logged-out';
+          const videos = window.checkForVideos();
+          return videos.length > 0 && videos.some(v => v.readyState >= 2) ? 'video' : false;
+        }, { timeout: Math.min(remaining, 20000), polling: 1000 }, loggedOutSite?.loggedOutIndicator || null);
+        if (await result.jsonValue() === 'logged-out') throw failLoggedOut();
+        return;
+      } catch (e) {
+        if (e.name !== 'TimeoutError' || remaining <= 20000) throw e;
+        logTS(`Still waiting for video on ${encoderConfig?.url} (${Math.round((deadline - Date.now()) / 1000)}s left)`);
+      }
+    }
   };
 
   // Fox Sports: click the JWPlayer overlay play button before starting the video wait.
@@ -7479,14 +7503,50 @@ async function fullScreenVideoAETV(page) {
     // Continue
   }
 
-  const fullscreenResult = await page.evaluate(() => {
-    const btn = document.querySelector('img[aria-label="Show Fullscreen"]');
-    if (btn) {
-      btn.click();
-      return 'clicked';
+  // A script click on the fullscreen button was logged as clicked but Chrome didn't go fullscreen.
+  // Click it with the real mouse (controls only render while hovering), confirm, and retry with
+  // the window brought to the foreground, since Chrome refuses fullscreen for a background tab.
+  const isFullscreen = () => page.evaluate(() => !!document.fullscreenElement).catch(() => false);
+  let fullscreenResult = 'already fullscreen';
+  if (!await isFullscreen()) {
+    fullscreenResult = 'not confirmed after 3 attempts';
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      if (attempt > 1) {
+        await page.bringToFront().catch(() => {});
+        if (process.platform === 'win32') {
+          try {
+            const chromePid = page.browser().process()?.pid;
+            if (chromePid) {
+              execSync(`powershell -NoProfile -Command "(New-Object -ComObject WScript.Shell).AppActivate(${chromePid})"`, { stdio: 'pipe', timeout: 5000 });
+            }
+          } catch (focusErr) {
+            logTS(`AETV fullscreen: could not bring browser window to foreground: ${focusErr.message}`);
+          }
+        }
+      }
+      const size = await page.evaluate(() => ({ w: window.innerWidth, h: window.innerHeight })).catch(() => ({ w: 1280, h: 720 }));
+      await page.mouse.move(Math.floor(size.w / 2), Math.floor(size.h / 2) + attempt);
+      await delay(500);
+      const btnCenter = await page.evaluate(() => {
+        const img = document.querySelector('img[aria-label="Show Fullscreen"]');
+        const el = img && (img.closest('button') || img);
+        const r = el && el.getBoundingClientRect();
+        return r && r.width > 0 && r.height > 0 ? { x: r.x + r.width / 2, y: r.y + r.height / 2 } : null;
+      }).catch(() => null);
+      if (btnCenter) {
+        await page.mouse.click(btnCenter.x, btnCenter.y);
+        logTS(`AETV fullscreen: clicked player button at (${Math.round(btnCenter.x)}, ${Math.round(btnCenter.y)}) (attempt ${attempt})`);
+      } else {
+        await page.keyboard.press('f');
+        logTS(`AETV fullscreen: player button not visible, pressed F (attempt ${attempt})`);
+      }
+      await delay(1500);
+      if (await isFullscreen()) {
+        fullscreenResult = `confirmed on attempt ${attempt}`;
+        break;
+      }
     }
-    return 'not found';
-  });
+  }
 
   logTS(`AETV fullscreen status: ${fullscreenResult}`);
   logTS("finished AETV fullscreen setup");
@@ -9143,7 +9203,15 @@ function getFullUrl (req) {
     return null
   }
   //Create URL object to validate and format the URL
-  const urlObj = new URL(req.query.url);
+  let urlObj;
+  try {
+    urlObj = new URL(req.query.url);
+  } catch (e) {
+    // e.g. a channel URL saved already percent-encoded ("https%3A%2F%2F..."); without this the
+    // request failed with a 500 and nothing in the log
+    logTS(`/stream: target URL is not a valid URL: "${req.query.url}" (${e.message})`);
+    return null;
+  }
   
   // Add any additional query parameters (exclude CH4C routing params that shouldn't go to the target site)
   const internalParams = new Set(['url', 'encoder', 'cc', 'fromstart']);
@@ -10592,6 +10660,76 @@ ${processInfo && processInfo.pid !== 'Unknown' ?
     } else {
       sendResponse(400, { success: false, error: 'Invalid form submission' });
     }
+  });
+
+  // Find the number Channels DVR gave a CH4C playlist channel (rows set to "Auto" have none in CH4C).
+  // Channels DVR keys M3U channels by tvg-name, which the playlist sets to callSign || name.
+  // Returns {name, number, device} or {error}.
+  async function findChannelsDvrM3uChannel(channelId) {
+    const ch = m3uManager.getChannelById(channelId);
+    if (!ch) return { error: 'Channel not found in the M3U Manager' };
+    if (ch.enabled === false) return { error: `${ch.name} is disabled in the M3U Manager` };
+    if (!Constants.CHANNELS_URL || !Constants.CHANNELS_PORT) return { error: 'Channels DVR URL is not configured' };
+    const tvgName = ch.callSign || ch.name;
+    try {
+      const cdvrBase = Constants.CHANNELS_URL.replace(/\/+$/, '').replace(/:\d+$/, '');
+      const response = await fetch(`${cdvrBase}:${Constants.CHANNELS_PORT}/devices`);
+      if (!response.ok) return { error: `Channels DVR returned ${response.status}` };
+      const devices = await response.json();
+      // Only CH4C's own source when known, so another CH4C instance's same-named channel isn't picked
+      const sourceId = m3uManager.channelsDvrSourceName ? `M3U-${m3uManager.channelsDvrSourceName}` : null;
+      const candidates = devices.filter(d => sourceId ? d.DeviceID === sourceId : String(d.DeviceID).startsWith('M3U-'));
+      for (const device of candidates) {
+        const matches = (device.Channels || []).filter(c => c.ID === tvgName);
+        const match = matches.find(c => c.GuideNumber === String(ch.channelNumber)) || matches[0];
+        if (match) return { name: ch.name, number: match.GuideNumber, device: device.DeviceID };
+      }
+      return { error: `${ch.name} isn't in Channels DVR${sourceId ? ` source ${sourceId}` : ''} yet. Refresh the M3U source in Channels DVR, then try again.` };
+    } catch (error) {
+      return { error: `Could not reach Channels DVR: ${error.message}` };
+    }
+  }
+
+  // GET /watch?channel=24.42 - Browser player for a Channels DVR channel number (e.g. an encoder's)
+  // GET /watch?m3u=<channel id> - Browser player for an M3U Manager channel; Channels DVR tunes it through CH4C
+  app.get('/watch', async (req, res) => {
+    const sendError = (status, message) => {
+      logTS(`[Watch] ${message}`);
+      res.status(status).send(`<body style="background:#000;color:#feb2b2;font-family:sans-serif;padding:20px;">${message.replace(/</g, '&lt;')}</body>`);
+    };
+    let channel = String(req.query.channel || '');
+    let device = 'ANY';
+    let label = '';
+    if (req.query.m3u) {
+      const found = await findChannelsDvrM3uChannel(String(req.query.m3u));
+      if (found.error) {
+        sendError(404, found.error);
+        return;
+      }
+      channel = String(found.number);
+      device = found.device;
+      label = ` (${found.name})`;
+    }
+    if (!/^\d+(\.\d+)?$/.test(channel)) {
+      sendError(400, `Invalid channel number "${channel}"`);
+      return;
+    }
+    const channelsBase = (Constants.CHANNELS_URL && Constants.CHANNELS_PORT)
+      ? `${Constants.CHANNELS_URL.replace(/\/+$/, '').replace(/:\d+$/, '')}:${Constants.CHANNELS_PORT}`
+      : null;
+    logTS(`[Watch] Browser player opened for channel ${channel}${label} from ${req.ip}: ${channelsBase ? `${channelsBase}/devices/${device}/channels/${channel}/hls/stream.m3u8?vcodec=copy (passthrough; the page falls back to master.m3u8 transcoding if the browser can't decode it)` : 'Channels DVR URL not configured'}`);
+    res.send(Constants.WATCH_PAGE_HTML
+      .replaceAll('<<channel>>', channel)
+      .replaceAll('<<device>>', JSON.stringify(encodeURIComponent(device)))
+      .replaceAll('<<channels_base>>', JSON.stringify(channelsBase)));
+  });
+
+  // POST /watch/log - The browser player reports what it saw (errors, fallbacks, playback start) to the CH4C log
+  app.post('/watch/log', (req, res) => {
+    const channel = String(req.body?.channel || '?').slice(0, 20);
+    const message = String(req.body?.message || '').slice(0, 300);
+    logTS(`[Watch] Player (channel ${channel}, ${req.ip}): ${message}`);
+    res.status(204).end();
   });
 
   // ===== M3U Manager Routes =====
@@ -12172,7 +12310,7 @@ async function handleSiteSpecificFullscreen(targetUrl, page, encoderConfig = nul
     } else if (targetUrl.includes("play.aetv.com") || targetUrl.includes("play.history.com")) {
       logTS("Handling AETV/History video");
       await fullScreenVideoAETV(page);
-    } else if (targetUrl.includes("go.discovery.com")) {
+    } else if (targetUrl.includes("go.discovery.com") || targetUrl.includes("play.discovery.com")) {
       logTS("Handling Discovery video");
       await fullScreenVideoDiscovery(page, closedCaptions);
     } else if (targetUrl.includes("cbs.com")) {

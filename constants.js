@@ -2507,6 +2507,13 @@ const INSTANT_PAGE_HTML = `
                 </button>
             </div>
 
+            <div style="display:flex;justify-content:flex-end;margin-top:10px;">
+                <label for="watch_in_browser" title="When tuning, open a player window that streams the encoder's channel from Channels DVR" style="display:flex;align-items:center;gap:8px;font-size:14px;color:#4a5568;cursor:pointer;margin:0;">
+                    <input type="checkbox" id="watch_in_browser" style="width:18px;height:18px;margin:0;accent-color:#667eea;cursor:pointer;" />
+                    Watch in browser
+                </label>
+            </div>
+
             <div id="record_later_row" style="display:none;" class="form-group">
                 <label>Start Time <span id="tz_label" style="font-weight:400;color:#718096;font-size:12px;"></span></label>
                 <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
@@ -2522,7 +2529,7 @@ const INSTANT_PAGE_HTML = `
                 <p>
                     <strong>📹 Start Recording:</strong> Creates a scheduled recording in Channels DVR and begins streaming the URL.<br>
                     <strong>🕐 Record Later:</strong> Schedules a future recording. An encoder will be auto-selected when the scheduled time arrives.<br>
-                    <strong>📺 Tune to Channel:</strong> Simply loads the URL on an available encoder without recording. The stream will be available on the encoder's channel number in Channels DVR. Optional: specify duration for auto-stop, or leave blank for indefinite streaming.
+                    <strong>📺 Tune to Channel:</strong> Simply loads the URL on an available encoder without recording. The stream will be available on the encoder's channel number in Channels DVR. Optional: specify duration for auto-stop, or leave blank for indefinite streaming. Check <em>Watch in browser</em> to also open a player window for that channel.
                 </p>
             </div>
         </form>
@@ -2578,6 +2585,13 @@ const INSTANT_PAGE_HTML = `
         // Update on page load and when selection changes
         updateTuneButtonText();
         encoderSelect.addEventListener('change', updateTuneButtonText);
+
+        // Remember the "Watch in browser" choice per browser
+        const watchCheckbox = document.getElementById('watch_in_browser');
+        try { watchCheckbox.checked = localStorage.getItem('ch4c_watch_in_browser') === '1'; } catch (e) {}
+        watchCheckbox.addEventListener('change', function() {
+            try { localStorage.setItem('ch4c_watch_in_browser', watchCheckbox.checked ? '1' : '0'); } catch (e) {}
+        });
 
         function toLocalDateTimeString(date) {
             const pad = n => String(n).padStart(2, '0');
@@ -2748,6 +2762,13 @@ const INSTANT_PAGE_HTML = `
                 }
             }
 
+            // Open the player window now, while still handling the click: browsers block popups opened after an await
+            const wantWatch = submitButton && submitButton.name === 'button_tune' && watchCheckbox.checked;
+            const watchWindow = wantWatch ? window.open('', '_blank', 'popup,width=960,height=600') : null;
+            if (watchWindow) {
+                watchWindow.document.write('<body style="background:#000;color:#a0aec0;font-family:sans-serif;padding:20px;">Tuning encoder...</body>');
+            }
+
             // Disable buttons during submission
             const buttons = form.querySelectorAll('button[type="submit"]');
             buttons.forEach(btn => btn.disabled = true);
@@ -2785,6 +2806,18 @@ const INSTANT_PAGE_HTML = `
                 if (result.success) {
                     const isRecording = submitButton.name === 'button_record';
                     const isScheduled = submitButton.name === 'button_record_later';
+
+                    if (wantWatch) {
+                        const watchUrl = location.origin + '/watch?channel=' + encodeURIComponent(result.channel);
+                        if (watchWindow) {
+                            watchWindow.location.href = watchUrl;
+                        } else {
+                            showModal('success', '📺', 'Popup Blocked',
+                                'The browser blocked the player window. Allow popups for this page, or open it now.', '',
+                                [{ text: 'Open Player', action: () => { hideModal(); window.open(watchUrl, '_blank', 'popup,width=960,height=600'); } },
+                                 { text: 'Close', action: hideModal }]);
+                        }
+                    }
 
                     // Only show modal for recordings; tune silently starts
                     if (isRecording) {
@@ -2824,10 +2857,12 @@ const INSTANT_PAGE_HTML = `
                     // Refresh active streams
                     refreshActiveStreams();
                 } else {
+                    if (watchWindow) watchWindow.close();
                     showModal('error', '❌', 'Error', result.error || 'An error occurred', '',
                         [{ text: 'OK', action: hideModal }]);
                 }
             } catch (error) {
+                if (watchWindow) watchWindow.close();
                 showModal('error', '❌', 'Error', 'Failed to communicate with server: ' + error.message, '',
                     [{ text: 'OK', action: hideModal }]);
             } finally {
@@ -2980,6 +3015,206 @@ const INSTANT_PAGE_HTML = `
 </body>
 </html>
 `
+
+// Browser player for an encoder's channel, streamed from Channels DVR's HLS endpoint.
+// Self-contained so it can also be embedded in an iframe (e.g. for setup or A/V sync checks).
+// Placeholders: <<channel>> (digits and dots only), <<device>> (JSON string, URL-encoded Channels DVR
+// source ID or ANY) and <<channels_base>> (JSON string or null).
+const WATCH_PAGE_HTML = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CH4C - Channel <<channel>></title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body { height: 100%; background: #000; color: #e2e8f0; overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+        video { display: block; width: 100%; height: 100%; object-fit: contain; background: #000; }
+        #status { position: absolute; top: 12px; left: 12px; right: 12px; padding: 10px 14px;
+            background: rgba(0, 0, 0, 0.7); border-radius: 8px; font-size: 14px; pointer-events: none; }
+        #status.error { background: rgba(155, 28, 28, 0.85); }
+        #info { position: absolute; top: 8px; right: 12px; font-size: 11px; color: #a0aec0;
+            opacity: 0.7; pointer-events: none; display: none; }
+        #unmute { position: absolute; bottom: 72px; left: 50%; transform: translateX(-50%);
+            padding: 10px 18px; border: none; border-radius: 8px; background: #667eea; color: #fff;
+            font-size: 15px; cursor: pointer; display: none; }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@1.6.19/dist/hls.min.js"></script>
+</head>
+<body>
+    <video id="video" controls playsinline autoplay></video>
+    <div id="status">Connecting to channel <<channel>>... Channels DVR may take up to a minute to start it.</div>
+    <div id="info"></div>
+    <button id="unmute">🔇 Click to unmute</button>
+    <script>
+        const CHANNEL = '<<channel>>';
+        const DEVICE = <<device>>;   // Channels DVR source to tune from, or ANY
+        const MAX_RETRIES = 20;   // ~1 minute while Channels DVR starts the channel
+        const video = document.getElementById('video');
+        const statusEl = document.getElementById('status');
+        const infoEl = document.getElementById('info');
+        const unmuteBtn = document.getElementById('unmute');
+        let hls = null;
+        let retries = 0;
+        let mediaRecoveries = 0;
+        let transcode = false;
+
+        // Report to the CH4C log, so a test run shows what the browser saw
+        const loadStart = Date.now();
+        function report(message) {
+            const elapsed = ((Date.now() - loadStart) / 1000).toFixed(1) + 's';
+            fetch('/watch/log', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ channel: CHANNEL, message: elapsed + ' ' + message }) }).catch(function() {});
+        }
+
+        function setStatus(text, isError) {
+            statusEl.textContent = text;
+            statusEl.className = isError ? 'error' : '';
+            statusEl.style.display = text ? 'block' : 'none';
+        }
+
+        // Channels DVR runs on the CH4C host in most setups; if it's configured as localhost,
+        // use the host this page was opened from so other devices can reach it
+        function channelsBase() {
+            const configured = <<channels_base>>;
+            if (!configured) return null;
+            const u = new URL(configured);
+            if (u.hostname === 'localhost' || u.hostname === '127.0.0.1') u.hostname = location.hostname;
+            return u.origin;
+        }
+
+        function startPlayback() {
+            video.play().catch(function(err) {
+                // Only an autoplay refusal; other rejections (e.g. the source being swapped) aren't ours to handle
+                if (!err || err.name !== 'NotAllowedError') return;
+                // Autoplay with sound was refused; play muted and offer an unmute button
+                video.muted = true;
+                video.play().then(function() { unmuteBtn.style.display = 'block'; })
+                    .catch(function() { setStatus('Press play to start.'); });
+            });
+        }
+
+        function retryLater(reason) {
+            report('retrying after ' + reason + ' (attempt ' + (retries + 1) + ')');
+            if (retries >= MAX_RETRIES) {
+                setStatus('Could not play channel ' + CHANNEL + ' from Channels DVR (' + reason + '). Check that the channel exists in Channels DVR and the encoder is streaming.', true);
+                return;
+            }
+            retries++;
+            setStatus('Waiting for Channels DVR to start channel ' + CHANNEL + '... (attempt ' + retries + ')');
+            setTimeout(load, 3000);
+        }
+
+        // Passthrough plays the encoder's own video (no transcoding CPU, original A/V timing).
+        // If the browser can't decode it (e.g. HEVC without hardware support), Channels DVR transcodes to H.264.
+        function sourceUrl(base) {
+            const path = base + '/devices/' + DEVICE + '/channels/' + CHANNEL + '/hls/';
+            return transcode ? path + 'master.m3u8?abr=false' : path + 'stream.m3u8?abr=false&acodec=copy&vcodec=copy';
+        }
+
+        function fallBackToTranscode(reason) {
+            if (transcode) return false;
+            transcode = true;
+            report('switching to Channels DVR transcoding: ' + reason);
+            setStatus('This browser cannot decode the encoder\\'s video (' + reason + '). Switching to H.264 transcoded by Channels DVR...');
+            setTimeout(load, 1000);
+            return true;
+        }
+
+        function isCodecError(details) {
+            return details === Hls.ErrorDetails.MANIFEST_INCOMPATIBLE_CODECS_ERROR ||
+                details === Hls.ErrorDetails.BUFFER_INCOMPATIBLE_CODECS_ERROR ||
+                details === Hls.ErrorDetails.BUFFER_ADD_CODEC_ERROR;
+        }
+
+        function load() {
+            const base = channelsBase();
+            if (!base) {
+                setStatus('Channels DVR URL is not configured. Set it on the CH4C Settings page.', true);
+                return;
+            }
+            if (location.protocol === 'https:' && base.indexOf('http:') === 0) {
+                setStatus('This page was opened over HTTPS but Channels DVR uses HTTP, so the browser blocks the stream. Open CH4C with http:// to use the player.', true);
+                return;
+            }
+            const src = sourceUrl(base);
+
+            if (window.Hls && Hls.isSupported()) {
+                if (hls) hls.destroy();
+                // Channels DVR holds the first playlist request open until the channel is streaming, which
+                // takes a while when CH4C has to set up a site. Abandoning it makes Channels DVR drop the stream
+                // (and CH4C tear down the browser), so wait instead of timing out and retrying.
+                const slowStartPolicy = { default: { maxTimeToFirstByteMs: 90000, maxLoadTimeMs: 90000, timeoutRetry: null,
+                    errorRetry: { maxNumRetry: 2, retryDelayMs: 2000, maxRetryDelayMs: 4000 } } };
+                hls = new Hls({ manifestLoadPolicy: slowStartPolicy, playlistLoadPolicy: slowStartPolicy });
+                hls.on(Hls.Events.MANIFEST_PARSED, startPlayback);
+                hls.on(Hls.Events.BUFFER_CODECS, function(event, data) {
+                    const codecs = [];
+                    if (data.video) codecs.push('video ' + data.video.codec);
+                    if (data.audio) codecs.push('audio ' + data.audio.codec);
+                    infoEl.textContent = 'Ch ' + CHANNEL + ' | ' + codecs.join(', ') + ' | ' + (transcode ? 'transcoded by Channels DVR' : 'passthrough');
+                    infoEl.style.display = 'block';
+                });
+                hls.on(Hls.Events.ERROR, function(event, data) {
+                    if (!data.fatal) return;
+                    report('hls.js fatal ' + data.type + ' ' + data.details + (data.response && data.response.code !== undefined ? ' HTTP ' + data.response.code : '') + (data.reason ? ' (' + data.reason + ')' : '') + (transcode ? ' [transcode]' : ' [passthrough]'));
+                    if (isCodecError(data.details)) {
+                        hls.destroy();
+                        if (!fallBackToTranscode(data.reason || data.details)) {
+                            setStatus('This browser cannot decode the stream (' + (data.reason || data.details) + ').', true);
+                        }
+                    } else if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+                        hls.destroy();
+                        retryLater(data.details);
+                    } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR && mediaRecoveries < 2) {
+                        mediaRecoveries++;
+                        hls.recoverMediaError();
+                    } else {
+                        setStatus('Playback error: ' + data.details, true);
+                        hls.destroy();
+                    }
+                });
+                hls.loadSource(src);
+                hls.attachMedia(video);
+            } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                // Native HLS (iOS Safari without Media Source support)
+                video.src = src;
+                startPlayback();
+            } else {
+                setStatus('This browser cannot play HLS streams.', true);
+            }
+        }
+
+        let reportedPlaying = false;
+        video.addEventListener('playing', function() {
+            retries = 0;
+            setStatus('');
+            if (!reportedPlaying) {
+                reportedPlaying = true;
+                report('playing ' + (transcode ? 'transcoded by Channels DVR' : 'passthrough') + ' (' + infoEl.textContent + ')');
+            }
+        });
+        video.addEventListener('waiting', function() { setStatus('Buffering...'); });
+        video.addEventListener('error', function() {
+            // Only the native HLS path reports errors here; hls.js reports through its own ERROR event
+            if (hls) return;
+            const code = video.error ? video.error.code : 0;
+            // 4 = MEDIA_ERR_SRC_NOT_SUPPORTED, e.g. a codec the device can't decode
+            if (code === 4 && fallBackToTranscode('media error 4')) return;
+            retryLater('media error ' + code);
+        });
+        unmuteBtn.addEventListener('click', function() {
+            video.muted = false;
+            unmuteBtn.style.display = 'none';
+        });
+
+        load();
+    </script>
+</body>
+</html>
+`;
 
 const REMOTE_ACCESS_PAGE_HTML = `
 <!DOCTYPE html>
@@ -4097,6 +4332,11 @@ const M3U_MANAGER_PAGE_HTML = `
             font-size: 12px;
         }
 
+        .btn:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+
         .service-tabs {
             display: flex;
             gap: 8px;
@@ -5055,6 +5295,7 @@ const M3U_MANAGER_PAGE_HTML = `
                     <td>
                         <button class="btn btn-secondary btn-small" onclick="showEditModal('\${ch.id}')">✏️ Edit</button>
                         \${ch.service === 'custom' && ch.id.startsWith('custom-') ? \`<button class="btn btn-danger btn-small" onclick="deleteChannel('\${ch.id}')">🗑️ Delete</button>\` : ''}
+                        <button class="btn btn-secondary btn-small" data-watch-id="\${ch.id}" onclick="watchChannel('\${ch.id}')" title="Watch in a browser window. Channels DVR tunes it through CH4C, which uses an available encoder." \${ch.enabled === false ? 'disabled' : ''}>▶ Watch</button>
                     </td>
                 </tr>
             \`).join('');
@@ -5318,11 +5559,18 @@ const M3U_MANAGER_PAGE_HTML = `
             }
         }
 
+        // Open the player for this playlist channel; Channels DVR then tunes it through CH4C
+        function watchChannel(id) {
+            window.open('/watch?m3u=' + encodeURIComponent(id), '_blank', 'popup,width=960,height=600');
+        }
+
         async function toggleChannel(id) {
             try {
                 await fetch(\`/m3u-manager/channels/\${id}/toggle\`, { method: 'PATCH' });
                 const ch = allChannels.find(c => c.id === id);
                 if (ch) ch.enabled = ch.enabled === false;
+                const watchBtn = document.querySelector('[data-watch-id="' + id + '"]');
+                if (watchBtn && ch) watchBtn.disabled = ch.enabled === false;
                 if (showEnabledOnly) {
                     const scrollY = window.scrollY;
                     renderChannels();
@@ -7701,6 +7949,7 @@ module.exports = {
   CHANNELS_POST_URL,
   START_PAGE_HTML,
   INSTANT_PAGE_HTML,
+  WATCH_PAGE_HTML,
   M3U_MANAGER_PAGE_HTML,
   REMOTE_ACCESS_PAGE_HTML,
   LOGS_PAGE_HTML,
