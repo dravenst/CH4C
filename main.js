@@ -2742,30 +2742,40 @@ async function selectNetflixSeason(page, targetSeason) {
   await toggle.click();
   await page.waitForSelector('ul[data-uia="dropdown-menu"] li[data-uia="dropdown-menu-item"]', { timeout: 5000 }).catch(() => {});
 
-  // Options are "Season N  (X Episodes)" list items, plus a trailing "See All Episodes" item
-  // with no season number — matched (and skipped) by the failed regex test below.
-  const clicked = await page.evaluate((season) => {
-    const items = document.querySelectorAll('ul[data-uia="dropdown-menu"] li[data-uia="dropdown-menu-item"]');
-    for (const item of items) {
-      const m = (item.textContent || '').match(/^Season\s+(\d+)/i);
-      if (m && parseInt(m[1], 10) === season) {
-        item.click();
-        return true;
-      }
+  // Options are usually "Season N  (X Episodes)" list items, plus a trailing "See All Episodes"
+  // item with no episode count. Some shows name seasons instead ("Stranger Things",
+  // "Stranger Things 2", ...); when no option reads "Season N", use the Nth option that has an
+  // episode count, since the seasons are listed in order.
+  const clickedName = await page.evaluate((season) => {
+    const items = [...document.querySelectorAll('ul[data-uia="dropdown-menu"] li[data-uia="dropdown-menu-item"]')];
+    const optionName = (item) => {
+      const clone = item.cloneNode(true);
+      clone.querySelector('.episodeSelector--option-label-numEpisodes')?.remove();
+      return clone.textContent.replace(/\s+/g, ' ').trim();
+    };
+    let target = items.find(item => {
+      const m = optionName(item).match(/^Season\s+(\d+)/i);
+      return m && parseInt(m[1], 10) === season;
+    });
+    if (!target && !items.some(item => /^Season\s+\d+/i.test(optionName(item)))) {
+      target = items.filter(item => item.querySelector('.episodeSelector--option-label-numEpisodes'))[season - 1];
     }
-    return false;
+    if (!target) return null;
+    target.click();
+    return optionName(target);
   }, targetSeason);
-  if (!clicked) return false;
+  if (!clickedName) return false;
+  logTS(`Netflix: clicked season option "${clickedName}"`);
 
-  // Wait for the dropdown label to reflect the new season, then let the episode list re-render
+  // Wait for the dropdown label to show the chosen season, then let the episode list re-render
   await page.waitForFunction(
-    (season) => {
+    (name) => {
       const btn = document.querySelector('[data-uia="dropdown-toggle"]');
-      return btn && new RegExp(`Season\\s+${season}\\b`).test(btn.textContent);
+      return btn && btn.textContent.replace(/\(\d+\s+Episodes?\)/i, '').replace(/\s+/g, ' ').trim() === name;
     },
     { timeout: 8000 },
-    targetSeason
-  ).catch(() => {});
+    clickedName
+  ).catch(() => logTS(`Netflix: season dropdown label didn't change to "${clickedName}" within 8s, continuing`));
   await delay(500);
   return true;
 }
@@ -2786,11 +2796,18 @@ async function searchNetflix(page, query) {
   await page.goto('https://www.netflix.com/', { waitUntil: 'networkidle2', timeout: 30000 });
 
   // Handle "Who's watching?" profile gate if it appears — select the first (primary) profile.
-  const primaryProfile = await page.$('a.profile-link[data-uia="action-select-profile+primary"]');
+  // Current markup: <div data-uia="profile-selector"><button data-uia="profile-selector+tile-<id>">;
+  // older markup: <ul class="choose-profile"><a class="profile-link" data-uia="action-select-profile+primary">.
+  const primaryProfile = await page.$('[data-uia="profile-selector"] button[data-uia^="profile-selector+tile-"], a.profile-link[data-uia="action-select-profile+primary"]');
   if (primaryProfile) {
-    logTS('Netflix: profile gate detected — selecting first profile');
+    const profileName = await primaryProfile.evaluate(el => el.textContent.trim()).catch(() => '');
+    logTS(`Netflix: profile gate detected — selecting first profile "${profileName}"`);
     await primaryProfile.click();
-    await page.waitForFunction(() => !document.querySelector('ul.choose-profile'), { timeout: 15000 }).catch(() => {});
+    const gateGone = await page.waitForFunction(
+      () => !document.querySelector('[data-uia="profile-selector"], ul.choose-profile'),
+      { timeout: 15000 }
+    ).then(() => true).catch(() => false);
+    logTS(gateGone ? 'Netflix: profile selected' : 'Netflix: profile gate still showing after 15s');
   }
 
   // Open the search box
@@ -2869,6 +2886,8 @@ async function searchNetflix(page, query) {
           throw new Error(`Netflix: Season ${targetSeason} not found in the season dropdown`);
         }
         modalData = await extractNetflixModalData(page);
+        // Named seasons ("Stranger Things 2") don't parse as "Season N"; we just picked it.
+        if (modalData.shownSeason === null) modalData.shownSeason = targetSeason;
       }
       chosen = modalData.episodes[targetEpisode - 1];
       if (!chosen) {

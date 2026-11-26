@@ -48,6 +48,8 @@ Not listed: sites whose handler just finds the video, unmutes and goes fullscree
 
 ## Netflix (`netflix.com`)
 - No pre-roll ads, so the controls are available right away. Select captions before going fullscreen, not at the same time, because both use the controls.
+- "Who's watching?" profile gate (seen by search on loading the home page): profiles are now `<button data-uia="profile-selector+tile-<id>">` inside `div[data-uia="profile-selector"]`, first one is the primary. The older `ul.choose-profile` / `a.profile-link[data-uia="action-select-profile+primary"]` markup is kept as a fallback.
+- Season dropdown (`ul[data-uia="dropdown-menu"]`): options are usually "Season N (X Episodes)", but some shows name their seasons ("Stranger Things", "Stranger Things 2", ...). Seasons are listed in order, each with a `.episodeSelector--option-label-numEpisodes` count, followed by a "See All Episodes" item without one. Search matches "Season N" text and otherwise picks the Nth option that has a count.
 
 ## TBS / TNT (`tbs.com`, `tntdrama.com`)
 - Provider sign-in has to run in a real popup: with a cached provider session, Adobe's `completeBackgroundLogin.html` needs `window.opener` to hand back the token.
