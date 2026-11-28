@@ -315,6 +315,42 @@ function parseDurationMinutes(str) {
   return (hours * 60 + mins) || null;
 }
 
+const AMAZON_CHECKPOINT_SELECTOR = '#tmms-challenge, form#checkpointForm, form[action*="/checkpoint/"]';
+
+/**
+ * Detect Amazon's "I am human" bot-detection checkpoint by URL or DOM.
+ */
+async function isAmazonCheckpoint(page) {
+  if (page.url().includes('/checkpoint/')) return true;
+  return page.evaluate((sel) => Boolean(document.querySelector(sel)), AMAZON_CHECKPOINT_SELECTOR)
+    .catch(() => false);
+}
+
+/**
+ * Auto-solve Amazon's "I am human" bot-detection checkpoint when detected.
+ * Clicks the checkbox, submits the form, and returns without throwing so that
+ * search and playback can continue past the verification gate.
+ */
+async function assertNoAmazonCheckpoint(page, context = '') {
+  if (await isAmazonCheckpoint(page)) {
+    const where = context ? ` on ${context}` : '';
+    logTS(`Prime Video: Amazon bot-detection checkpoint detected${where} — auto-solving ("I am human") at ${page.url()}`);
+    try {
+      // Click the checkbox to trigger validation; this enables the submit button
+      await page.click('#continueCheck');
+      await delay(300);
+      // Submit the form and wait for navigation back to the original page
+      await Promise.all([
+        page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {}),
+        page.evaluate(() => document.getElementById('checkpointForm')?.submit()),
+      ]);
+      logTS(`Prime Video: checkpoint auto-solved successfully${where}`);
+    } catch (solveError) {
+      logTS(`Prime Video: failed to auto-solve checkpoint: ${solveError.message}${where}`);
+    }
+  }
+}
+
 async function searchPrimeVideo(page, query) {
   // Parse optional S#E# episode specifier from the query (e.g. "young sherlock s1 e1")
   const episodeMatch = query.match(/\bs(\d+)\s*e(\d+)\b/i);
@@ -328,10 +364,7 @@ async function searchPrimeVideo(page, query) {
   await page.goto('https://www.amazon.com/gp/video/storefront', { waitUntil: 'domcontentloaded', timeout: 30000 });
   await delay(2000);
 
-  if (page.url().includes('/checkpoint/')) {
-    logTS('Prime Video: Amazon checkpoint encountered on storefront ("I am human")');
-    throw new Error('Amazon checkpoint encountered ("I am human"). Please open Remote Access (VNC) to complete verification in the browser.');
-  }
+  await assertNoAmazonCheckpoint(page, 'storefront');
 
   // Move mouse to simulate human presence before interacting
   await bezierMouseMove(page, 400 + Math.random() * 200, 200 + Math.random() * 150);
@@ -374,8 +407,28 @@ async function searchPrimeVideo(page, query) {
   await delay(400 + Math.random() * 300);
   await page.keyboard.press('Enter');
 
-  // Wait for the search results main container
-  await page.waitForSelector('[data-testid="search"]', { timeout: 20000 });
+  // Enter can be lost when the page isn't ready yet (seen on the first search after the
+  // browser sat idle); if we're still on the storefront after 3s, focus the box and press Enter again
+  const leftStorefront = await page.waitForFunction(
+    () => !location.pathname.startsWith('/gp/video/storefront'), { timeout: 3000 }
+  ).then(() => true).catch(() => false);
+  if (!leftStorefront) {
+    const typed = await page.$eval('#pv-search-nav', el => el.value).catch(() => null);
+    logTS(`Prime Video: still on storefront 3s after Enter (search box: ${typed === null ? 'not found' : `"${typed}"`}), pressing Enter again`);
+    await page.focus('#pv-search-nav').catch(() => {});
+    await page.keyboard.press('Enter');
+  }
+
+  // Wait for the search results main container (or fail fast on Amazon bot-detection checkpoint)
+  try {
+    await page.waitForSelector(`[data-testid="search"], ${AMAZON_CHECKPOINT_SELECTOR}`, { timeout: 20000 });
+  } catch (err) {
+    const typed = await page.$eval('#pv-search-nav', el => el.value).catch(() => null);
+    logTS(`Prime Video: search results didn't load — page at ${page.url()}, search box: ${typed === null ? 'not found' : `"${typed}"`}`);
+    await assertNoAmazonCheckpoint(page, 'search results');
+    throw err;
+  }
+  await assertNoAmazonCheckpoint(page, 'search results');
   await delay(1000);
 
   // Find the first content result link scoped to search results container, avoiding promotional banners
@@ -420,13 +473,46 @@ async function searchPrimeVideo(page, query) {
       const link = el?.closest('a[href*="/gp/video/detail/"]');
       return link ? 'detail link' : (el ? `${el.tagName.toLowerCase()}${el.getAttribute('data-testid') ? `[data-testid="${el.getAttribute('data-testid')}"]` : ''}` : 'nothing');
     }, rx, ry);
-    if (hit === 'detail link') {
+    let clickPoint = hit === 'detail link' ? { x: rx, y: ry } : null;
+    if (!clickPoint) {
+      // The expanded preview covers the card center with a play button; look for another
+      // uncovered point on a link to the same detail page (title, image edge) and click that.
+      logTS(`Prime Video: mouse is over ${hit}, not the result link — looking for another spot on the result`);
+      const detailPath = new URL(resultHref).pathname;
+      const alt = await page.evaluate((detailPath) => {
+        const links = [...document.querySelectorAll(`a[href*="${detailPath}"]`)];
+        for (const link of links) {
+          const r = link.getBoundingClientRect();
+          if (r.width < 4 || r.height < 4) continue;
+          for (const [fx, fy] of [[0.5, 0.5], [0.15, 0.15], [0.85, 0.15], [0.15, 0.85], [0.85, 0.85], [0.5, 0.9], [0.5, 0.1]]) {
+            const x = r.left + r.width * fx, y = r.top + r.height * fy;
+            if (x < 0 || y < 0 || x >= window.innerWidth || y >= window.innerHeight) continue;
+            const hitLink = document.elementFromPoint(x, y)?.closest('a[href*="/gp/video/detail/"]');
+            if (hitLink && hitLink.pathname === detailPath) {
+              return { x, y, label: (link.getAttribute('aria-label') || link.textContent || '').trim().slice(0, 60) };
+            }
+          }
+        }
+        return null;
+      }, detailPath);
+      if (alt) {
+        logTS(`Prime Video: clicking result link "${alt.label}" at ${Math.round(alt.x)},${Math.round(alt.y)}`);
+        await bezierMouseMove(page, alt.x, alt.y, rx, ry);
+        await delay(150 + Math.random() * 150);
+        const stillLink = await page.evaluate((x, y, detailPath) =>
+          document.elementFromPoint(x, y)?.closest('a[href*="/gp/video/detail/"]')?.pathname === detailPath,
+          alt.x, alt.y, detailPath);
+        if (stillLink) clickPoint = alt;
+        else logTS('Prime Video: result link moved after the mouse reached it — not clicking');
+      } else {
+        logTS('Prime Video: no uncovered spot on the result link — not clicking');
+      }
+    }
+    if (clickPoint) {
       await Promise.all([
         page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {}),
-        page.mouse.click(rx, ry),
+        page.mouse.click(clickPoint.x, clickPoint.y),
       ]);
-    } else {
-      logTS(`Prime Video: mouse is over ${hit}, not the result link — not clicking`);
     }
   } else {
     logTS('Prime Video: first result has no on-screen position — not clicking');
@@ -436,10 +522,7 @@ async function searchPrimeVideo(page, query) {
     await page.goto(resultHref, { waitUntil: 'domcontentloaded', timeout: 30000 });
   }
 
-  if (page.url().includes('/checkpoint/')) {
-    logTS('Prime Video: Amazon checkpoint encountered on detail page ("I am human")');
-    throw new Error('Amazon checkpoint encountered ("I am human"). Please open Remote Access (VNC) to complete verification in the browser.');
-  }
+  await assertNoAmazonCheckpoint(page, 'detail page');
 
   // Holds episode metadata if found in list but play URL unavailable (used in ATF fallback)
   let foundEpisodeMeta = null;
@@ -457,6 +540,7 @@ async function searchPrimeVideo(page, query) {
       const seasonHref = await page.evaluate(el => el.href, targetSeasonLink);
       logTS(`Season selector found — navigating to Season ${targetSeason}`);
       await page.goto(seasonHref, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await assertNoAmazonCheckpoint(page, `season ${targetSeason}`);
       await page.waitForSelector('li[data-testid="episode-list-item"]', { timeout: 10000 }).catch(() => {});
     }
 
@@ -527,6 +611,7 @@ async function searchPrimeVideo(page, query) {
         const preClickUrl = page.url();
         await packshot.click().catch(() => {});
         await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {});
+        await assertNoAmazonCheckpoint(page, 'episode detail page');
         const episodePage = page.url();
         if (episodePage !== preClickUrl && episodePage.includes('/gp/video/detail/')) {
           logTS(`Prime Video: navigated to episode detail page: ${episodePage}`);
@@ -679,8 +764,11 @@ async function searchPrimeVideo(page, query) {
     // Grab page metadata before clicking (still visible behind any modal)
     const { rawTitle, durationStr, summary } = await page.evaluate(() => {
       return {
-        rawTitle:    document.querySelector('meta[property="og:title"]')?.content
-                     || document.querySelector('h1[data-automation-id="title"]')?.textContent?.trim()
+        // h1 first: og:title can be Amazon's generic "Prime Video: Watch movies, TV shows..." (seen on live events)
+        rawTitle:    document.querySelector('h1[data-automation-id="title"]')?.textContent?.trim()
+                     // Movie pages show the title as an image: <h1 data-testid="title-art"><img alt="Divergent">
+                     || document.querySelector('h1[data-testid="title-art"] img[alt]')?.alt?.trim()
+                     || document.querySelector('meta[property="og:title"]')?.content
                      || document.title || '',
         durationStr: document.querySelector('[data-automation-id="runtime-badge"]')?.textContent?.trim()
                      || document.querySelector('[data-testid="runtime"]')?.textContent?.trim() || null,
@@ -703,6 +791,7 @@ async function searchPrimeVideo(page, query) {
     const preClickUrl = page.url();
     await watchLink.click();
     await page.waitForSelector('[data-testid="stream-selector-content"]', { timeout: 3000 }).catch(() => {});
+    await assertNoAmazonCheckpoint(page, 'watch button');
 
     const liveHref = await page.evaluate(() => {
       const modal = document.querySelector('[data-testid="stream-selector-content"]');
@@ -734,8 +823,9 @@ async function searchPrimeVideo(page, query) {
 
   // Fallback: no playable button found (e.g. content not yet available) — scrape whatever metadata is on the detail page
   const fallbackMeta = await page.evaluate(() => {
-    const rawTitle = document.querySelector('meta[property="og:title"]')?.content
-                  || document.querySelector('h1[data-automation-id="title"]')?.textContent?.trim()
+    const rawTitle = document.querySelector('h1[data-automation-id="title"]')?.textContent?.trim()
+                  || document.querySelector('h1[data-testid="title-art"] img[alt]')?.alt?.trim()
+                  || document.querySelector('meta[property="og:title"]')?.content
                   || document.title || '';
     return {
       rawTitle,
@@ -751,10 +841,7 @@ async function searchPrimeVideo(page, query) {
     .replace(/^Watch\s+/i, '')
     .replace(/\s*[-|]\s*(Amazon|Prime\s*Video|Watch|Stream).*$/i, '')
     .trim() || null;
-  if (page.url().includes('/checkpoint/')) {
-    logTS('Prime Video: Amazon checkpoint encountered ("I am human")');
-    throw new Error('Amazon checkpoint encountered ("I am human"). Please open Remote Access (VNC) to complete verification in the browser.');
-  }
+  await assertNoAmazonCheckpoint(page, 'detail page fallback');
   logTS(`Watch Now button not found, returning detail page URL: ${page.url()}`);
   return {
     url:             page.url(),
@@ -8893,6 +8980,7 @@ async function selectAmazonClosedCaptionsWithRetry(page, ccOption) {
 
 async function fullScreenVideoAmazon(page, closedCaptions = '', encoderConfig = null, fromBeginning = null) {
   logTS("URL contains amazon.com, setting up fullscreen for Amazon Prime Video");
+  await assertNoAmazonCheckpoint(page, 'video playback');
 
   // If we're on a detail page (not the player), click the play/Watch Live button first.
   // Live events: circular-playbutton has no href and opens a stream-selector modal.
@@ -8929,6 +9017,7 @@ async function fullScreenVideoAmazon(page, closedCaptions = '', encoderConfig = 
         logTS('Amazon: no live modal — waiting for player navigation');
         await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
       }
+      await assertNoAmazonCheckpoint(page, 'video player navigation');
     }
   }
 
